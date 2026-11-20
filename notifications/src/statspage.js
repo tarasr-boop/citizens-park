@@ -12,7 +12,7 @@ const LABELS = {
   "share:open": "Opened “Share this page”",
   "share:copy": "“Copy the link” button",
   "how:open": "Opened “How this works”",
-  "how:email": "Feedback email link",
+  "how:email": "“Please share feedback” button",
   "how:feedback": "Feedback button",
   "how:t.me": "Telegram link in “How this works”",
   "how:yarracity.vic.gov.au": "Council link in “How this works”",

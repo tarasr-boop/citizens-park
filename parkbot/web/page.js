@@ -855,7 +855,7 @@
     if (!what && target.tagName === "A") {
       var href = target.getAttribute("href") || "";
       if (href.charAt(0) === "#") what = "to-" + href.slice(1);
-      else if (/^mailto:/i.test(href)) what = "email";
+      else if (/^mailto/i.test(href)) what = "email"; // an email link
       else what = String(target.hostname || "").replace(/^www\./, "");
     }
     what = String(what || target.tagName || "")
