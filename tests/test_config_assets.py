@@ -190,6 +190,15 @@ class RealFilesTest(unittest.TestCase):
         inside = [int(hour) * 60 + int(minute) for minute, hour in local_runs if config.post_from <= int(hour) * 60 + int(minute) < config.post_until]
         self.assertGreaterEqual(len(inside), 2, "config.toml's posting window and the run times in daily.yml no longer line up")
 
+    def test_the_scheduled_job_cannot_post_twice(self):
+        # Two things together keep a day to one post. Runs take turns, and each run
+        # starts from the newest copy of the branch, so it sees what the run before it
+        # saved in data/. Without the second, a run that had to wait its turn would
+        # work from the copy made when it was asked for, and post again.
+        workflow = (ROOT / ".github" / "workflows" / "daily.yml").read_text(encoding="utf-8")
+        self.assertRegex(workflow, r"\nconcurrency:\n  group: daily-check\n  cancel-in-progress: false\n")
+        self.assertRegex(workflow, r"uses: actions/checkout@v\d+\n\s+with:\n\s+ref: \$\{\{ github\.ref \}\}\n")
+
 
 if __name__ == "__main__":
     unittest.main()
