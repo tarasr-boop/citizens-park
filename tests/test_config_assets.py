@@ -1,6 +1,7 @@
 import re
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from parkbot import config as config_module
@@ -33,7 +34,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual((config.day_start, config.lights_off), (6 * 60, 22 * 60))
         # With no day_end, the page's timeline runs until the lights go off.
         self.assertEqual(config.day_end, 22 * 60)
-        self.assertEqual((config.post_from, config.post_until), (14 * 60 + 30, 19 * 60))
+        self.assertEqual((config.alert_weekdays, config.alert_weekends, config.alert_until), (15 * 60, 8 * 60, 19 * 60))
         # With no advice hours, the post looks for the best window between 5 and 9 PM.
         self.assertEqual((config.advice_from, config.advice_until), (17 * 60, 21 * 60))
         self.assertEqual(config.channel, "ExampleParkDogs")
@@ -126,21 +127,47 @@ class ConfigTest(unittest.TestCase):
             with self.subTest(written=written), self.assertRaisesRegex(ConfigError, "site.feedback_email should be an email address"):
                 self.changed('repo_url = "https://example.org/code"', f"repo_url = \"https://example.org/code\"\nfeedback_email = '{written}'")
 
+    def test_the_alert_has_one_time_for_weekdays_and_one_for_weekends(self):
+        config = self.load(GOOD)
+        friday, saturday, sunday, monday = (date(2026, 11, day) for day in (20, 21, 22, 23))
+        self.assertEqual([config.alert_at(day) for day in (friday, saturday, sunday, monday)], [15 * 60, 8 * 60, 8 * 60, 15 * 60])
+        # The alert may go out from half an hour before its time: the check that sends it runs a little early.
+        self.assertEqual(config_module.ALERT_LEAD, 30)
+        self.assertEqual([config.alert_from(day) for day in (friday, saturday)], [14 * 60 + 30, 7 * 60 + 30])
+
+    def test_without_an_alerts_section_the_alert_keeps_its_usual_times(self):
+        start = GOOD.index("[alerts]")
+        config = self.load(GOOD[:start] + GOOD[GOOD.index("[site]") :])
+        self.assertEqual((config.alert_weekdays, config.alert_weekends, config.alert_until), (16 * 60, 8 * 60, 19 * 60))
+        with self.assertRaisesRegex(ConfigError, r"alerts should be a section that starts with a \[alerts\] line"):
+            self.load('alerts = "16:00"\n' + GOOD.replace("[alerts]", "[alerts_old]"))
+
+    def test_the_old_names_for_the_alert_time_are_refused_not_ignored(self):
+        for old in ("post_from", "post_until"):
+            with self.subTest(old=old), self.assertRaisesRegex(ConfigError, rf"telegram\.{old} is no longer used.*\[alerts\]"):
+                self.changed('channel = "ExampleParkDogs"', f'channel = "ExampleParkDogs"\n{old} = "14:30"')
+
     def test_the_hours_for_the_best_window_can_be_set(self):
-        config = self.changed('post_until = "19:00"', 'post_until = "19:00"\nadvice_from = "16:30"\nadvice_until = "20:00"')
+        config = self.changed('channel = "ExampleParkDogs"', 'channel = "ExampleParkDogs"\nadvice_from = "16:30"\nadvice_until = "20:00"')
         self.assertEqual((config.advice_from, config.advice_until), (16 * 60 + 30, 20 * 60))
 
     def test_times_must_make_sense(self):
-        with self.assertRaisesRegex(ConfigError, "post_from must be earlier than telegram.post_until"):
-            self.changed('post_from = "14:30"', 'post_from = "19:30"')
+        with self.assertRaisesRegex(ConfigError, "alerts.weekdays must be earlier than alerts.until"):
+            self.changed('weekdays = "15:00"', 'weekdays = "19:00"')
+        with self.assertRaisesRegex(ConfigError, "alerts.weekends must be earlier than alerts.until"):
+            self.changed('weekends = "08:00"', 'weekends = "19:30"')
+        # The alert may go out half an hour early, and that must still be the same day.
+        with self.assertRaisesRegex(ConfigError, "alerts.weekends must be 30 minutes after midnight or later"):
+            self.changed('weekends = "08:00"', 'weekends = "00:29"')
+        self.assertEqual(self.changed('weekends = "08:00"', 'weekends = "00:30"').alert_weekends, 30)
         with self.assertRaisesRegex(ConfigError, "advice_from must be earlier than telegram.advice_until"):
-            self.changed('post_until = "19:00"', 'post_until = "19:00"\nadvice_from = "21:00"\nadvice_until = "17:00"')
+            self.changed('channel = "ExampleParkDogs"', 'channel = "ExampleParkDogs"\nadvice_from = "21:00"\nadvice_until = "17:00"')
         with self.assertRaisesRegex(ConfigError, "day_start must be earlier than park.lights_off"):
             self.changed('day_start = "06:00"', 'day_start = "23:00"')
         with self.assertRaisesRegex(ConfigError, "day_start must be earlier than park.day_end"):
             self.changed('day_start = "06:00"', 'day_start = "09:00"\nday_end = "08:00"')
         with self.assertRaises(ConfigError):
-            self.changed('post_from = "14:30"', 'post_from = "half past two"')
+            self.changed('weekdays = "15:00"', 'weekdays = "three o\'clock"')
 
     def test_an_unknown_time_zone(self):
         with self.assertRaisesRegex(ConfigError, "not a known time zone"):
@@ -198,7 +225,9 @@ class RealFilesTest(unittest.TestCase):
         config = config_module.load(ROOT / "config.toml")
         self.assertTrue(config.site_url.startswith("https://"))
         self.assertTrue(config.council_url.startswith("https://"))
-        self.assertLess(config.post_from, config.post_until)
+        # Taras asked for the alert at 4 PM on weekdays and at 8 AM on weekends.
+        self.assertEqual((config.alert_weekdays, config.alert_weekends), (16 * 60, 8 * 60))
+        self.assertLess(config.alert_weekdays, config.alert_until)
         self.assertLess(config.day_start, config.day_end)
         # Taras asked for the best window to be looked for between 5 and 9 PM.
         self.assertEqual((config.advice_from, config.advice_until), (17 * 60, 21 * 60))
@@ -235,14 +264,34 @@ class RealFilesTest(unittest.TestCase):
         self.assertEqual((ROOT / "assets" / "qr.png").read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
 
     def test_the_scheduled_job_posts_inside_the_posting_window(self):
-        # The post goes out on the first run inside the window, so at least two runs
-        # must be planned for after it opens: one to post and one as a backup.
+        # The post goes out on the first run inside the day's window, so the first
+        # runs planned inside it are the post run and its two backups. They must sit
+        # close to the alert's time: an hour after it at the latest.
         config = config_module.load(ROOT / "config.toml")
         workflow = (ROOT / ".github" / "workflows" / "daily.yml").read_text(encoding="utf-8")
         local_runs = re.findall(r'cron: "(\d+) (\d+) \* \* \*"\n\s+timezone: "Australia/Melbourne"', workflow)
         self.assertGreaterEqual(len(local_runs), 3)
-        inside = [int(hour) * 60 + int(minute) for minute, hour in local_runs if config.post_from <= int(hour) * 60 + int(minute) < config.post_until]
-        self.assertGreaterEqual(len(inside), 2, "config.toml's posting window and the run times in daily.yml no longer line up")
+        runs = [int(hour) * 60 + int(minute) for minute, hour in local_runs]
+        for name, day in (("weekdays", date(2026, 11, 20)), ("weekends", date(2026, 11, 21))):
+            with self.subTest(name):
+                opens, at = config.alert_from(day), config.alert_at(day)
+                near = [run for run in runs if opens <= run <= at + 60]
+                self.assertGreaterEqual(len(near), 3, f"config.toml's alert time on {name} and the run times in daily.yml no longer line up")
+
+    def test_the_safety_nets_in_plain_utc_fall_inside_each_days_window(self):
+        # A cron line without a time zone is in UTC, so it runs an hour earlier by the
+        # clock in winter. Whatever the season, one of them must land inside the
+        # window of a weekday and one inside the window of a weekend day.
+        config = config_module.load(ROOT / "config.toml")
+        workflow = (ROOT / ".github" / "workflows" / "daily.yml").read_text(encoding="utf-8")
+        plain = re.findall(r'- cron: "(\d+) (\d+) \* \* \*"\n(?!\s+timezone:)', workflow)
+        self.assertGreaterEqual(len(plain), 1)
+        for name, day in (("weekdays", date(2026, 11, 20)), ("weekends", date(2026, 11, 21))):
+            for season, ahead_of_utc in (("summer", 11), ("winter", 10)):
+                with self.subTest(name, season=season):
+                    local = [((int(hour) + ahead_of_utc) * 60 + int(minute)) % 1440 for minute, hour in plain]
+                    inside = [run for run in local if config.alert_from(day) <= run <= config.alert_at(day) + 60]
+                    self.assertTrue(inside, f"no plain-UTC run lands near the alert's time on {name} in {season}")
 
     def test_the_scheduled_job_cannot_post_twice(self):
         # Two things together keep a day to one post. Runs take turns, and each run

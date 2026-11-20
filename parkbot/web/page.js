@@ -543,7 +543,16 @@
       if (!able && !needsHome) return; // nothing to offer in this browser
 
       var device = /iPhone|iPod|Android.*Mobile/.test(agent) ? "phone" : "device";
-      var alertAt = clock(Math.floor(((data.alert && data.alert.from) || 870) / 60 + 0.5) * 60);
+      // When the alert goes out, in words: "4 PM on weekdays and 8 AM on weekends",
+      // or "4 PM" if the two times are the same. Empty if the page's data does not say.
+      var when = data.alert || {};
+      var times = "";
+      if (typeof when.weekdays === "number" && typeof when.weekends === "number") {
+        times = clock(when.weekdays);
+        if (when.weekends !== when.weekdays) times += " on weekdays and " + clock(when.weekends) + " on weekends";
+      }
+      // What the line under the button says while there is nothing else to say.
+      var resting = times ? "One alert a day, at about " + times + "." : "";
       var DAY = 24 * 3600 * 1000;
       var on = false;
       var busy = false;
@@ -554,7 +563,7 @@
           "choose “Add to Home Screen”, then open it from there and tap this button again.",
         blocked: "Notifications are blocked for this page. Allow them in your browser’s settings for this site, then tap the button again.",
         dismissed: "",
-        on: "Alerts are on for this " + device + ": one a day, at about " + alertAt + ". A first notification is on its way, to show that it works.",
+        on: "Alerts are on for this " + device + ". A first notification is on its way, to show that it works.",
         off: "Alerts are off for this " + device + ".",
         full: "No more devices can be added at the moment. Please try again another day.",
         // The browser itself said no. A private window is the usual reason, and a page cannot tell that it is in one.
@@ -565,8 +574,9 @@
       };
 
       function say(text) {
-        notifyNote.textContent = text;
-        notifyNote.hidden = !text;
+        var shown = text || resting;
+        notifyNote.textContent = shown;
+        notifyNote.hidden = !shown;
       }
 
       function show(isOn) {
@@ -770,6 +780,7 @@
       }
 
       show(false);
+      say("");
       notify.hidden = false;
       notify.addEventListener("click", function () {
         if (busy) return;

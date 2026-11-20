@@ -165,8 +165,19 @@ class NoticeInThePageDataTest(unittest.TestCase):
         plans = november_plans(built)
         for index in (1, 2, 7):
             with self.subTest(day=data["days"][index]["date"]):
-                expected = message.notice(plans[index], wet_evening(), config.post_from, config)
+                expected = message.notice(plans[index], wet_evening(), config.alert_from(plans[index].day), config)
                 self.assertEqual(data["days"][index]["notice"], expected)
+        # Saturday's alert goes out in the morning, before the booking starts, so its notice names the whole booking.
+        self.assertEqual(data["days"][1]["notice"]["title"], "🔴 Booked 10 AM to 6 PM")
+        self.assertEqual(message.notice(plans[1], wet_evening(), config.alert_from(FRIDAY), config)["title"], "🔴 Booked until 6 PM")
+
+    def test_at_the_weekend_todays_notice_is_written_for_the_morning(self):
+        saturday = FRIDAY + timedelta(days=1)
+        # The 6:17 AM check writes for the time the alert may first go out, half an hour before 8 AM.
+        early = self.data(at(saturday, 6, 17))["days"][0]
+        self.assertEqual((early["date"], early["notice"]["title"]), ("2026-11-21", "🔴 Booked 10 AM to 6 PM"))
+        # A check later in the day does not look back.
+        self.assertEqual(self.data(at(saturday, 11, 47))["days"][0]["notice"]["title"], "🔴 Booked until 6 PM")
 
     def test_an_earlier_forecast_is_named_only_in_todays_notice(self):
         forecast = wet_evening()
@@ -177,7 +188,7 @@ class NoticeInThePageDataTest(unittest.TestCase):
 
     def test_the_data_says_when_the_alert_goes_out_and_where_the_backend_is(self):
         data = self.data(at(FRIDAY, 14, 45))
-        self.assertEqual(data["alert"], {"from": 14 * 60 + 30, "until": 19 * 60})
+        self.assertEqual(data["alert"], {"weekdays": 15 * 60, "weekends": 8 * 60, "until": 19 * 60})
         self.assertIsNone(data["push"])
         data = self.data(at(FRIDAY, 14, 45), config=load_config(push_url=BACKEND))
         self.assertEqual(data["push"], BACKEND)
@@ -323,7 +334,11 @@ class ButtonTest(unittest.TestCase):
 
     def test_the_button_appears_where_notifications_can_work(self):
         result = self.press(agent=ANDROID, backend=GOOD, clicks=0)
-        self.assertEqual(result["states"][0], {"hidden": False, "label": "Get alerts on this phone", "disabled": False, "note": ""})
+        # The line under the button says when the alert comes, before anybody has pressed anything.
+        self.assertEqual(
+            result["states"][0],
+            {"hidden": False, "label": "Get alerts on this phone", "disabled": False, "note": "One alert a day, at about 3 PM on weekdays and 8 AM on weekends."},
+        )
         # Nothing is asked of the browser or the backend until the button is pressed.
         self.assertEqual(result["log"], {"requests": [], "registered": [], "subscribed": [], "unsubscribed": 0, "asked": 0})
 
@@ -364,13 +379,26 @@ class ButtonTest(unittest.TestCase):
                 "hidden": False,
                 "label": "Turn off alerts on this phone",
                 "disabled": False,
-                "note": "Alerts are on for this phone: one a day, at about 3 PM. A first notification is on its way, to show that it works.",
+                "note": "Alerts are on for this phone. A first notification is on its way, to show that it works.",
             },
         )
 
-    def test_the_note_names_the_time_the_alert_goes_out(self):
-        data = dict(self.data, alert={"from": 8 * 60 + 40, "until": 12 * 60})
-        self.assertIn("at about 9 AM", self.press(data, agent=ANDROID, backend=GOOD)["states"][1]["note"])
+    def test_the_line_under_the_button_names_the_times_the_alert_goes_out(self):
+        def resting(alert) -> str:
+            data = dict(self.data, alert=alert) if alert is not None else {key: value for key, value in self.data.items() if key != "alert"}
+            return self.press(data, agent=ANDROID, backend=GOOD, clicks=0)["states"][0]["note"]
+
+        self.assertEqual(resting({"weekdays": 16 * 60, "weekends": 8 * 60, "until": 19 * 60}), "One alert a day, at about 4 PM on weekdays and 8 AM on weekends.")
+        self.assertEqual(resting({"weekdays": 9 * 60 + 30, "weekends": 9 * 60 + 30, "until": 12 * 60}), "One alert a day, at about 9:30 AM.")
+        # Data that does not say when: the line stays empty and out of sight, and nothing is made up.
+        for unknown in (None, {}, {"from": 14 * 60 + 30, "until": 19 * 60}, {"weekdays": "16:00", "weekends": "08:00"}):
+            with self.subTest(alert=unknown):
+                self.assertEqual(resting(unknown), "")
+
+    def test_the_line_comes_back_when_there_is_nothing_else_to_say(self):
+        # A device that already has alerts on is reminded when they come.
+        result = self.press(agent=ANDROID, backend=GOOD, permission="granted", subscribed="https://push.example/mine", clicks=0)
+        self.assertEqual(result["states"][0]["note"], "One alert a day, at about 3 PM on weekdays and 8 AM on weekends.")
 
     def test_pressing_it_again_turns_them_off(self):
         result = self.press(agent=ANDROID, backend=GOOD, clicks=2)
@@ -432,7 +460,11 @@ class ButtonTest(unittest.TestCase):
 
     def test_closing_the_browsers_question_without_an_answer(self):
         result = self.press(agent=ANDROID, backend=GOOD, answer="default")
-        self.assertEqual(result["states"][1], {"hidden": False, "label": "Get alerts on this phone", "disabled": False, "note": ""})
+        # Nothing happened, so the line under the button says what it said before.
+        self.assertEqual(
+            result["states"][1],
+            {"hidden": False, "label": "Get alerts on this phone", "disabled": False, "note": "One alert a day, at about 3 PM on weekdays and 8 AM on weekends."},
+        )
 
     def test_notifications_blocked_earlier_are_not_asked_about_again(self):
         result = self.press(agent=ANDROID, backend=GOOD, permission="denied")

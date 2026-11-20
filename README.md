@@ -2,11 +2,11 @@
 
 Is the oval at Citizens Park in Richmond free for dogs today?
 
-The oval is a dog off-lead area, but dogs must stay off it while organised sport or training is on. This project checks the council's booking table and the rain forecast every day and tells people in three places:
+The oval is a dog off-lead area, but dogs must stay off it while organised sport or training is on. This project checks the council's booking table and the rain forecast every day and tells people in four places:
 
-- **A Telegram channel.** One post at about 3 PM Melbourne time, plus a quiet "week ahead" post on Sundays.
+- **A Telegram channel.** One post a day, at about 4 PM on weekdays and 8 AM on weekends (Melbourne time), plus a quiet "week ahead" post on Sundays.
 - **A web page.** Today's booked times hour by hour, the week ahead, rain by the hour in millimetres, and a QR code to share it: <https://citizensbark.com/>
-- **A notification on a phone.** The same alert at about 3 PM, for people who do not use Telegram. The button for it is on the web page.
+- **A notification on a phone.** The same alert at the same times, for people who do not use Telegram. The button for it is on the web page.
 - **Custom alerts from the Telegram bot.** The same alert in a private chat, at a time each person picks: one for weekdays and one for weekends. See [The Telegram bot](#the-telegram-bot).
 
 It is unofficial. It is not affiliated with the council or the sports clubs.
@@ -38,13 +38,13 @@ A post with no warning comes straight from the council's page. A post carries a 
 
 ## How it works
 
-A scheduled job on GitHub (the **Daily check** workflow) runs about nine times a day, from early morning to the evening. Each run:
+A scheduled job on GitHub (the **Daily check** workflow) runs about a dozen times a day, from early morning to the evening. Each run:
 
 1. reads the booking table on the [council's Citizens Park page](https://www.yarracity.vic.gov.au/things-to-do/parks-reserves-and-playgrounds/citizens-park)
 2. gets the rain forecast from [Open-Meteo](https://open-meteo.com/)
 3. works out today and the next seven days
 4. rebuilds the web page and publishes it with GitHub Pages
-5. posts to Telegram, once a day, on the first run after 2:30 PM
+5. posts to Telegram, once a day: on the first run from half an hour before the alert's time (4 PM on weekdays, 8 AM on weekends)
 6. saves what it learned in the `data/` folder
 
 Nothing needs a server, a database or a paid plan. The code uses only Python's standard library.
@@ -55,7 +55,7 @@ It is built to keep going when something fails:
 
 - If the council's page cannot be read, it uses the last good copy, and then the usual weekly pattern, and says so.
 - If the weather service's usual server does not answer, it asks the service's other server straight away. If that fails too, it tries again for a few minutes. Then it uses the last forecast that did load (up to 12 hours old) and says when it is from.
-- GitHub often starts scheduled jobs late, sometimes by many hours. So there are several runs each afternoon, of which only the first posts, and a [second timer](#the-second-timer) on Cloudflare starts a run that GitHub has missed.
+- GitHub often starts scheduled jobs late, sometimes by many hours. So there are three runs around the alert's time, of which only the first posts, and a [second timer](#the-second-timer) on Cloudflare starts a run that GitHub has missed.
 - If a source keeps failing, it opens an issue in this repository, and GitHub emails you. See [When something goes wrong](#when-something-goes-wrong).
 
 ## Everyday changes
@@ -71,7 +71,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | The tip button | `tip_url` in `config.toml`. Paste your Ko-fi link. Leave it empty to hide the button. |
 | The feedback button in "How this works" | `feedback_email` under `[site]` in `config.toml`. It opens an email to that address, which anyone can then read on the page. Leave it empty to hide the button. |
 | The usual weekly pattern | `schedule.toml`. It is only used on days the council's page does not cover. |
-| The time of the daily post | `post_from` in `config.toml`, the run times in `.github/workflows/daily.yml`, and `ALERT_FROM` and `CHECK_TIMES` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
+| The times of the daily alert | `weekdays` and `weekends` under `[alerts]` in `config.toml`, the run times in `.github/workflows/daily.yml` (the post run is set for 20 minutes before the alert's time), and `ALERT_WEEKDAYS`, `ALERT_WEEKENDS` and `CHECK_TIMES` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 | The hours searched for the best window on a rainy day | `advice_from` and `advice_until` under `[telegram]` in `config.toml` |
 | The hours people can pick in the Telegram bot, and the times a new chat starts with | The `[bot]` section of `config.toml`, and the `BOT_` settings in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 
@@ -100,7 +100,7 @@ The job watches itself. When there is a problem it opens an issue whose title st
 
 If the post did not arrive:
 
-1. Open **Actions** and look at the latest **Daily check** run. Its summary shows what happened. If there was no run this afternoon, start one by hand (see [Running it by hand](#running-it-by-hand)), then see [The second timer](#the-second-timer).
+1. Open **Actions** and look at the latest **Daily check** run. Its summary shows what happened. If there was no run around the alert's time, start one by hand (see [Running it by hand](#running-it-by-hand)), then see [The second timer](#the-second-timer).
 2. Check that the secret `TELEGRAM_BOT_TOKEN` exists (**Settings**, **Secrets and variables**, **Actions**).
 3. Check that the bot is an administrator of the channel and is allowed to post messages.
 4. Check that `channel` in `config.toml` matches the channel's link.
@@ -120,7 +120,7 @@ This part needs one thing the rest does not: a small program that is always ther
 How it works:
 
 - A browser gives each device an address for notifications, and the page hands that address to the backend. Nothing else is kept: no name, no email address, no location.
-- Every five minutes through the afternoon, the backend looks at the page's `data.json`. As soon as it shows that the afternoon's check has run, the backend sends that day's words to every device. If no check has run by 3:15 PM, it sends what the page has for the day, and says so if that is from an earlier day.
+- Every five minutes through the day, the backend looks at the clock. From half an hour before the alert's time (4 PM on weekdays, 8 AM on weekends) it reads the page's `data.json`. As soon as that shows a check from inside that half hour or later, the backend sends that day's words to every device. If no such check has run a quarter of an hour after the alert's time, it sends what the page has for the day, and says so if that is from an earlier day.
 - A new device gets one notification straight away, to show that it works.
 - A device that turns alerts off is removed at once. An address that has stopped working is removed the next time an alert goes out.
 - The words travel encrypted, so only the device can read them. The backend makes its own signing keys the first time it starts and never shows them, so there is no password for a person to keep.
@@ -139,7 +139,7 @@ The backend is put on Cloudflare by the **Alerts backend** workflow. It needs tw
 
 ### When notifications go wrong
 
-- **Nobody got today's alert.** Open <https://alerts.citizensbark.com>. `timer` shows what the backend last did and why, and `last` shows how the last alert went. "waiting for the afternoon's check" means the Daily check has not run since 2:30 PM. The alert still goes out at 3:15 PM.
+- **Nobody got today's alert.** Open <https://alerts.citizensbark.com>. `timer` shows what the backend last did and why, and `last` shows how the last alert went. "waiting for the check before the alert" means the Daily check has not run since half an hour before the alert's time. The alert still goes out a quarter of an hour after its time: at 4:15 PM on weekdays and 8:15 AM on weekends.
 - **One phone gets nothing.** On that phone, open the page, turn the alerts off and on again. A first notification should arrive within a few seconds. On an iPhone, the page must be opened from the Home Screen icon.
 - **The button is missing.** The browser cannot show notifications, or `url` under `[notifications]` is empty.
 - **`unknownServices` is not empty.** A browser uses a notification service that the backend does not know yet. Add its name to the list in `notifications/src/rules.js` if it belongs to a real browser.

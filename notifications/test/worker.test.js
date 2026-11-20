@@ -421,7 +421,7 @@ test("from the tap on the page to the afternoon's notification", async () => {
   net.page = pageData({ generated: `${TODAY}T11:47:00+11:00`, days: [day(TODAY)] });
   now = at(TODAY, "14:35");
   await tick(cf);
-  assert.equal((await (await ask(cf, "GET", "/status")).json()).timer.why, "waiting for the afternoon's check");
+  assert.equal((await (await ask(cf, "GET", "/status")).json()).timer.why, "waiting for the check before the alert");
 
   // It has run: the alert starts, and Cloudflare's wake-up call sends it.
   net.page = pageData({ generated: `${TODAY}T14:42:00+11:00`, days: [day(TODAY, "Booked 5 PM to 7:30 PM", "Cricket training.")] });

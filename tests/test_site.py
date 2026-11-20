@@ -176,13 +176,27 @@ class BuildTest(unittest.TestCase):
     def test_telegram_button_only_with_a_channel(self):
         page = self.build()
         self.assertIn('<a class="button" href="https://t.me/ExampleParkDogs" rel="noopener">Get alerts on Telegram</a>', page)
-        self.assertIn("A free alert goes out on Telegram at about 3 PM each day", page)
 
         page = self.build(load_config(channel=""))
         self.assertNotIn("Telegram", page)
         self.assertNotIn("t.me/", page)
         # With no channel and no tip link there are no buttons, so no empty row is left for them.
         self.assertNotIn("<nav", page)
+
+    def test_how_this_works_says_when_the_alert_goes_out_and_how_to_get_it(self):
+        channel = '<a href="https://t.me/ExampleParkDogs" rel="noopener">ExampleParkDogs</a>'
+        when = "A free alert goes out once a day, at about 3 PM on weekdays and 8 AM on weekends, "
+        # Only the ways that are set up are named.
+        self.assertIn(f"<p>{when}in the {channel} channel on Telegram.</p>", self.build())
+        both = self.build(load_config(push_url="https://alerts.example"))
+        self.assertIn(f"<p>{when}as a notification from this page and in the {channel} channel on Telegram.</p>", both)
+        only_phones = self.build(load_config(channel="", push_url="https://alerts.example"))
+        self.assertIn(f"<p>{when}as a notification from this page.</p>", only_phones)
+        self.assertNotIn("A free alert", self.build(load_config(channel="")))
+        # One time for every day is said once.
+        same = self.build(load_config(alert_weekends=15 * 60))
+        self.assertIn("A free alert goes out once a day, at about 3 PM, in the ", same)
+        self.assertEqual(site.alert_times(load_config(alert_weekdays=16 * 60)), "4 PM on weekdays and 8 AM on weekends")
 
     def test_tip_button_only_with_a_tip_link(self):
         self.assertNotIn("Leave a tip", self.build())
