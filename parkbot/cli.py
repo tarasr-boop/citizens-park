@@ -120,6 +120,9 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
             html = tools.fetch(config.council_url, config.user_agent, accept="text/html,application/xhtml+xml")
         except fetch.FetchError as error:
             council_problem = f"the page could not be fetched: {error}"
+        except Exception as error:  # noqa: BLE001 - a surprise while fetching must not stop today's post
+            say(traceback.format_exc())
+            council_problem = f"fetching the page failed unexpectedly ({_unexpected(error)})"
 
     if html is not None:
         if options.show_sources:
@@ -185,6 +188,9 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
             addresses = tools.lookup(forecast_url)
             if addresses:
                 say(f"Rain forecast: the weather service's address at the time was {', '.join(addresses)}")
+        except Exception as error:  # noqa: BLE001 - the post goes out without rain rather than not at all
+            say(traceback.format_exc())
+            weather_problem = f"fetching the forecast failed unexpectedly ({_unexpected(error)})"
         else:
             # Remember the server that answered, so that a later run can turn to it.
             if detours:

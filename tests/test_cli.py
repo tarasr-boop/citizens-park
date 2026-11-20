@@ -216,6 +216,28 @@ class RunTest(unittest.TestCase):
         self.assertIn("Usually booked 4 to 8 PM", self.world.sent[0]["text"])
         self.assertIn("The council's page could not be read.", self.world.sent[0]["text"])
 
+    def test_a_surprise_while_fetching_never_stops_the_post(self):
+        # Not one of the failures the fetching code knows about: a fault in the code itself.
+        self.world.council_html = RuntimeError("no such thing")
+        self.world.forecast = ZeroDivisionError("division by zero")
+        self.assertEqual(self.world.run("2026-11-20T14:45"), 0)
+        text = self.world.sent[0]["text"]
+        self.assertIn("Usually booked 4 to 8 PM", text)
+        self.assertIn("No rain forecast available.", text)
+        state = self.world.state()
+        self.assertEqual((state.council_failures, state.weather_failures), (1, 1))
+        self.assertEqual(state.council_error, "fetching the page failed unexpectedly (RuntimeError: no such thing)")
+        self.assertEqual(state.weather_error, "fetching the forecast failed unexpectedly (ZeroDivisionError: division by zero)")
+        self.assertIn("Traceback", self.world.said())
+        self.assertEqual(state.last_daily_post, date(2026, 11, 20))
+
+    def test_a_surprise_from_the_forecast_still_falls_back_to_the_saved_copy(self):
+        self.world.forecast = self.wet_evening()
+        self.world.run("2026-11-20T11:50")
+        self.world.forecast = RuntimeError("no such thing")
+        self.assertEqual(self.world.run("2026-11-20T14:45"), 0)
+        self.assertIn("(up to 80%, about 3 mm). Forecast from 11:50 AM.", self.world.sent[0]["text"])
+
     def test_the_watchdog_hears_about_repeated_failures(self):
         self.world.council_html = fetch.FetchError("the server answered 403")
         for moment in ("06:20", "11:50", "14:45", "15:15"):
