@@ -20,6 +20,7 @@ class FakeWorld:
         self.folder = folder
         self.council_html: str | Exception = october_html()
         self.forecast: str | Exception | None = None  # None: build one for the day of the run
+        self.fetches: list[tuple[str, dict]] = []
         self.send_error: Exception | None = None
         self.sent: list[dict] = []
         self.lines: list[str] = []
@@ -27,7 +28,8 @@ class FakeWorld:
         self.environ: dict[str, str] = {"TELEGRAM_BOT_TOKEN": "123:test-token"}
         self.first_day = date(2026, 11, 20)
 
-    def fetch(self, url, user_agent, **_kwargs):
+    def fetch(self, url, user_agent, **kwargs):
+        self.fetches.append((url, kwargs))
         if "open-meteo" in url:
             source = self.forecast if self.forecast is not None else forecast_json(self.first_day, 8)
         else:
@@ -47,7 +49,14 @@ class FakeWorld:
         return []
 
     def tools(self) -> cli.Tools:
-        return cli.Tools(fetch=self.fetch, send=self.send, sync_issues=self.sync_issues, environ=self.environ, say=self.lines.append)
+        return cli.Tools(
+            fetch=self.fetch,
+            send=self.send,
+            sync_issues=self.sync_issues,
+            lookup=lambda url: "192.0.2.7",  # never look anything up on the real network
+            environ=self.environ,
+            say=self.lines.append,
+        )
 
     def run(self, now: str, post: str = "auto", **extra) -> int:
         self.first_day = date.fromisoformat(now[:10])
@@ -252,17 +261,36 @@ class RunTest(unittest.TestCase):
         self.assertIn("No rain forecast available.", self.world.sent[0]["text"])
         self.assertNotIn("Forecast from", self.world.sent[0]["text"])
 
-    def test_the_forecast_copy_is_replaced_only_every_couple_of_hours(self):
+    def test_the_forecast_copy_is_replaced_at_most_once_an_hour(self):
         self.world.run("2026-11-20T11:50")
         first = self.forecast_copy().read_text(encoding="utf-8")
         self.assertIn('"fetched": "2026-11-20T11:50+11:00"', first)
         self.world.run("2026-11-20T12:30")  # too soon: nothing new to save
         self.assertEqual(self.forecast_copy().read_text(encoding="utf-8"), first)
+        self.world.run("2026-11-20T13:50")  # the early-afternoon run, so the post has a recent copy to fall back on
+        self.assertIn('"fetched": "2026-11-20T13:50+11:00"', self.forecast_copy().read_text(encoding="utf-8"))
         self.world.run("2026-11-20T14:45")
-        self.assertIn('"fetched": "2026-11-20T14:45+11:00"', self.forecast_copy().read_text(encoding="utf-8"))
+        self.assertIn('"fetched": "2026-11-20T13:50+11:00"', self.forecast_copy().read_text(encoding="utf-8"))
         self.world.run("2026-11-20T15:15")
         self.world.run("2026-11-20T15:50")
-        self.assertIn('"fetched": "2026-11-20T14:45+11:00"', self.forecast_copy().read_text(encoding="utf-8"))
+        self.assertIn('"fetched": "2026-11-20T15:15+11:00"', self.forecast_copy().read_text(encoding="utf-8"))
+
+    def test_the_forecast_is_asked_for_patiently(self):
+        self.world.run("2026-11-20T14:45")
+        (kwargs,) = [kwargs for url, kwargs in self.world.fetches if "open-meteo" in url]
+        tries, timeout, pause = kwargs["tries"], kwargs["timeout"], kwargs["pause"]
+        # fetch.get waits pause, 2 x pause, 3 x pause ... between its tries.
+        longest = tries * timeout + pause * sum(range(1, tries))
+        self.assertGreaterEqual(tries, 4)
+        self.assertGreaterEqual(longest, 120, "long enough to outlast a one-minute stall")
+        self.assertLessEqual(longest, 240, "short enough that the post still goes out at about the usual time")
+
+    def test_a_forecast_that_will_not_load_notes_the_services_address(self):
+        self.world.forecast = fetch.FetchError("could not connect (The handshake operation timed out)")
+        self.world.run("2026-11-20T14:45")
+        self.assertIn("Rain forecast: the weather service's address at the time was 192.0.2.7", self.world.said())
+        # It is a note in the log only. Nothing about it is saved in the public data folder.
+        self.assertNotIn("192.0.2.7", (Path(self._folder.name) / "data" / "state.json").read_text(encoding="utf-8"))
 
     def test_a_failed_forecast_never_replaces_the_copy(self):
         self.world.run("2026-11-20T06:20")

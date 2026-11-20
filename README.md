@@ -47,7 +47,7 @@ Nothing needs a server, a database or a paid plan. The code uses only Python's s
 It is built to keep going when something fails:
 
 - If the council's page cannot be read, it uses the last good copy, and then the usual weekly pattern, and says so.
-- If the forecast does not load, it uses the last one that did (up to 12 hours old) and says when it is from.
+- If the forecast does not load, it tries again for a few minutes. Then it uses the last one that did load (up to 12 hours old) and says when it is from.
 - GitHub often starts scheduled jobs late, so there are several runs each afternoon. Only the first one posts.
 - If a source keeps failing, it opens an issue in this repository, and GitHub emails you. See [When something goes wrong](#when-something-goes-wrong).
 
@@ -84,7 +84,7 @@ The job watches itself. When there is a problem it opens an issue whose title st
 | --- | --- | --- |
 | The council page cannot be read | Four checks in a row failed. | Open the council's page in a browser. If it looks normal, the layout of its table may have changed and the reader needs an update. |
 | The council page is out of date | The page has not covered today for a week. | Nothing is broken. Posts use the usual pattern. Update `schedule.toml` if the pattern has changed. |
-| The rain forecast cannot be read | Four checks in a row got no forecast. | Usually it fixes itself. Posts go out without the rain line. |
+| The rain forecast cannot be read | Four checks in a row got no forecast. | Usually it fixes itself. Posts use the last forecast that loaded for up to 12 hours, then go out without the rain line. |
 | The Telegram post is not going out | Telegram refused the post. | The issue says why. See the list below. |
 
 If the post did not arrive:

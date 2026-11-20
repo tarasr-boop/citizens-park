@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import traceback
+import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -37,7 +39,23 @@ DAYS_AHEAD = 8
 # does not answer, a copy up to this old stands in, and the post says when it is from.
 FORECAST_COPY_MAX_AGE = timedelta(hours=12)
 # A fresh forecast replaces the copy only this often, to keep the saved data quiet.
-FORECAST_KEEP_EVERY = timedelta(hours=2)
+FORECAST_KEEP_EVERY = timedelta(hours=1)
+# From GitHub's runners the weather service now and then accepts a connection and
+# then says nothing for a minute or so. So the forecast is asked for patiently:
+# five tries spread over about two and a half minutes.
+FORECAST_TIMEOUT = 12  # seconds for each try
+FORECAST_TRIES = 5
+FORECAST_PAUSE = 10  # seconds after the first failed try, then 20, 30 and 40
+
+
+def _addresses(url: str) -> str:
+    """The addresses a web address leads to right now, for the log. Empty if they cannot be found."""
+    try:
+        host = urllib.parse.urlsplit(url).hostname or ""
+        found = {info[4][0] for info in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)}
+    except Exception:  # noqa: BLE001 - this is only a note in the log
+        return ""
+    return ", ".join(sorted(found))
 
 
 @dataclass
@@ -47,6 +65,7 @@ class Tools:
     fetch: Callable[..., str] = fetch.get
     send: Callable[..., int] = telegram.send
     sync_issues: Callable[[list[watchdog.Alert]], list[str]] = watchdog.sync
+    lookup: Callable[[str], str] = _addresses
     environ: Mapping[str, str] = field(default_factory=lambda: os.environ)
     say: Callable[[str], None] = print
 
@@ -153,15 +172,22 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     if options.weather_file:
         forecast_text = Path(options.weather_file).read_text(encoding="utf-8", errors="replace")
     elif live:
+        forecast_url = weather.url(config.latitude, config.longitude, config.timezone_name, DAYS_AHEAD)
         try:
             forecast_text = tools.fetch(
-                weather.url(config.latitude, config.longitude, config.timezone_name, DAYS_AHEAD),
+                forecast_url,
                 config.user_agent,
                 accept="application/json",
-                timeout=15,
+                timeout=FORECAST_TIMEOUT,
+                tries=FORECAST_TRIES,
+                pause=FORECAST_PAUSE,
             )
         except fetch.FetchError as error:
             weather_problem = f"the forecast could not be fetched: {error}"
+            # Which of the service's servers was it? Worth knowing if this keeps happening.
+            addresses = tools.lookup(forecast_url)
+            if addresses:
+                say(f"Rain forecast: the weather service's address at the time was {addresses}")
     if forecast_text is not None:
         if options.show_sources:
             say(f"Forecast: {len(forecast_text)} characters, starts {forecast_text[:300]!r}")

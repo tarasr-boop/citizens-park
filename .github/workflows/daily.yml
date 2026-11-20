@@ -13,6 +13,10 @@ on:
       timezone: "Australia/Melbourne"
     - cron: "47 11 * * *"
       timezone: "Australia/Melbourne"
+    # Shortly before the post, so that a recent forecast is saved in case the
+    # weather service does not answer the post run.
+    - cron: "47 13 * * *"
+      timezone: "Australia/Melbourne"
     - cron: "40 14 * * *"
       timezone: "Australia/Melbourne"
     - cron: "10 15 * * *"
@@ -58,7 +62,7 @@ jobs:
   check:
     name: Check, post and build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     outputs:
       page: ${{ steps.check.outputs.page }}
     steps:
