@@ -39,7 +39,7 @@ advice_until = "21:00"
 name = "Citizens Bark"
 # The public address of the page. The QR code points here, so if this ever
 # changes, the QR code must be made again (see the README).
-url = "https://tarasr-boop.github.io/citizens-park/"
+url = "https://citizensbark.com/"
 # Paste your Ko-fi link here to show a tip button, for example "https://ko-fi.com/yourname".
 # Leave it empty to hide the button.
 tip_url = ""

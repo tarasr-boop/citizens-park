@@ -5,7 +5,7 @@ Is the oval at Citizens Park in Richmond free for dogs today?
 The oval is a dog off-lead area, but dogs must stay off it while organised sport or training is on. This project checks the council's booking table and the rain forecast every day and tells people in two places:
 
 - **A Telegram channel.** One post at about 3 PM Melbourne time, plus a quiet "week ahead" post on Sundays.
-- **A web page.** Today's booked times hour by hour, the week ahead, rain by the hour in millimetres, and a QR code to share it: <https://tarasr-boop.github.io/citizens-park/>
+- **A web page.** Today's booked times hour by hour, the week ahead, rain by the hour in millimetres, and a QR code to share it: <https://citizensbark.com/>
 
 It is unofficial. It is not affiliated with the council or the sports clubs.
 
