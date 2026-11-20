@@ -1,13 +1,19 @@
 // The Telegram bot: custom alerts, at a time each person chooses.
 //
 // Someone opens a chat with the bot and presses Start. From then on they get
-// the day's alert at 4 PM on weekdays and 8 AM on weekends, and two buttons
-// let them pick another hour for each, or none. They can pause the alerts and
-// resume them; their times are kept.
+// the day's alert at 4 PM on weekdays and 8 AM on weekends. One message in the
+// chat shows their times ("Your alerts"), with buttons under it to change
+// them or to pause the alerts; their times are kept while paused.
+//
+// The chat is kept tidy: a message that is no longer true goes away. A new
+// "Your alerts" takes the place of the last one, the picker for a time goes
+// once a time is chosen, a tap on a command is removed, and a new alert takes
+// the place of yesterday's.
 //
 // What is kept for a chat is only what the bot needs to write to it: the
-// chat's number, the two hours, whether it is paused, and the last day it was
-// sent an alert for. No name, no user name, nothing they wrote.
+// chat's number, the two hours, whether it is paused, the last day it was
+// sent an alert for, and the numbers of the bot's own messages that are still
+// there. No name, no user name, nothing they wrote.
 //
 // The alert itself is written by the daily check, which publishes the words
 // for every hour in telegram.json next to the page. At each hour this sends
@@ -30,10 +36,11 @@ const TELEGRAM = "https://api.telegram.org";
 
 // More chats than this are not taken on.
 export const MOST_CHATS = 5000;
-// How many alerts go out in one round. Telegram takes about 30 messages a
-// second from a bot, and Cloudflare's free plan allows 50 outgoing requests
+// How many alerts go out in one round. Each takes two requests to Telegram
+// (the alert, and taking away the last one), Telegram takes about 30 messages
+// a second from a bot, and Cloudflare's free plan allows 50 outgoing requests
 // each time this code is woken.
-export const BATCH = 25;
+export const BATCH = 20;
 const PAUSE_MS = 1000;
 // Words written longer ago than this carry a warning that they may be out of date.
 export const STALE_HOURS = 18;
@@ -47,6 +54,11 @@ const HOOK_RETRY_MS = 30 * 60 * 1000;
 const UPDATES = ["message", "callback_query", "my_chat_member"];
 // The two columns a person's hours are kept in. Only these names ever go into a query.
 const COLUMN = { weekday: "weekday", weekend: "weekend" };
+// The columns that hold the numbers of the bot's messages that are still in a
+// chat: its times, the picker, and the last alert. And whether the chat still
+// has the bottom buttons an earlier version of the bot showed (1 once they are gone).
+const MESSAGES = { summary: "summary", picker: "picker", alert: "alert" };
+const ADDED_COLUMNS = ["summary INTEGER", "picker INTEGER", "alert INTEGER", "tidy INTEGER NOT NULL DEFAULT 0"];
 
 function reply(status, body) {
   return { status, body };
@@ -78,7 +90,15 @@ function same(given, kept) {
 
 /** A chat as it is kept, in the shape the words want: `{ id, weekday, weekend, paused }`. */
 function chatFrom(row) {
-  return { id: row.id, weekday: row.weekday ?? null, weekend: row.weekend ?? null, paused: Boolean(row.paused) };
+  return {
+    id: row.id,
+    weekday: row.weekday ?? null,
+    weekend: row.weekend ?? null,
+    paused: Boolean(row.paused),
+    summary: row.summary ?? null,
+    picker: row.picker ?? null,
+    tidy: Boolean(row.tidy),
+  };
 }
 
 export class Bot {
@@ -108,6 +128,11 @@ export class Bot {
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS chats (id INTEGER PRIMARY KEY, weekday INTEGER, weekend INTEGER, paused INTEGER NOT NULL DEFAULT 0, added INTEGER NOT NULL, last TEXT)"
     );
+    // Columns added after the first version. A table made by that version gets them now.
+    const have = new Set(this.rows("SELECT name FROM pragma_table_info('chats')").map((row) => row.name));
+    for (const column of ADDED_COLUMNS) {
+      if (!have.has(column.split(" ")[0])) this.sql.exec(`ALTER TABLE chats ADD COLUMN ${column}`);
+    }
   }
 
   rows(query, ...values) {
@@ -115,7 +140,7 @@ export class Bot {
   }
 
   chat(id) {
-    const [row] = this.rows("SELECT id, weekday, weekend, paused FROM chats WHERE id = ?", id);
+    const [row] = this.rows("SELECT id, weekday, weekend, paused, summary, picker, tidy FROM chats WHERE id = ?", id);
     return row ? chatFrom(row) : null;
   }
 
@@ -177,7 +202,9 @@ export class Bot {
       hook = { secret: toBase64Url(crypto.getRandomValues(new Uint8Array(32))) };
     }
     const wanted = `${await markOf(this.token)} ${bot.address}`;
-    if (hook.wanted === wanted && now - hook.at < (hook.ok ? HOOK_AGAIN_MS : HOOK_RETRY_MS)) return hook;
+    const described = words.description(bot.park);
+    const fresh = now - hook.at < (hook.ok ? HOOK_AGAIN_MS : HOOK_RETRY_MS);
+    if (hook.wanted === wanted && fresh && (!hook.ok || hook.described === described)) return hook;
 
     const me = await this.telegram("getMe");
     if (!me.ok) {
@@ -190,15 +217,9 @@ export class Bot {
     const set = await this.telegram("setWebhook", { url: bot.address, secret_token: hook.secret, allowed_updates: UPDATES, max_connections: 10 });
     if (set.ok && hook.wanted !== wanted) {
       await this.telegram("setMyCommands", { commands: words.COMMANDS });
-      // A description someone wrote with @BotFather is left as it is.
-      const long = await this.telegram("getMyDescription");
-      if (long.ok && !(long.result && long.result.description)) await this.telegram("setMyDescription", { description: words.description(bot.park, bot) });
-      const short = await this.telegram("getMyShortDescription");
-      if (short.ok && !(short.result && short.result.short_description)) {
-        await this.telegram("setMyShortDescription", { short_description: words.shortDescription(bot.park) });
-      }
       this.log("the bot is set up");
     }
+    if (set.ok && (hook.wanted !== wanted || hook.described !== described)) await this.describe(described);
     // How Telegram's deliveries to this backend have gone, for the status page.
     const info = set.ok ? await this.telegram("getWebhookInfo") : null;
     const about = info && info.ok && info.result && typeof info.result === "object" ? info.result : {};
@@ -208,6 +229,7 @@ export class Bot {
       at: now,
       ok: set.ok,
       answer: set.status,
+      described: set.ok ? described : hook.described || "",
       name: me.result && typeof me.result.username === "string" ? cut(me.result.username, 64) : "",
       pending: Number.isInteger(about.pending_update_count) ? about.pending_update_count : null,
       error: typeof about.last_error_message === "string" ? cut(about.last_error_message, 100) : set.ok ? "" : set.description,
@@ -216,6 +238,25 @@ export class Bot {
     await this.storage.put("hook", hook);
     if (!set.ok) this.log(`the bot: Telegram did not take the address for messages (answer ${set.status})`);
     return hook;
+  }
+
+  /**
+   * Give the bot its description: the words in an empty chat before someone
+   * presses Start, and the shorter one on its profile. A description someone
+   * wrote with @BotFather is left as it is; only an empty one, or one an
+   * earlier version of the bot wrote, is replaced.
+   */
+  async describe(text) {
+    const bot = this.settings.bot;
+    const ours = new Set(["", text, ...words.earlierDescriptions(bot.park, bot)]);
+    for (const [get, set, field] of [
+      ["getMyDescription", "setMyDescription", "description"],
+      ["getMyShortDescription", "setMyShortDescription", "short_description"],
+    ]) {
+      const now = await this.telegram(get);
+      const there = now.ok && now.result && typeof now.result[field] === "string" ? now.result[field] : null;
+      if (there !== null && there !== text && ours.has(there)) await this.telegram(set, { [field]: text });
+    }
   }
 
   /**
@@ -257,37 +298,84 @@ export class Bot {
   start(id) {
     if (this.count() >= MOST_CHATS) return null;
     const bot = this.settings.bot;
-    this.sql.exec("INSERT INTO chats (id, weekday, weekend, paused, added) VALUES (?, ?, ?, 0, ?) ON CONFLICT (id) DO NOTHING", id, bot.weekday, bot.weekend, this.now());
+    this.sql.exec(
+      "INSERT INTO chats (id, weekday, weekend, paused, added, tidy) VALUES (?, ?, ?, 0, ?, 1) ON CONFLICT (id) DO NOTHING",
+      id,
+      bot.weekday,
+      bot.weekend,
+      this.now()
+    );
     this.log("a chat started");
     return this.chat(id);
+  }
+
+  /** Take one message out of a chat. A message that is already gone, or too old for Telegram to take away, is left. */
+  async remove(id, messageId) {
+    if (Number.isSafeInteger(messageId)) await this.telegram("deleteMessage", { chat_id: id, message_id: messageId });
+  }
+
+  /** Write down the number of one of the bot's messages that is now in the chat, or null once it is gone. */
+  keep(id, which, messageId) {
+    this.sql.exec(`UPDATE chats SET ${MESSAGES[which]} = ? WHERE id = ?`, Number.isSafeInteger(messageId) ? messageId : null, id);
+  }
+
+  /** The number of the message Telegram says it sent, or null. */
+  static sentId(said) {
+    return said.ok && said.result && Number.isSafeInteger(said.result.message_id) ? said.result.message_id : null;
+  }
+
+  /**
+   * A chat from an earlier version of the bot still has its two bottom
+   * buttons. A message that takes them away is sent, and taken away itself.
+   */
+  async tidy(chat) {
+    if (chat.tidy) return;
+    const said = await this.send(chat.id, { text: "🐕", reply_markup: { remove_keyboard: true } });
+    await this.remove(chat.id, Bot.sentId(said));
+    this.sql.exec("UPDATE chats SET tidy = 1 WHERE id = ?", chat.id);
+  }
+
+  /** Show a person's times in a new message at the bottom of the chat, and take away the one before. */
+  async showSummary(id) {
+    const chat = this.chat(id);
+    await this.tidy(chat);
+    const said = await this.send(id, words.summaryMessage(chat, this.settings.bot));
+    await this.remove(id, chat.summary);
+    this.keep(id, "summary", Bot.sentId(said));
+  }
+
+  /** Open the picker for a time, in a new message, and take away a picker left open before. */
+  async showPicker(id) {
+    const chat = this.chat(id);
+    await this.tidy(chat);
+    const said = await this.send(id, words.pickerMessage());
+    await this.remove(id, chat.picker);
+    this.keep(id, "picker", Bot.sentId(said));
   }
 
   async wrote(message) {
     const id = this.privateChat(message.chat);
     if (!id || (message.from && message.from.is_bot)) return;
-    const bot = this.settings.bot;
     const intent = words.intentOf(message.text);
     let chat = this.chat(id);
-    if (!chat || intent === "start") {
-      chat = chat || this.start(id);
+    if (!chat) {
+      chat = this.start(id);
       if (!chat) {
         await this.send(id, { text: words.FULL });
         return;
       }
-      await this.send(id, words.welcomeMessage(chat, bot.park));
-      await this.send(id, words.timesMessage(chat, bot));
+    }
+    // A command, or a tap on an old bottom button, has done its job once it is understood.
+    if (intent !== "other") await this.remove(id, message.message_id);
+    if (intent === "settings") {
+      await this.showPicker(id);
       return;
     }
-    if (intent === "pause" || intent === "resume") {
-      this.sql.exec("UPDATE chats SET paused = ? WHERE id = ?", intent === "pause" ? 1 : 0, id);
-      chat = this.chat(id);
-      await this.send(id, intent === "pause" ? words.pausedMessage(chat) : words.resumedMessage(chat, bot));
-      return;
-    }
-    await this.send(id, words.timesMessage(chat, bot));
+    if (intent === "pause" || intent === "resume") this.sql.exec("UPDATE chats SET paused = ? WHERE id = ?", intent === "pause" ? 1 : 0, id);
+    await this.showSummary(id);
   }
 
-  /** A button under one of the bot's messages was pressed. The message changes in place. */
+  /** A button under one of the bot's messages was pressed. */
   async pressed(query) {
     const where = query.message || {};
     const id = this.privateChat(where.chat);
@@ -298,17 +386,34 @@ export class Bot {
     if (!id || !button || !Number.isSafeInteger(where.message_id)) return;
     let chat = this.chat(id) || this.start(id);
     if (!chat) return;
-    let message;
-    if (button.action === "pick") {
-      message = words.hoursMessage(chat, button.kind, bot);
-    } else if (button.action === "set") {
-      this.sql.exec(`UPDATE chats SET ${COLUMN[button.kind]} = ? WHERE id = ?`, button.hour, id);
-      chat = this.chat(id);
-      message = words.timesMessage(chat, bot, words.chosenLine(button.kind, button.hour, bot));
+    const edit = (message) => this.telegram("editMessageText", { chat_id: id, message_id: where.message_id, ...message });
+    if (button.action === "change") {
+      await this.showPicker(id);
+    } else if (button.action === "pick") {
+      await edit(words.hoursMessage(chat, button.kind, bot));
+      // The message pressed is the picker now, wherever it came from.
+      if (chat.picker !== where.message_id) {
+        await this.remove(id, chat.picker);
+        this.keep(id, "picker", where.message_id);
+      }
+    } else if (button.action === "back") {
+      await edit(words.pickerMessage());
+    } else if (button.action === "close") {
+      await this.remove(id, where.message_id);
+      if (chat.picker === where.message_id) this.keep(id, "picker", null);
     } else {
-      message = words.timesMessage(chat, bot);
+      if (button.action === "set") this.sql.exec(`UPDATE chats SET ${COLUMN[button.kind]} = ? WHERE id = ?`, button.hour, id);
+      else this.sql.exec("UPDATE chats SET paused = ? WHERE id = ?", button.action === "pause" ? 1 : 0, id);
+      if (button.action === "set") {
+        // A time is chosen: the picker has done its job.
+        await this.remove(id, where.message_id);
+        if (chat.picker === where.message_id) this.keep(id, "picker", null);
+      } else if (chat.summary !== where.message_id) {
+        // Pause or resume pressed under an older "Your alerts": that one goes too.
+        await this.remove(id, where.message_id);
+      }
+      await this.showSummary(id);
     }
-    await this.telegram("editMessageText", { chat_id: id, message_id: where.message_id, ...message });
   }
 
   /** The page's words for the alerts, published by the daily check. */
@@ -398,7 +503,7 @@ export class Bot {
     // Everyone whose time for this kind of day is this hour, who is not paused,
     // and who has not had an alert about that day yet, in turn.
     const chats = this.rows(
-      `SELECT id FROM chats WHERE paused = 0 AND ${COLUMN[job.kind]} = ? AND id > ? AND (last IS NULL OR last <> ?) ORDER BY id LIMIT ?`,
+      `SELECT id, alert FROM chats WHERE paused = 0 AND ${COLUMN[job.kind]} = ? AND id > ? AND (last IS NULL OR last <> ?) ORDER BY id LIMIT ?`,
       job.hour,
       job.after,
       job.about,
@@ -406,7 +511,7 @@ export class Bot {
     );
     let wait = PAUSE_MS;
     let slowed = false;
-    for (const { id } of chats) {
+    for (const { id, alert } of chats) {
       const said = await this.send(id, { text: job.text, parse_mode: "HTML", link_preview_options: { is_disabled: true } });
       if (said.status === 429) {
         // Too many at once: this chat is tried again after the wait Telegram asks for.
@@ -416,7 +521,9 @@ export class Bot {
       }
       if (said.ok) {
         job.sent += 1;
-        this.sql.exec("UPDATE chats SET last = ? WHERE id = ?", job.about, id);
+        this.sql.exec("UPDATE chats SET last = ?, alert = ? WHERE id = ?", job.about, Bot.sentId(said), id);
+        // The alert before this one is no longer true.
+        await this.remove(id, alert);
       } else if (said.status === 403 || (said.status === 400 && /chat not found|deactivated/i.test(said.description))) {
         // The person blocked the bot, or their account is gone.
         job.gone += 1;

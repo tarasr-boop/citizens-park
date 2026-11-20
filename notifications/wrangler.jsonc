@@ -49,7 +49,11 @@
     "BOT_LAST": "23:00",
     "BOT_EVENING": "21:00",
     "BOT_WEEKDAY": "16:00",
-    "BOT_WEEKEND": "08:00"
+    "BOT_WEEKEND": "08:00",
+    // A button under each person's times, and where it leads. Make BOT_LINK
+    // empty ("") to leave it out.
+    "BOT_LINK": "https://www.instagram.com/gentle_woof",
+    "BOT_LINK_TEXT": "Book a consultation with Sofia"
   },
 
   // The timer. The first line is every five minutes, except from noon to 7 PM

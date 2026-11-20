@@ -113,6 +113,8 @@ test("the settings in wrangler.jsonc are ones the backend takes", () => {
     "BOT_EVENING",
     "BOT_FIRST",
     "BOT_LAST",
+    "BOT_LINK",
+    "BOT_LINK_TEXT",
     "BOT_WEEKDAY",
     "BOT_WEEKEND",
     "CHECK_BRANCH",
@@ -133,7 +135,19 @@ test("the settings in wrangler.jsonc are ones the backend takes", () => {
 
 test("the bot's settings are read as hours, and ones that make no sense are turned down", () => {
   const bot = settingsFrom({ ...ENV, ...BOT }).bot;
-  assert.deepEqual(bot, { address: "https://alerts.example/telegram", park: "Citizens Park oval", first: 4, last: 23, evening: 21, weekday: 16, weekend: 8 });
+  assert.deepEqual(bot, {
+    address: "https://alerts.example/telegram",
+    park: "Citizens Park oval",
+    link: "https://www.instagram.com/gentle_woof",
+    linkText: "Book a consultation with Sofia",
+    first: 4,
+    last: 23,
+    evening: 21,
+    weekday: 16,
+    weekend: 8,
+  });
+  // The link is optional, and without it there is no button for it.
+  assert.deepEqual([settingsFrom({ ...ENV, ...BOT, BOT_LINK: "" }).bot.link, settingsFrom({ ...ENV, ...BOT, BOT_LINK: undefined, BOT_LINK_TEXT: undefined }).bot.link], ["", ""]);
   // Without them there is no bot.
   assert.equal(settingsFrom(ENV).bot, null);
   const wrong = [
@@ -143,6 +157,9 @@ test("the bot's settings are read as hours, and ones that make no sense are turn
     [{ BOT_LAST: undefined }, /BOT_LAST/],
     [{ BACKEND_URL: "alerts.example" }, /BACKEND_URL/],
     [{ BACKEND_URL: "http://alerts.example" }, /https/],
+    [{ BOT_LINK: "http://www.instagram.com/gentle_woof" }, /BOT_LINK/],
+    [{ BOT_LINK: "not a link" }, /BOT_LINK/],
+    [{ BOT_LINK_TEXT: "" }, /BOT_LINK_TEXT/],
   ];
   for (const [change, reason] of wrong) {
     assert.throws(() => settingsFrom({ ...ENV, ...BOT, ...change }), reason, JSON.stringify(change));

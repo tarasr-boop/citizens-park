@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { BATCH, Bot, MOST_CHATS, STALE_HOURS } from "../src/bot.js";
-import { BUTTONS, FULL, buttonOf, intentOf } from "../src/botwords.js";
+import { BUTTONS, FULL, buttonOf, earlierDescriptions, intentOf } from "../src/botwords.js";
 import { settingsFrom } from "../src/rules.js";
 import { BOT, BOT_NAME, BOT_TOKEN, ENV, TELEGRAM, at, clock, memorySql, memoryStorage, runAlarms, world } from "./standins.js";
 
@@ -67,6 +67,8 @@ function chats(it, rows) {
 }
 
 const sentTo = (it) => it.net.said.map((one) => one.chat_id);
+/** How many alerts went out, leaving out the bot's other messages. */
+const alertsSent = (it) => it.net.said.filter((one) => /^🐕 <b>Citizens Park oval<\/b>/.test(one.text)).length;
 
 // ---------------------------------------------------------------------------
 // The words and buttons
@@ -97,7 +99,9 @@ test("what people write is understood: commands, the buttons at the bottom, and 
 
 test("only the bot's own buttons, with hours people may choose, are taken", () => {
   const bot = settings.bot;
-  assert.deepEqual(buttonOf("menu", bot), { action: "menu" });
+  for (const action of ["change", "back", "close", "pause", "resume"]) assert.deepEqual(buttonOf(action, bot), { action });
+  // An earlier version's button still leads back to the picker.
+  assert.deepEqual(buttonOf("menu", bot), { action: "back" });
   assert.deepEqual(buttonOf("pick:weekend", bot), { action: "pick", kind: "weekend" });
   assert.deepEqual(buttonOf("set:weekday:7", bot), { action: "set", kind: "weekday", hour: 7 });
   assert.deepEqual(buttonOf("set:weekend:none", bot), { action: "set", kind: "weekend", hour: null });
@@ -120,7 +124,7 @@ test("without its token or its settings, the bot does nothing at all", async () 
   }
 });
 
-test("the first look tells Telegram where to bring messages, with a password it makes, and gives the bot its menu", async () => {
+test("the first look tells Telegram where to bring messages, with a password it makes, and gives the bot its menu and description", async () => {
   const it = open();
   await it.bot.tick();
   const methods = it.net.bot.map((call) => call.method);
@@ -130,10 +134,11 @@ test("the first look tells Telegram where to bring messages, with a password it 
   assert.deepEqual(hook.allowed_updates, ["message", "callback_query", "my_chat_member"]);
   assert.match(hook.secret_token, /^[A-Za-z0-9_-]{43}$/);
   assert.ok(methods.includes("setMyCommands"));
-  // The bot had no description, so it gets one.
-  const description = it.net.bot.find((call) => call.method === "setMyDescription").body.description;
-  assert.match(description, /4 PM on weekdays and 8 AM on weekends/);
-  assert.ok(it.net.bot.find((call) => call.method === "setMyShortDescription").body.short_description.length <= 120);
+  // The bot had no description, so it gets one, and the same words on its profile.
+  const wanted = "When is the Citizens Park oval booked, and is rain on the way? I'll send you an alert at a time you choose.";
+  assert.equal(it.net.bot.find((call) => call.method === "setMyDescription").body.description, wanted);
+  assert.equal(it.net.bot.find((call) => call.method === "setMyShortDescription").body.short_description, wanted);
+  assert.ok(wanted.length <= 120);
   // Every request went to Telegram's API with the token, and nowhere else.
   for (const call of it.net.bot) assert.equal(call.token, BOT_TOKEN);
   const status = await it.bot.status();
@@ -143,10 +148,15 @@ test("the first look tells Telegram where to bring messages, with a password it 
   assert.equal(JSON.stringify(status).includes(BOT_TOKEN), false);
 });
 
-test("a description someone wrote is left alone, and the set-up is told again once a day", async () => {
-  const it = open({ telegram: (call) => (call.method === "getMyDescription" ? { result: { description: "Mine." } } : null) });
+test("a description someone wrote is left alone, one the bot wrote before is replaced, and the set-up is told again once a day", async () => {
+  const earlier = earlierDescriptions("Citizens Park oval", settings.bot);
+  const it = open({
+    telegram: (call) =>
+      call.method === "getMyDescription" ? { result: { description: "Mine." } } : call.method === "getMyShortDescription" ? { result: { short_description: earlier[1] } } : null,
+  });
   await it.bot.tick();
   assert.equal(it.net.bot.some((call) => call.method === "setMyDescription"), false);
+  assert.equal(it.net.bot.filter((call) => call.method === "setMyShortDescription").length, 1);
   const secret = (await it.storage.get("hook")).secret;
   it.net.calls.length = 0;
   it.time.forward(3600 * 1000);
@@ -157,6 +167,19 @@ test("a description someone wrote is left alone, and the set-up is told again on
   assert.deepEqual(it.net.bot.map((call) => call.method), ["getMe", "setWebhook", "getWebhookInfo"]);
   // The same password as before.
   assert.equal(it.net.bot[1].body.secret_token, secret);
+});
+
+test("a bot that already has the earlier version's description gets the new one at the next look", async () => {
+  const earlier = earlierDescriptions("Citizens Park oval", settings.bot);
+  const it = open({ telegram: (call) => (call.method === "getMyDescription" ? { result: { description: earlier[0] } } : null) });
+  // As the earlier version left it: set up with this token, with no note of a description.
+  await it.bot.hook();
+  const hook = await it.storage.get("hook");
+  await it.storage.put("hook", { ...hook, described: undefined });
+  it.net.calls.length = 0;
+  await it.bot.tick();
+  assert.match(it.net.bot.find((call) => call.method === "setMyDescription").body.description, /is rain on the way\?/);
+  assert.equal(it.net.bot.some((call) => call.method === "setMyCommands"), false);
 });
 
 test("a token Telegram does not know stops the bot, and is asked about again in half an hour", async () => {
@@ -178,6 +201,11 @@ test("a token Telegram does not know stops the bot, and is asked about again in 
 // The chat
 // ---------------------------------------------------------------------------
 
+const deleted = (it) => it.net.bot.filter((call) => call.method === "deleteMessage").map((call) => call.body.message_id);
+const lastSaid = (it) => it.net.said.at(-1);
+/** The message ids Telegram gave to what the bot sent, in order. */
+const sentIds = (it) => it.net.bot.filter((call) => call.method === "sendMessage").map((call) => call.sent);
+
 test("only Telegram, with the password, is listened to", async () => {
   const it = open();
   const secret = await ready(it);
@@ -188,77 +216,126 @@ test("only Telegram, with the password, is listened to", async () => {
   assert.deepEqual(await say(it, secret, message(5, "/start")), { status: 200, body: { ok: true } });
 });
 
-test("Start turns the alerts on at the usual times, and says so", async () => {
+test("Start turns the alerts on at the usual times, in one message that shows them", async () => {
   const it = open();
   const secret = await ready(it);
-  await say(it, secret, message(5, "/start"));
-  assert.deepEqual(it.sql.chats(), [{ id: 5, weekday: 16, weekend: 8, paused: 0, added: at(MONDAY, "09:00"), last: null }]);
-  const [welcome, times] = it.net.said;
-  assert.equal(welcome.chat_id, 5);
-  assert.match(welcome.text, /when the Citizens Park oval is booked/);
-  // The two buttons that stay at the bottom of the chat.
-  assert.deepEqual(welcome.reply_markup.keyboard, [[{ text: BUTTONS.change }, { text: BUTTONS.pause }]]);
-  assert.equal(welcome.reply_markup.is_persistent, true);
-  assert.match(times.text, /Weekdays: 4 PM\n• Weekends: 8 AM/);
-  assert.deepEqual(times.reply_markup.inline_keyboard, [
+  const start = message(5, "/start");
+  await say(it, secret, start);
+  assert.deepEqual(it.sql.chats(), [{ id: 5, weekday: 16, weekend: 8, paused: 0, added: at(MONDAY, "09:00"), last: null, summary: 1001, picker: null, alert: null, tidy: 1 }]);
+  // One message, no greeting: the bot's description already says what it does.
+  assert.equal(it.net.said.length, 1);
+  const summary = it.net.said[0];
+  assert.equal(summary.chat_id, 5);
+  assert.equal(summary.text, "Your alerts:\n• Weekdays: 4 PM\n• Weekends: 8 AM");
+  assert.deepEqual(summary.reply_markup.inline_keyboard, [
     [
-      { text: "Weekdays: 4 PM", callback_data: "pick:weekday" },
-      { text: "Weekends: 8 AM", callback_data: "pick:weekend" },
+      { text: BUTTONS.change, callback_data: "change" },
+      { text: BUTTONS.pause, callback_data: "pause" },
     ],
+    [{ text: "Book a consultation with Sofia", url: "https://www.instagram.com/gentle_woof" }],
   ]);
+  // The "/start" itself is taken away.
+  assert.deepEqual(it.net.bot.find((call) => call.method === "deleteMessage").body, { chat_id: 5, message_id: start.message.message_id });
   // Nothing about the person is kept: not their name, not what they wrote.
   assert.equal(JSON.stringify(it.sql.chats()).includes("Someone"), false);
   assert.ok(it.lines.includes("a chat started"));
-  // Pressing Start again changes nothing, and shows the same.
+
+  // Pressing Start again shows the times again, at the bottom, and takes the earlier message away.
+  it.net.calls.length = 0;
   await say(it, secret, message(5, "/start"));
   assert.equal(it.sql.chats().length, 1);
-  assert.equal(it.net.said.length, 4);
+  assert.equal(it.net.said.length, 1);
+  assert.ok(deleted(it).includes(1001));
+  assert.notEqual(it.sql.chats()[0].summary, 1001);
 });
 
-test("a time is chosen from a grid of hours, from 4 AM to 11 PM, or none", async () => {
+test("without a link in the settings there is no button for it", async () => {
+  const it = open({ env: { ...ENV, ...BOT, BOT_LINK: "" } });
+  const secret = await ready(it);
+  await say(it, secret, message(5, "/start"));
+  assert.equal(it.net.said[0].reply_markup.inline_keyboard.length, 1);
+});
+
+test("the times change through a picker that goes away once a time is chosen", async () => {
   const it = open();
   const secret = await ready(it);
   await say(it, secret, message(5, "/start"));
+  const summaryId = it.sql.chats()[0].summary;
   it.net.calls.length = 0;
 
-  await say(it, secret, press(5, "pick:weekday"));
+  // "Change times" under the times opens the picker, in a message of its own. The times stay.
+  await say(it, secret, press(5, "change", summaryId));
+  assert.deepEqual(it.net.bot.map((call) => call.method), ["answerCallbackQuery", "sendMessage"]);
+  const picker = lastSaid(it);
+  assert.equal(picker.text, "Which alerts do you want to change?");
+  assert.deepEqual(picker.reply_markup.inline_keyboard, [
+    [
+      { text: "Weekdays", callback_data: "pick:weekday" },
+      { text: "Weekends", callback_data: "pick:weekend" },
+    ],
+    [{ text: "✕ Close", callback_data: "close" }],
+  ]);
+  const pickerId = it.sql.chats()[0].picker;
+  assert.ok(pickerId);
+
+  // Weekdays: the picker becomes the grid of hours.
+  it.net.calls.length = 0;
+  await say(it, secret, press(5, "pick:weekday", pickerId));
   assert.deepEqual(it.net.bot.map((call) => call.method), ["answerCallbackQuery", "editMessageText"]);
   const grid = it.net.bot[1].body;
-  assert.equal(grid.chat_id, 5);
-  assert.equal(grid.message_id, 77);
+  assert.equal(grid.message_id, pickerId);
   assert.match(grid.text, /When should the weekday alert come\? \(Monday to Friday\)/);
   assert.match(grid.text, /at 9 PM or later comes the evening before/);
   const rows = grid.reply_markup.inline_keyboard;
   assert.equal(rows.length, 6);
   assert.deepEqual(rows[0].map((one) => one.text), ["4 AM", "5 AM", "6 AM", "7 AM"]);
-  assert.deepEqual(rows[3].map((one) => one.text), ["4 PM", "5 PM", "6 PM", "7 PM"].map((text, index) => (index === 0 ? `✓ ${text}` : text)));
+  assert.deepEqual(rows[3].map((one) => one.text), ["✓ 4 PM", "5 PM", "6 PM", "7 PM"]);
   assert.deepEqual(rows[4].map((one) => one.text), ["8 PM", "9 PM", "10 PM", "11 PM"]);
   assert.deepEqual(rows[5], [
     { text: "No alert", callback_data: "set:weekday:none" },
-    { text: "« Back", callback_data: "menu" },
+    { text: "« Back", callback_data: "back" },
   ]);
 
+  // Back to the picker, and on to a time.
+  await say(it, secret, press(5, "back", pickerId));
+  assert.equal(it.net.bot.at(-1).body.text, "Which alerts do you want to change?");
   it.net.calls.length = 0;
-  await say(it, secret, press(5, "set:weekday:7"));
+  await say(it, secret, press(5, "set:weekday:7", pickerId));
   assert.equal(it.sql.chats()[0].weekday, 7);
-  const done = it.net.bot[1].body;
-  assert.match(done.text, /^✅ Weekdays: the alert comes at 7 AM\.\n\nYour alerts:\n• Weekdays: 7 AM\n• Weekends: 8 AM/);
-  assert.equal(done.reply_markup.inline_keyboard[0][0].text, "Weekdays: 7 AM");
+  // The picker goes, the old times go, and the new times come at the bottom.
+  assert.deepEqual(deleted(it).sort(), [pickerId, summaryId].sort());
+  assert.match(lastSaid(it).text, /^Your alerts:\n• Weekdays: 7 AM\n• Weekends: 8 AM$/);
+  assert.equal(it.sql.chats()[0].picker, null);
 
-  await say(it, secret, press(5, "set:weekend:22"));
+  await say(it, secret, press(5, "change", it.sql.chats()[0].summary));
+  await say(it, secret, press(5, "pick:weekend", it.sql.chats()[0].picker));
+  await say(it, secret, press(5, "set:weekend:22", it.sql.chats()[0].picker));
   assert.equal(it.sql.chats()[0].weekend, 22);
-  assert.match(it.net.bot.at(-1).body.text, /Weekends: the alert comes at 10 PM the evening before\./);
+  assert.match(lastSaid(it).text, /• Weekends: 10 PM the evening before/);
 
-  await say(it, secret, press(5, "set:weekend:none"));
-  assert.equal(it.sql.chats()[0].weekend, null);
-  assert.match(it.net.bot.at(-1).body.text, /^✅ No weekend alerts\./);
-  assert.match(it.net.bot.at(-1).body.text, /• Weekends: no alert/);
+  await say(it, secret, press(5, "change", it.sql.chats()[0].summary));
+  await say(it, secret, press(5, "set:weekend:none", it.sql.chats()[0].picker));
+  await say(it, secret, press(5, "change", it.sql.chats()[0].summary));
+  await say(it, secret, press(5, "set:weekday:none", it.sql.chats()[0].picker));
+  assert.match(lastSaid(it).text, /• Weekdays: no alert\n• Weekends: no alert\n\nYou have no alerts set\./);
+});
 
-  await say(it, secret, press(5, "set:weekday:none"));
-  assert.match(it.net.bot.at(-1).body.text, /You have no alerts set\./);
-
-  await say(it, secret, press(5, "menu"));
-  assert.match(it.net.bot.at(-1).body.text, /^Your alerts:/);
+test("a picker that is closed, or left open, goes away", async () => {
+  const it = open();
+  const secret = await ready(it);
+  await say(it, secret, message(5, "/start"));
+  await say(it, secret, press(5, "change", it.sql.chats()[0].summary));
+  const first = it.sql.chats()[0].picker;
+  // Opening another picker takes the first one away.
+  it.net.calls.length = 0;
+  await say(it, secret, message(5, "/settings"));
+  assert.ok(deleted(it).includes(first));
+  const second = it.sql.chats()[0].picker;
+  assert.notEqual(second, first);
+  it.net.calls.length = 0;
+  await say(it, secret, press(5, "close", second));
+  assert.deepEqual(deleted(it), [second]);
+  assert.equal(it.sql.chats()[0].picker, null);
 });
 
 test("a button that is not the bot's own is answered and does nothing more", async () => {
@@ -275,27 +352,67 @@ test("notifications can be paused and resumed, and the times are kept", async ()
   const it = open();
   const secret = await ready(it);
   await say(it, secret, message(5, "/start"));
-  await say(it, secret, press(5, "set:weekday:7"));
+  await say(it, secret, press(5, "change", it.sql.chats()[0].summary));
+  await say(it, secret, press(5, "set:weekday:7", it.sql.chats()[0].picker));
+  const before = it.sql.chats()[0].summary;
   it.net.calls.length = 0;
 
-  await say(it, secret, message(5, BUTTONS.pause));
+  await say(it, secret, press(5, "pause", before));
   assert.equal(it.sql.chats()[0].paused, 1);
-  const paused = it.net.said[0];
-  assert.match(paused.text, /Notifications are paused\. Your times are kept\./);
-  assert.deepEqual(paused.reply_markup.keyboard, [[{ text: BUTTONS.change }, { text: BUTTONS.resume }]]);
-
-  // While paused, the times say so.
-  await say(it, secret, message(5, BUTTONS.change));
-  assert.match(it.net.said[1].text, /^⏸ Notifications are paused\./);
+  const paused = lastSaid(it);
+  assert.match(paused.text, /^⏸ Notifications are paused\. Your times are kept for when you resume them\.\n\nYour alerts:\n• Weekdays: 7 AM/);
+  assert.deepEqual(paused.reply_markup.inline_keyboard[0][1], { text: BUTTONS.resume, callback_data: "resume" });
+  assert.deepEqual(deleted(it), [before]);
 
   await say(it, secret, message(5, "/resume"));
   assert.deepEqual([it.sql.chats()[0].paused, it.sql.chats()[0].weekday], [0, 7]);
-  const resumed = it.net.said[2];
-  assert.match(resumed.text, /^▶️ Notifications are back on\.\n\nYour alerts:\n• Weekdays: 7 AM/);
-  assert.deepEqual(resumed.reply_markup.keyboard, [[{ text: BUTTONS.change }, { text: BUTTONS.pause }]]);
+  assert.match(lastSaid(it).text, /^Your alerts:\n• Weekdays: 7 AM/);
+  assert.deepEqual(lastSaid(it).reply_markup.inline_keyboard[0][1], { text: BUTTONS.pause, callback_data: "pause" });
 
+  // The plain word works too, and so does the old bottom button.
   await say(it, secret, message(5, "stop"));
   assert.equal(it.sql.chats()[0].paused, 1);
+  await say(it, secret, message(5, BUTTONS.resume));
+  assert.equal(it.sql.chats()[0].paused, 0);
+});
+
+test("words that are not a command are left in the chat, and get the times", async () => {
+  const it = open();
+  const secret = await ready(it);
+  await say(it, secret, message(5, "/start"));
+  it.net.calls.length = 0;
+  const hello = message(5, "hello");
+  await say(it, secret, hello);
+  assert.equal(deleted(it).includes(hello.message.message_id), false);
+  assert.match(lastSaid(it).text, /^Your alerts:/);
+});
+
+test("a chat from the earlier version loses its bottom buttons the next time the bot writes to it", async () => {
+  const it = open();
+  const secret = await ready(it);
+  // As the earlier version left it: no message numbers, and the bottom buttons still there.
+  chats(it, [[5, 16, 8]]);
+  it.sql.exec("UPDATE chats SET tidy = 0 WHERE id = 5");
+  await say(it, secret, message(5, BUTTONS.pause));
+  const [first, second] = it.net.said;
+  assert.deepEqual(first.reply_markup, { remove_keyboard: true });
+  // That message is taken away at once.
+  assert.ok(deleted(it).includes(sentIds(it)[0]));
+  assert.match(second.text, /Notifications are paused/);
+  assert.equal(it.sql.chats()[0].tidy, 1);
+  it.net.calls.length = 0;
+  await say(it, secret, message(5, BUTTONS.resume));
+  assert.equal(it.net.said.length, 1);
+});
+
+test("a table made by the earlier version gets the new columns, and keeps its chats", () => {
+  const sql = memorySql();
+  sql.exec("CREATE TABLE chats (id INTEGER PRIMARY KEY, weekday INTEGER, weekend INTEGER, paused INTEGER NOT NULL DEFAULT 0, added INTEGER NOT NULL, last TEXT)");
+  sql.exec("INSERT INTO chats (id, weekday, weekend, paused, added) VALUES (5, 7, 8, 0, 0)");
+  const bot = new Bot({ sql, storage: memoryStorage(), fetch: () => {}, now: () => 0, settings, token: BOT_TOKEN });
+  bot.open();
+  bot.open();
+  assert.deepEqual(sql.chats(), [{ id: 5, weekday: 7, weekend: 8, paused: 0, added: 0, last: null, summary: null, picker: null, alert: null, tidy: 0 }]);
 });
 
 test("someone who blocks the bot is taken off the list", async () => {
@@ -413,13 +530,13 @@ test("nobody gets two alerts about the same day, even after changing their time"
   it.time.set(at(MONDAY, "09:00"));
   await it.bot.tick();
   await runAlarms(it.bot, it.storage, it.time);
-  assert.equal(it.net.said.length, 1);
+  assert.equal(alertsSent(it), 1);
   // The next day it comes at the new time.
   it.time.set(at("2026-11-24", "09:00"));
   it.net.words = alertWords("2026-11-24");
   await it.bot.tick();
   await runAlarms(it.bot, it.storage, it.time);
-  assert.equal(it.net.said.length, 2);
+  assert.equal(alertsSent(it), 2);
 });
 
 test("an hour nobody chose does not even read the page", async () => {

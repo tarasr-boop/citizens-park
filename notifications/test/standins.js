@@ -25,6 +25,8 @@ export const BOT = {
   BOT_EVENING: "21:00",
   BOT_WEEKDAY: "16:00",
   BOT_WEEKEND: "08:00",
+  BOT_LINK: "https://www.instagram.com/gentle_woof",
+  BOT_LINK_TEXT: "Book a consultation with Sofia",
 };
 // Made up for the tests: the shape of a bot token, and the name Telegram gives the bot.
 export const BOT_TOKEN = "123456789:STANDIN-aBcDeFgHiJkLmNoPqRsTuVwXyZ01234";
@@ -300,7 +302,8 @@ export function world({ page = null, words = null, answer = () => 201, pause = 0
           getWebhookInfo: { url: "https://alerts.example/telegram", pending_update_count: 0 },
           getMyDescription: { description: "" },
           getMyShortDescription: { short_description: "" },
-          sendMessage: { message_id: it.bot.length },
+          // Message numbers of their own, well away from the numbers of the messages people write.
+          sendMessage: call.method === "sendMessage" ? { message_id: (call.sent = 1000 + (it.sent = (it.sent || 0) + 1)) } : null,
         };
         const status = (said && said.status) || 200;
         const body = status === 200

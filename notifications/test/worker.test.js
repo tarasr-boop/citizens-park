@@ -544,7 +544,7 @@ test("Telegram, and only Telegram with the password, reaches the bot", async () 
   assert.equal(answer.status, 200);
   assert.deepEqual(await answer.json(), { ok: true });
   assert.deepEqual(cf.chatsStorage.sql.chats().map((chat) => [chat.id, chat.weekday, chat.weekend]), [[5, 16, 8]]);
-  assert.equal(net.said.length, 2);
+  assert.equal(net.said.length, 1);
   assert.equal((await status(cf)).telegram.chats, 1);
 
   // Only POST, and nothing too long or that is not JSON.
