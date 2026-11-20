@@ -8,7 +8,8 @@ on:
     # These times are Melbourne time. Extra runs do no harm: the script posts
     # once a day, on the first run inside the window set in config.toml
     # (from 2:30 PM). GitHub often starts scheduled runs 10 to 30 minutes late,
-    # which is why the post run is set for 2:40 PM and has two backups.
+    # which is why the post run is set for 2:40 PM and has two backups. In this
+    # repository's first days it started them eight to nine hours late.
     #
     # The same times are written in notifications/wrangler.jsonc, as
     # CHECK_TIMES. The backend there starts a run that GitHub has missed (see
