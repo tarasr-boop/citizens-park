@@ -10,9 +10,9 @@ from datetime import datetime
 from html import escape
 
 from .config import Config
-from .status import DayPlan, free_text, short_date
-from .timeparse import clock, span
-from .weather import LIKELY, Forecast, HourRain, outlook, total_mm
+from .status import DayPlan, free_windows, short_date
+from .timeparse import Slot, clock, span
+from .weather import LIKELY, Forecast, HourRain, best_window, outlook, total_mm
 
 _RAIN_ICONS = {"dry": "🌤", "slight": "🌦", "likely": "🌧", "unknown": "❔"}
 
@@ -27,8 +27,8 @@ def _text(value: str) -> str:
     return escape(value, quote=False)
 
 
-def _booking_lines(plan: DayPlan, now_minute: int, lights_off: int) -> list[str]:
-    """What is booked and what is free for the rest of ``plan``'s day."""
+def _booking_lines(plan: DayPlan, now_minute: int) -> list[str]:
+    """What is booked for the rest of ``plan``'s day. The free times are not listed: they follow from the booked ones."""
     if plan.closed:
         lines = ["⛔ The oval is closed today."]
         if plan.label:
@@ -42,24 +42,20 @@ def _booking_lines(plan: DayPlan, now_minute: int, lights_off: int) -> list[str]
         if plan.label:
             return [f"⚠️ Listed for today: {_text(plan.label)}. The oval may be closed."]
         if sure:
-            return ["🟢 No bookings today. The oval is free all day."]
+            return ["🟢 No bookings today."]
         return [f"🟢 Usually no bookings on {plan.day:%A}s."]
 
     remaining = [slot for slot in plan.slots if slot.end > now_minute]
     if not remaining:
         if sure:
-            return ["🟢 Today's bookings have finished. The oval is free for the rest of the day."]
-        return ["🟢 The usual booking time has passed, so the oval should be free."]
+            return ["🟢 Today's bookings have finished."]
+        return ["🟢 The usual booking time has passed."]
 
     periods = [f"until {clock(slot.end)}" if slot.start <= now_minute else span(slot) for slot in remaining]
     booked = ", then ".join(periods)
     if plan.label:
         booked += f" ({_text(plan.label)})"
-    lines = [f"🔴 Booked {booked}" if sure else f"🟠 Usually booked {booked}"]
-    free = free_text(plan.slots, now_minute, lights_off)
-    if free:
-        lines.append(f"🟢 Free {free}" if sure else f"🟢 Usually free {free}")
-    return lines
+    return [f"🔴 Booked {booked}" if sure else f"🟠 Usually booked {booked}"]
 
 
 def _rain_lines(plan: DayPlan, hours: list[HourRain] | None, now_minute: int, saved_at: str = "") -> list[str]:
@@ -87,24 +83,40 @@ def _rain_lines(plan: DayPlan, hours: list[HourRain] | None, now_minute: int, sa
     return lines
 
 
-def _source_line(plan: DayPlan) -> str:
-    if not plan.known:
+def _window_line(plan: DayPlan, hours: list[HourRain] | None, now_minute: int, config: Config) -> str:
+    """On a rainy evening, the best time to stay out of the rain while the oval is not booked.
+
+    Empty when no rain is forecast for the evening: then any time outside the
+    bookings is as good as another, and the post does not need to say so.
+    """
+    if not hours or plan.closed or (plan.label and not plan.slots):
         return ""
-    return f"{'✅' if plan.confirmed else '⚠️'} {_text(plan.note)}"
+    first = max(config.advice_from, now_minute)
+    window = best_window(hours, free_windows(plan.slots, first, config.advice_until), first, config.advice_until)
+    if window is None:
+        return ""
+    when = f"from now until {clock(window.end)}" if window.start <= now_minute else span(Slot(window.start, window.end))
+    line = f"Based on the hourly forecast, the best window to avoid the rain is {when}"
+    return line + ("." if window.dry else ", though it may still rain then.")
+
+
+def _caution_line(plan: DayPlan) -> str:
+    """A warning when the day's times are not fresh from the council's page. Nothing when they are."""
+    if not plan.known or (plan.confirmed and not plan.stale):
+        return ""
+    return f"⚠️ {_text(plan.note)}"
 
 
 def daily(plan: DayPlan, forecast: Forecast | None, now: datetime, config: Config) -> str:
     """The daily post for ``plan``'s day, written at ``now``."""
     now_minute = now.hour * 60 + now.minute
     hours = forecast.hours.get(plan.day) if forecast else None
-    lines = [f"🐕 <b>{_text(config.park_name)} · {short_date(plan.day)}</b>", ""]
-    lines += _booking_lines(plan, now_minute, config.lights_off)
+    lines = [f"🐕 <b>{_text(config.park_name)}</b>", ""]
+    lines += _booking_lines(plan, now_minute)
     lines.append("")
     lines += _rain_lines(plan, hours, now_minute, forecast.saved_at if forecast else "")
-    source = _source_line(plan)
-    if source:
-        lines.append(source)
-    lines += ["", f'<a href="{escape(config.site_url)}">The week ahead and rain by the hour</a>']
+    lines += [line for line in (_window_line(plan, hours, now_minute, config), _caution_line(plan)) if line]
+    lines += ["", f'<a href="{escape(config.site_url)}">Press here for the week ahead and rain by the hour</a>']
     return "\n".join(lines)
 
 
@@ -138,8 +150,9 @@ def weekly(plans: list[DayPlan], forecast: Forecast | None, config: Config) -> s
         lines.append("⚠️ Days marked (usual) follow the usual pattern and are not confirmed by the council's page yet.")
     elif known and not known[0].confirmed:
         lines.append(f"⚠️ {_text(known[0].note)}")
-    elif known:
-        lines.append("✅ From the council's schedule.")
+    old = next((plan for plan in known if plan.stale), None)
+    if old:
+        lines.append(f"⚠️ {_text(old.note)}")
     lines.append("Dogs can use the oval outside these times.")
-    lines += ["", f'<a href="{escape(config.site_url)}">Today and rain by the hour</a>']
+    lines += ["", f'<a href="{escape(config.site_url)}">Press here for today and rain by the hour</a>']
     return "\n".join(lines)

@@ -28,6 +28,10 @@ channel = "CitizensBark"
 # If you change these, change the run times in .github/workflows/daily.yml too.
 post_from = "14:30"
 post_until = "19:00"
+# On a rainy day the post names the best time to stay out of the rain. It looks
+# between these two times, and only at times when the oval is not booked.
+advice_from = "17:00"
+advice_until = "21:00"
 
 [site]
 # A name for the page itself, for example "Citizens Bark". It appears at the top

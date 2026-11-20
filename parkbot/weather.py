@@ -21,6 +21,13 @@ LIKELY = 50
 SLIGHT = 20
 # The outlook looks ahead until this hour of the evening (9 PM, so through 9:59 PM).
 LAST_HOUR = 21
+# The least rain the forecast reports for an hour. An hour with less, and with
+# rain not likely either, counts as dry.
+TRACE_MM = 0.1
+# When no hour is dry, hours within this much of the lightest one are as good as it.
+_MUCH_THE_SAME_MM = 0.2
+# A stretch shorter than this many minutes is not worth going out for.
+_SHORTEST_WINDOW = 30
 
 _ONE_HOUR = timedelta(hours=1)
 
@@ -59,6 +66,15 @@ class Outlook:
     text: str
     chance: int | None = None
     mm: float | None = None
+
+
+@dataclass(frozen=True)
+class Window:
+    """A stretch of the day that suits a walk in rainy weather."""
+
+    start: int  # minutes after midnight
+    end: int
+    dry: bool  # False when rain is expected in it too, only less than at other times
 
 
 def url(latitude: float, longitude: float, timezone_name: str, days: int = 8) -> str:
@@ -205,3 +221,71 @@ def outlook(hours: list[HourRain] | None, now_minute: int, last_hour: int = LAST
     if len(runs) > 1:
         text += f" More from about {clock(runs[1][0] * 60)}."
     return Outlook("likely", text, chance, mm)
+
+
+def is_dry(hour: HourRain) -> bool:
+    """No measurable rain is forecast for the hour, and rain is not likely."""
+    return (hour.mm or 0.0) < TRACE_MM and (hour.chance or 0) < LIKELY
+
+
+def best_window(hours: list[HourRain] | None, free: list[tuple[int, int]], first_minute: int, last_minute: int) -> Window | None:
+    """The best part of ``free`` for staying out of the rain between two times of the day.
+
+    ``free`` holds the periods to choose from as (start, end) pairs, in minutes
+    after midnight and in order. The answer is the longest dry stretch in them.
+    If none of them is dry, it is the stretch with the lightest rain.
+
+    Returns None when there is nothing to say: no rain is forecast between the
+    two times (then any time is as good as another), the forecast does not
+    cover them, or no stretch of ``free`` is long enough.
+    """
+    if not hours or first_minute >= last_minute:
+        return None
+    by_hour = {hour.hour: hour for hour in hours}
+    covered = [by_hour.get(number) for number in range(first_minute // 60, (last_minute - 1) // 60 + 1)]
+    if any(hour is None or (hour.mm is None and hour.chance is None) for hour in covered):
+        return None
+    if all(is_dry(hour) for hour in covered):
+        return None
+
+    # Cut the free time into pieces, one for each hour of the forecast.
+    pieces: list[tuple[int, int, HourRain]] = []
+    for start, end in free:
+        start, end = max(start, first_minute), min(end, last_minute)
+        for number in range(start // 60, (end - 1) // 60 + 1) if start < end else ():
+            pieces.append((max(start, number * 60), min(end, (number + 1) * 60), by_hour[number]))
+    if not pieces:
+        return None
+
+    def stretches(good) -> list[tuple[int, int, float]]:
+        """Runs of neighbouring pieces that pass ``good``, as (start, end, rain in mm)."""
+        found: list[list[tuple[int, int, HourRain]]] = []
+        for piece in pieces:
+            if not good(piece[2]):
+                continue
+            if found and found[-1][-1][1] == piece[0]:
+                found[-1].append(piece)
+            else:
+                found.append([piece])
+        return [
+            (run[0][0], run[-1][1], sum(hour.mm or 0.0 for _, _, hour in run))
+            for run in found
+            if run[-1][1] - run[0][0] >= _SHORTEST_WINDOW
+        ]
+
+    def longest(found: list[tuple[int, int, float]]) -> tuple[int, int, float]:
+        # The longest wins. Between equals, the one with less rain, and then the earlier one.
+        return max(found, key=lambda stretch: (stretch[1] - stretch[0], -stretch[2], -stretch[0]))
+
+    dry = stretches(is_dry)
+    if dry:
+        start, end, _ = longest(dry)
+        return Window(start, end, True)
+
+    lightest = min(hour.mm or 0.0 for _, _, hour in pieces)
+    # The tiny extra keeps the comparison from tripping over how decimals are stored.
+    light = stretches(lambda hour: (hour.mm or 0.0) <= lightest + _MUCH_THE_SAME_MM + 1e-9)
+    if not light:
+        return None
+    start, end, _ = longest(light)
+    return Window(start, end, False)
