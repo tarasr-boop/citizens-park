@@ -145,7 +145,7 @@ test("anyone may ask how things are, and gets numbers only", async () => {
     assert.equal(answer.headers.get("Content-Type"), "application/json; charset=utf-8");
     assert.equal(answer.headers.get("Cache-Control"), "no-store");
     assert.equal(answer.headers.get("X-Content-Type-Options"), "nosniff");
-    assert.deepEqual(await answer.json(), { ok: true, devices: 0, sending: false, last: null, timer: null, unknownServices: {}, starter: OFF, telegram: { on: false } });
+    assert.deepEqual(await answer.json(), { ok: true, devices: 0, sending: false, last: null, timer: null, unknownServices: {}, refusals: {}, starter: OFF, telegram: { on: false } });
   }
   // One book for everyone, kept near the people it serves.
   assert.deepEqual(cf.asked[0], { id: { name: "all" }, options: { locationHint: "oc" } });

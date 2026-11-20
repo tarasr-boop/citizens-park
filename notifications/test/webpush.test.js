@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { LARGEST_MESSAGE, authorization, encrypt, fromBase64Url, loadSigningKeys, newSigningKeys, outcome, send, toBase64Url } from "../src/webpush.js";
+import { LARGEST_MESSAGE, authorization, encrypt, fromBase64Url, loadSigningKeys, newSigningKeys, outcome, plainWords, send, toBase64Url } from "../src/webpush.js";
 import { newDevice, readProof } from "./standins.js";
 
 const encoder = new TextEncoder();
@@ -193,10 +193,70 @@ test("sending reports what happened and never throws for something the other sid
 test("an address whose keys are not keys is refused without asking the notification service", async () => {
   const phone = newDevice();
   const net = recorder(201);
-  const how = { authorization: "vapid t=a.b.c, k=d", ttl: 60, topic: "daily", fetch: net.fetch };
+  const told = [];
+  const how = { authorization: "vapid t=a.b.c, k=d", ttl: 60, topic: "daily", fetch: net.fetch, refused: (status, said) => told.push([status, said]) };
   assert.equal(await send({ endpoint: phone.endpoint, p256dh: "not a key", auth: phone.subscription.keys.auth }, encoder.encode("{}"), how), "refused");
   assert.equal(await send({ endpoint: phone.endpoint, p256dh: toBase64Url(new Uint8Array(65)), auth: phone.subscription.keys.auth }, encoder.encode("{}"), how), "refused");
   assert.equal(net.calls.length, 0);
+  // The reason is given with the number 0, because no service was asked.
+  assert.deepEqual(told, [
+    [0, "the device's keys could not be used"],
+    [0, "the device's keys could not be used"],
+  ]);
+  // More words than fit in one notification: the same, with its own reason.
+  const long = new Uint8Array(LARGEST_MESSAGE + 1);
+  assert.equal(await send({ endpoint: phone.endpoint, ...phone.subscription.keys }, long, how), "refused");
+  assert.deepEqual(told.at(-1), [0, "the message is too long"]);
+  assert.equal(net.calls.length, 0);
+});
+
+test("a refusal is reported with the number of the answer and the service's own words", async () => {
+  const phone = newDevice("web.push.apple.com");
+  const to = { endpoint: phone.endpoint, ...phone.subscription.keys };
+  const message = encoder.encode("{}");
+  const told = [];
+  const how = (fetch) => ({ authorization: "vapid t=a.b.c, k=d", ttl: 60, topic: "daily", fetch, refused: (status, said) => told.push([status, said]) });
+  const says = (status, words) => async () => new Response(words, { status });
+
+  assert.equal(await send(to, message, how(says(403, '{"reason":"BadJwtToken"}'))), "refused");
+  assert.equal(await send(to, message, how(says(400, ""))), "refused");
+  assert.deepEqual(told, [
+    [403, "reason BadJwtToken"],
+    [400, ""],
+  ]);
+
+  // Every other answer is not a refusal, and nothing is reported.
+  for (const status of [201, 404, 410, 429, 503]) await send(to, message, how(says(status, "words")));
+  assert.equal(told.length, 2);
+
+  // Without anyone to tell, a refusal is still just a refusal.
+  assert.equal(await send(to, message, { authorization: "vapid t=a.b.c, k=d", ttl: 60, topic: "daily", fetch: says(403, "no") }), "refused");
+
+  // An answer whose words cannot be read is reported by its number alone.
+  const broken = async () => ({ status: 401, body: null, text: async () => Promise.reject(new Error("cut off")) });
+  assert.equal(await send(to, message, how(broken)), "refused");
+  assert.deepEqual(told.at(-1), [401, ""]);
+});
+
+test("a service's words are made plain and short before they are kept", () => {
+  assert.equal(plainWords('{"reason":"BadJwtToken"}'), "reason BadJwtToken");
+  assert.equal(plainWords("<html><script>alert(1)</script>"), "html script alert 1 script");
+  // Nothing that could be a piece of a device's address or of a key gets through.
+  const address = newDevice().endpoint;
+  assert.equal(plainWords(`Invalid token ${address.split("/").pop()} for this sender`), "Invalid token for this sender");
+  assert.equal(plainWords(`No such address: ${address}`), "No such address: https: fcm.googleapis.com send");
+  assert.equal(plainWords("key BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM"), "key");
+  // The names the services give their reasons are kept whole, and so are short numbers.
+  assert.equal(plainWords("UnauthorizedRegistration"), "UnauthorizedRegistration");
+  assert.equal(plainWords('{"code": 403, "errno": 109, "error": "Forbidden"}'), "code 403, errno 109, error Forbidden");
+  assert.equal(
+    plainWords("the VAPID credentials in the authorization header do not correspond to the credentials used to create the subscriptions."),
+    "the VAPID credentials in the authorization header do not correspond to the credentials used to create the subscriptions."
+  );
+  assert.equal(plainWords("word ".repeat(100)).length <= 160, true);
+  assert.equal(plainWords(""), "");
+  assert.equal(plainWords(undefined), "");
+  assert.equal(plainWords({ toString: () => "an object" }), "an object");
 });
 
 test("a notification service that does not answer in time counts as later", async () => {

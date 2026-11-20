@@ -243,8 +243,8 @@ export function day(date, title = "Booked 5 PM to 7:30 PM", body = "Cricket trai
 /**
  * The outside world. `page` is what the page's data.json holds: an object, a
  * status number, "down" for no connection, or text that is not JSON. `answer`
- * decides what a notification service says to a message: a status number, or
- * "down". `github` decides the same for GitHub: by default it takes every
+ * decides what a notification service says to a message: a status number,
+ * `{ status, words }`, or "down". `github` decides the same for GitHub: by default it takes every
  * request. Every request is written down in `calls`.
  */
 export function world({ page = null, words = null, answer = () => 201, pause = 0, github = (call) => (call.method === "GET" ? 200 : 204), telegram = () => null } = {}) {
@@ -336,7 +336,9 @@ export function world({ page = null, words = null, answer = () => 201, pause = 0
         await new Promise((resolve) => setTimeout(resolve, pause));
         const said = await it.answer(url, call);
         if (said === "down") throw new TypeError("fetch failed");
-        return new Response(said === 204 ? null : "", { status: said });
+        // A number, or `{ status, words }` when the service also says why.
+        const status = typeof said === "object" ? said.status : said;
+        return new Response(status === 204 ? null : (said && said.words) || "", { status });
       } finally {
         it.flying -= 1;
       }

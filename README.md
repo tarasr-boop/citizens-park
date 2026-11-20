@@ -145,6 +145,7 @@ The backend is put on Cloudflare by the **Alerts backend** workflow. It needs tw
 - **One phone gets nothing.** On that phone, open the page, turn the alerts off and on again. A first notification should arrive within a few seconds. On an iPhone, the page must be opened from the Home Screen icon.
 - **The button is missing.** The browser cannot show notifications, or `url` under `[notifications]` is empty.
 - **`unknownServices` is not empty.** A browser uses a notification service that the backend does not know yet. Add its name to the list in `notifications/src/rules.js` if it belongs to a real browser.
+- **`last` counts a device as `refused`, or `refusals` is not empty.** A notification service would not take a message. `refusals` says which service, the number of its answer, how often, on which day last, and the service's own words. It names the service (a server of Apple, Google, Mozilla or Microsoft), never a device. One refused device mends itself: the next time its owner opens the page, it is tried again and, if it is still refused, given a fresh address. If one service refuses every device, the fault is more likely in the backend, and the number and the words say where to look.
 
 Limits: the backend takes up to 5,000 devices, and sends to them forty at a time, which the free plan carries comfortably.
 
