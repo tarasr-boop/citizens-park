@@ -45,9 +45,18 @@
   // Cloudflare's timers only know UTC.
   "triggers": { "crons": ["*/5 0-11,19-23 * * *"] },
 
-  // The book of devices: one object with its own small database.
-  "durable_objects": { "bindings": [{ "name": "SUBSCRIBERS", "class_name": "Subscribers" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Subscribers"] }],
+  // The book of devices, and the counter behind the stats page: two objects,
+  // each with its own small database.
+  "durable_objects": {
+    "bindings": [
+      { "name": "SUBSCRIBERS", "class_name": "Subscribers" },
+      { "name": "STATS", "class_name": "Stats" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Subscribers"] },
+    { "tag": "v2", "new_sqlite_classes": ["Stats"] }
+  ],
 
   // Keep what the backend writes to its log, to look at in Cloudflare's dashboard.
   "observability": { "enabled": true }

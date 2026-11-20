@@ -160,13 +160,21 @@ class SettingsTest(unittest.TestCase):
                 moment = datetime.combine(day, time(minute // 60, minute % 60), tzinfo=zone).astimezone(ZoneInfo("UTC"))
                 self.assertNotIn(moment.hour * 60 + moment.minute, fires, f"{day} {hhmm(minute)}")
 
-    def test_the_book_is_set_up_the_way_the_free_plan_needs(self):
-        self.assertEqual(self.settings["durable_objects"], {"bindings": [{"name": "SUBSCRIBERS", "class_name": "Subscribers"}]})
-        # On the free plan a Durable Object must keep its things in SQLite.
-        self.assertEqual(self.settings["migrations"], [{"tag": "v1", "new_sqlite_classes": ["Subscribers"]}])
+    def test_the_book_and_the_counter_are_set_up_the_way_the_free_plan_needs(self):
+        self.assertEqual(
+            self.settings["durable_objects"],
+            {"bindings": [{"name": "SUBSCRIBERS", "class_name": "Subscribers"}, {"name": "STATS", "class_name": "Stats"}]},
+        )
+        # On the free plan a Durable Object must keep its things in SQLite. A
+        # migration that has been deployed is never changed: a new class gets a new one.
+        self.assertEqual(
+            self.settings["migrations"],
+            [{"tag": "v1", "new_sqlite_classes": ["Subscribers"]}, {"tag": "v2", "new_sqlite_classes": ["Stats"]}],
+        )
         worker = (BACKEND / self.settings["main"]).read_text(encoding="utf-8")
-        self.assertIn("export class Subscribers", worker)
-        self.assertIn("env.SUBSCRIBERS", worker)
+        for name, binding in (("Subscribers", "SUBSCRIBERS"), ("Stats", "STATS")):
+            self.assertIn(f"export class {name}", worker)
+            self.assertIn(f"env.{binding}", worker)
 
     def test_the_backend_lives_under_the_pages_own_domain(self):
         self.assertEqual(len(self.settings["routes"]), 1)
