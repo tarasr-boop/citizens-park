@@ -47,7 +47,8 @@ tip_url = ""
 repo_url = "https://github.com/tarasr-boop/citizens-park"
 # An email address for the "Please share feedback" button in "How this works".
 # Anyone can read it: on the page, and in this file. Leave it empty to hide the button.
-feedback_email = ""
+# This one forwards to a private mailbox (Cloudflare Email Routing).
+feedback_email = "feedback@citizensbark.com"
 
 [about]
 # The "About me" block on the page, under the week ahead.
