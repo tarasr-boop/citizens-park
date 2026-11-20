@@ -417,5 +417,54 @@ class FillTest(unittest.TestCase):
         self.assertEqual(site._fill("{{known}} {{unknown}}", {"known": "yes"}), "yes {{unknown}}")
 
 
+class TextSizesTest(unittest.TestCase):
+    """Taras asked for at most four sizes of text on the page. The styles name them once and use no other."""
+
+    SIZES = ("answer", "text", "small", "tiny")
+
+    def setUp(self):
+        self.css = (site.WEB / "page.css").read_text(encoding="utf-8")
+
+    def test_four_sizes_are_named_from_the_biggest_to_the_smallest(self):
+        named = re.findall(r"^  --([a-z]+): ([^;]+); /\*", self.css, flags=re.MULTILINE)
+        sizes = [(name, value) for name, value in named if "rem" in value]
+        self.assertEqual([name for name, _ in sizes], list(self.SIZES))
+        # The answer grows with the phone's width, between two fixed sizes. The other three are fixed.
+        answer = re.fullmatch(r"clamp\(([\d.]+)rem, [\d.]+vw, ([\d.]+)rem\)", sizes[0][1])
+        self.assertIsNotNone(answer, sizes[0][1])
+        fixed = [float(re.fullmatch(r"([\d.]+)rem", value).group(1)) for _, value in sizes[1:]]
+        self.assertGreater(float(answer.group(1)), fixed[0])
+        self.assertEqual(fixed, sorted(fixed, reverse=True))
+        self.assertEqual(len(set(fixed)), 3)
+
+    def test_no_rule_sets_a_size_of_its_own(self):
+        used = [value.strip() for value in re.findall(r"font-size:([^;}]+)", self.css)]
+        self.assertGreater(len(used), 10)
+        allowed = {"var(--answer)", "var(--small)", "var(--tiny)", "inherit"}
+        self.assertEqual(set(used) - allowed, set(), "a rule in page.css sets a size of text that is not one of the four")
+        self.assertEqual({"var(--answer)", "var(--small)", "var(--tiny)"} - set(used), set())
+        # The short way of writing a font sets a size too. It is used twice: for the
+        # page's ordinary text, and for buttons, which take the size around them.
+        whole = [value.strip() for value in re.findall(r"(?<![\w-])font:([^;}]+)", self.css)]
+        self.assertEqual(len(whole), 2)
+        self.assertTrue(whole[0].startswith("var(--text)/"), whole[0])
+        self.assertEqual(whole[1], "inherit")
+
+    def test_nothing_else_brings_a_size_along(self):
+        # A browser gives some kinds of element a size of its own. The two the page uses are told not to.
+        self.assertIn("h2, small { font-size: inherit; }", self.css)
+        self.assertRegex(self.css, r"\.hero h1 \{[^}]*font-size: var\(--answer\);")
+        script = (site.WEB / "page.js").read_text(encoding="utf-8")
+        python = (ROOT / "parkbot" / "site.py").read_text(encoding="utf-8")
+        template = (site.WEB / "index.html").read_text(encoding="utf-8")
+        for name, written in (("page.js", script), ("site.py", python), ("index.html", template)):
+            with self.subTest(file=name):
+                self.assertNotRegex(written, r"<(h[3-6]|big|sub|sup|code|pre|kbd|samp|table|input|select|textarea)\b")
+                # Every button is the kind the styles know.
+                for button in re.findall(r"<button\b[^>]*>", written):
+                    self.assertIn('class="button', button)
+                self.assertNotRegex(written, r"font-size|style=\\?\"[^\"]*font")
+
+
 if __name__ == "__main__":
     unittest.main()

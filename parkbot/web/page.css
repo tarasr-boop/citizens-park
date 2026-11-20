@@ -17,6 +17,13 @@
   --button: #1c2a1e;
   --button-ink: #fffdf8;
   --radius: 18px;
+
+  /* The sizes of the words. There are four, and no rule below sets any other.
+     Headings are the size of the text around them, and bold instead of bigger. */
+  --answer: clamp(1.45rem, 7.6vw, 2.3rem); /* the answer at the top: as big as lets "Booked until 7:30 PM" fit across a phone */
+  --text: 1.0625rem; /* everything that is read as a sentence, the headings and the buttons */
+  --small: 0.875rem; /* labels, notes and the small print */
+  --tiny: 0.6875rem; /* the numbers on the two charts, which have to fit under every hour, and the "usual" mark */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -48,7 +55,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font: 17px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font: var(--text)/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -67,13 +74,14 @@ a:focus-visible, button:focus-visible, summary:focus-visible {
 
 h1, h2, p, ol, ul { margin: 0; }
 ol, ul { padding: 0; list-style: none; }
+/* A browser would make these a size of its own choosing. */
+h2, small { font-size: inherit; }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 0.55rem;
   margin: 0.25rem 0.25rem 0.5rem;
-  font-size: 1.2rem;
   font-weight: 750;
   letter-spacing: -0.01em;
 }
@@ -81,7 +89,7 @@ ol, ul { padding: 0; list-style: none; }
 
 .eyebrow {
   margin: 0.25rem 0.25rem 0.75rem;
-  font-size: 0.82rem;
+  font-size: var(--small);
   font-weight: 650;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -101,19 +109,18 @@ ol, ul { padding: 0; list-style: none; }
 .hero[data-state="free"] { --state: var(--free); --state-bg: var(--free-bg); }
 .hero[data-state="booked"], .hero[data-state="closed"] { --state: var(--booked); --state-bg: var(--booked-bg); }
 
-.kicker { font-size: 0.92rem; font-weight: 600; color: var(--muted); }
+.kicker { font-size: var(--small); font-weight: 600; color: var(--muted); }
 .hero h1 {
   margin: 0.2rem 0 0.35rem;
-  /* Sized so that a line such as "Booked until 7:30 PM" fits across a phone. */
-  font-size: clamp(1.45rem, 7.6vw, 2.3rem);
+  font-size: var(--answer);
   line-height: 1.05;
   font-weight: 800;
   letter-spacing: -0.02em;
   color: var(--state);
   text-wrap: balance;
 }
-.hero .sub { font-size: 1.12rem; line-height: 1.4; text-wrap: pretty; }
-.hero .rule { margin-top: 0.5rem; font-size: 0.95rem; color: var(--muted); }
+.hero .sub { line-height: 1.4; text-wrap: pretty; }
+.hero .rule { margin-top: 0.5rem; font-size: var(--small); color: var(--muted); }
 
 .source-row { margin-top: 0.95rem; }
 .pill {
@@ -121,14 +128,14 @@ ol, ul { padding: 0; list-style: none; }
   padding: 0.28rem 0.7rem;
   border-radius: 999px;
   border: 1.5px solid currentColor;
-  font-size: 0.85rem;
+  font-size: var(--small);
   font-weight: 650;
   color: var(--state);
   text-decoration: none;
 }
 .pill[data-sure="no"] { color: var(--maybe); border-style: dashed; }
 a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
-.hero .why { margin-top: 0.55rem; font-size: 0.9rem; color: var(--maybe); text-wrap: pretty; }
+.hero .why { margin-top: 0.55rem; font-size: var(--small); color: var(--maybe); text-wrap: pretty; }
 
 .stale {
   margin-bottom: 0.85rem;
@@ -153,11 +160,10 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
   justify-content: space-between;
   align-items: baseline;
   gap: 0.75rem;
-  font-size: 1.05rem;
   font-weight: 750;
 }
-.card h2 > span { font-size: 0.92rem; font-weight: 500; color: var(--muted); }
-.card h2 > .tag { font-size: 0.78rem; font-weight: 650; color: var(--maybe); }
+.card h2 > span { font-size: var(--small); font-weight: 500; color: var(--muted); }
+.card h2 > .tag { font-size: var(--tiny); font-weight: 650; color: var(--maybe); }
 
 /* ---- Today's timeline ---- */
 
@@ -199,7 +205,7 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 .ticks {
   position: relative;
   height: 2.15rem;
-  font-size: 0.7rem;
+  font-size: var(--tiny);
   line-height: 1.15;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
@@ -214,9 +220,9 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
   background: currentColor;
   opacity: 0.6;
 }
-.ticks small { display: block; font-size: 0.62rem; letter-spacing: 0.02em; }
+.ticks small { display: block; letter-spacing: 0.02em; }
 
-.times { margin-top: 0.65rem; font-size: 1.02rem; }
+.times { margin-top: 0.65rem; }
 .times li { display: flex; gap: 0.55rem; align-items: baseline; }
 .times li + li { margin-top: 0.15rem; }
 .key {
@@ -232,7 +238,6 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 /* ---- Rain ---- */
 
 .rain { margin-top: 1.1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
-.rain-text { font-size: 1.02rem; }
 .rain-text strong { color: var(--rain); }
 /* Millimetres of rain for each hour, under the same hour marks as the timeline. */
 .rain-chart { position: relative; height: 4.1rem; margin-top: 0.6rem; }
@@ -253,7 +258,7 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
   left: 50%;
   transform: translateX(-50%);
   padding-bottom: 1px;
-  font-size: 0.62rem;
+  font-size: var(--tiny);
   font-weight: 650;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
@@ -262,10 +267,10 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 }
 .rain-plot span[data-past="yes"] { opacity: 0.4; }
 .rain .ticks { margin-top: 0; }
-.rain-caption { margin-top: 0.2rem; font-size: 0.75rem; color: var(--muted); }
+.rain-caption { margin-top: 0.2rem; font-size: var(--small); color: var(--muted); }
 .rain-text + .rain-caption { margin-top: 0.3rem; }
 
-.source { margin-top: 1rem; font-size: 0.9rem; color: var(--muted); text-wrap: pretty; }
+.source { margin-top: 1rem; font-size: var(--small); color: var(--muted); text-wrap: pretty; }
 .source[data-sure="no"] { color: var(--maybe); }
 
 /* ---- Week ahead ---- */
@@ -273,7 +278,8 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 .days { margin-top: 0.5rem; }
 .day {
   display: grid;
-  grid-template-columns: 4.2rem minmax(0, 1fr) 3.6rem;
+  /* The day and the rain take what their words need, so that a booking and its "usual" mark fit on one line of a phone. */
+  grid-template-columns: 3.4rem minmax(0, 1fr) 3.2rem;
   gap: 0.2rem 0.7rem;
   align-items: center;
   padding: 0.7rem 0;
@@ -281,8 +287,8 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 }
 .day:first-child { border-top: 0; }
 .day-name { font-weight: 700; line-height: 1.2; }
-.day-name small { display: block; font-size: 0.8rem; font-weight: 500; color: var(--muted); }
-.day-text { font-size: 0.98rem; line-height: 1.3; }
+.day-name small { display: block; font-size: var(--small); font-weight: 500; color: var(--muted); }
+.day-text { line-height: 1.3; }
 .mini {
   position: relative;
   height: 0.45rem;
@@ -293,9 +299,9 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 }
 .mini[data-known="no"] { background: var(--line); }
 .mini .seg { background: var(--booked-bar); }
-.day-rain { font-size: 0.88rem; line-height: 1.2; color: var(--rain); text-align: right; white-space: nowrap; }
+.day-rain { font-size: var(--small); line-height: 1.2; color: var(--rain); text-align: right; white-space: nowrap; }
 .day-rain strong { font-weight: 700; }
-.day-rain small { display: block; font-size: 0.8rem; font-weight: 500; color: var(--muted); }
+.day-rain small { display: block; font-weight: 500; color: var(--muted); }
 .day-rain[data-dry="yes"] { color: var(--muted); }
 
 .tag {
@@ -303,16 +309,16 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
   padding: 0 0.4rem;
   border: 1.5px dashed currentColor;
   border-radius: 999px;
-  font-size: 0.74rem;
+  font-size: var(--tiny);
   font-weight: 650;
   line-height: 1.35;
   color: var(--maybe);
   vertical-align: 0.08em;
 }
-.legend { margin-top: 0.6rem; padding-top: 0.75rem; border-top: 1px solid var(--line); font-size: 0.85rem; color: var(--muted); }
+.legend { margin-top: 0.6rem; padding-top: 0.75rem; border-top: 1px solid var(--line); font-size: var(--small); color: var(--muted); }
 .legend .key { display: inline-block; margin: 0 0.35rem 0 0; }
 .legend .key.booked { margin-left: 1rem; }
-.legend-note { margin-top: 0.35rem; font-size: 0.85rem; color: var(--muted); text-wrap: pretty; }
+.legend-note { margin-top: 0.35rem; font-size: var(--small); color: var(--muted); text-wrap: pretty; }
 
 /* ---- About me ---- */
 
@@ -348,7 +354,7 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 /* A button is laid out by the rules above, which would otherwise show it even while it is hidden. */
 .button[hidden] { display: none; }
 .button:disabled { opacity: 0.55; cursor: default; }
-.notify-note { margin: 0 0.25rem; font-size: 0.92rem; color: var(--muted); text-wrap: pretty; }
+.notify-note { margin: 0 0.25rem; font-size: var(--small); color: var(--muted); text-wrap: pretty; }
 
 /* ---- Fold-outs and footer ---- */
 
@@ -364,10 +370,10 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 .share-body { text-align: center; }
 .share-body .button { margin-top: 0; }
 .share-body img { display: block; width: min(14rem, 70%); height: auto; margin: 1rem auto 0; padding: 0.6rem; border-radius: 12px; background: #fff; }
-.share-body p { margin-top: 0.6rem; font-size: 0.95rem; }
+.share-body p { margin-top: 0.6rem; font-size: var(--small); }
 .share-address { overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
 
-.foot { margin: 1.4rem 0.25rem 0; font-size: 0.86rem; color: var(--muted); }
+.foot { margin: 1.4rem 0.25rem 0; font-size: var(--small); color: var(--muted); }
 .foot p + p { margin-top: 0.55rem; }
 
 @media (prefers-reduced-motion: no-preference) {
