@@ -609,6 +609,75 @@ test("if a notification service refuses every message, nobody is dropped", async
   assert.equal((await it.book.status()).body.last.sent, 5);
 });
 
+test("a refusal is noted for the status page: which service, which answer, how often, when last, and its words", async () => {
+  // Apple's service refuses, and says why. Google's takes the message.
+  const it = await open({ answer: (url) => (url.includes("apple") ? { status: 403, words: '{"reason":"BadJwtToken"}' } : 201) });
+  const [iphone] = await seed(it, 1, "web.push.apple.com");
+  await seed(it, 2);
+  assert.deepEqual((await it.book.status()).body.refusals, {});
+
+  await days(it, 1);
+  assert.equal((await it.book.status()).body.last.refused, 1);
+  assert.deepEqual((await it.book.status()).body.refusals, { "web.push.apple.com 403": { times: 1, on: "2026-11-20", said: "reason BadJwtToken" } });
+
+  await days(it, 1, 1);
+  assert.deepEqual((await it.book.status()).body.refusals, { "web.push.apple.com 403": { times: 2, on: "2026-11-21", said: "reason BadJwtToken" } });
+
+  // Nothing about the device itself is part of the note.
+  const text = JSON.stringify((await it.book.status()).body);
+  for (const secret of [iphone.endpoint, iphone.endpoint.split("/").pop(), iphone.subscription.keys.p256dh, iphone.subscription.keys.auth, "sub:"]) {
+    assert.equal(text.includes(secret), false, secret);
+  }
+});
+
+test("a refusal on checking in is noted too, with the service's words only for an address that is in the book", async () => {
+  const it = await open({ answer: () => ({ status: 400, words: "words that somebody may have made the service say" }) });
+
+  // An address nobody has seen before: the answer's number is noted, its words are not.
+  const stranger = newDevice("updates.push.services.mozilla.com");
+  assert.equal((await it.book.subscribe({ subscription: stranger.subscription })).status, 410);
+  assert.deepEqual((await it.book.status()).body.refusals, { "updates.push.services.mozilla.com 400": { times: 1, on: TODAY, said: "" } });
+
+  // A device in the book, whose last alert was refused: the words are kept.
+  const [known] = await seed(it, 1, "fcm.googleapis.com", { fails: 1 });
+  assert.equal((await it.book.subscribe({ subscription: known.subscription })).status, 410);
+  assert.deepEqual((await it.book.status()).body.refusals["fcm.googleapis.com 400"], { times: 1, on: TODAY, said: "words that somebody may have made the service say" });
+});
+
+test("an entry that cannot be written to is noted with the reason, although no service was asked", async () => {
+  const it = await open({ page: checked() });
+  const [phone] = await seed(it, 1, "fcm.googleapis.com", { p256dh: "not a key" });
+  await seed(it, 1);
+  await lookAt(it);
+  assert.equal((await it.book.status()).body.last.refused, 1);
+  assert.deepEqual((await it.book.status()).body.refusals, { "fcm.googleapis.com 0": { times: 1, on: TODAY, said: "the device's keys could not be used" } });
+  assert.equal(it.net.pushesTo(phone).length, 0);
+});
+
+test("only ten kinds of refusal are remembered, and the one not seen for the longest time makes room", async () => {
+  let status = 400;
+  const it = await open({ answer: () => status });
+  await seed(it, 1);
+  // A different answer on each of eleven days. None of them is 404, 410 or 429, which mean other things.
+  const answers = [400, 401, 402, 403, 405, 406, 407, 408, 409, 411, 412];
+  for (const [index, answer] of answers.entries()) {
+    status = answer;
+    await days(it, 1, index);
+  }
+  const noted = (await it.book.status()).body.refusals;
+  assert.equal(Object.keys(noted).length, 10);
+  assert.equal("fcm.googleapis.com 400" in noted, false);
+  assert.deepEqual(noted["fcm.googleapis.com 412"], { times: 1, on: "2026-11-30", said: "" });
+
+  // The same kind many times over: the count stops at 100.
+  for (let again = 0; again < 120; again += 1) await it.book.noteRefusals([{ host: "fcm.googleapis.com", status: 412, said: "" }]);
+  assert.equal((await it.book.status()).body.refusals["fcm.googleapis.com 412"].times, 100);
+
+  // A name that is not a plain host name is not written down at all.
+  await it.book.noteRefusals([{ host: "<script>", status: 403, said: "" }, { host: "fcm.googleapis.com", status: "403", said: "" }]);
+  assert.equal(Object.keys((await it.book.status()).body.refusals).length, 10);
+});
+
 test("a lone device is never dropped for being refused", async () => {
   const it = await open({ answer: () => 403 });
   const [phone] = await seed(it, 1);
@@ -819,7 +888,7 @@ test("what the status shows names no device", async () => {
   await lookAt(it);
   const status = await it.book.status();
   assert.equal(status.status, 200);
-  assert.deepEqual(Object.keys(status.body).sort(), ["devices", "last", "ok", "sending", "timer", "unknownServices"]);
+  assert.deepEqual(Object.keys(status.body).sort(), ["devices", "last", "ok", "refusals", "sending", "timer", "unknownServices"]);
   const text = JSON.stringify(status.body);
   for (const secret of [phone.endpoint, phone.host, phone.subscription.keys.p256dh, phone.subscription.keys.auth, "sub:"]) {
     assert.equal(text.includes(secret), false, secret);

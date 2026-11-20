@@ -92,7 +92,9 @@ async function outbound(request) {
   }
   const push = { url: request.url, method: request.method, headers: Object.fromEntries(request.headers), body: new Uint8Array(await request.arrayBuffer()) };
   outside.pushes.push(push);
-  return new Response(null, { status: outside.answer(push) });
+  // A number, or `{ status, words }` when the service also says why.
+  const said = outside.answer(push);
+  return typeof said === "object" ? new Response(said.words, { status: said.status }) : new Response(null, { status: said });
 }
 
 // The worker's own files, as modules. A bundle made by wrangler is one file.
@@ -206,6 +208,7 @@ try {
       last: null,
       timer: null,
       unknownServices: {},
+      refusals: {},
       starter: { on: true, look: null, check: null, token: null },
     });
     assert.equal(status.headers.get("Access-Control-Allow-Origin"), null);
@@ -395,6 +398,24 @@ try {
     assert.deepEqual(answer.body, { ok: false, reason: "gone" });
     outside.answer = () => 201;
     assert.equal((await ask(mf, "GET", "/status")).body.devices, 45);
+    outside.pushes.length = 0;
+  });
+
+  await check("a refusal is noted on the status page with the service's answer, and nothing of the phone", async () => {
+    outside.answer = () => ({ status: 403, words: '{"reason":"BadJwtToken"}' });
+    const phone = newDevice("web.push.apple.com");
+    const answer = await ask(mf, "POST", "/subscribe", { body: { subscription: phone.subscription } });
+    assert.equal(answer.status, 410);
+    assert.deepEqual(answer.body, { ok: false, reason: "gone" });
+    outside.answer = () => 201;
+    const status = (await ask(mf, "GET", "/status")).body;
+    // This address was never in the book, so the answer's number is kept and its words are not.
+    assert.deepEqual(Object.keys(status.refusals), ["web.push.apple.com 403"]);
+    assert.equal(status.refusals["web.push.apple.com 403"].times, 1);
+    assert.equal(status.refusals["web.push.apple.com 403"].said, "");
+    assert.match(status.refusals["web.push.apple.com 403"].on, /^\d{4}-\d\d-\d\d$/);
+    assert.equal(JSON.stringify(status).includes(phone.endpoint.split("/").pop()), false);
+    assert.equal(status.devices, 45);
     outside.pushes.length = 0;
   });
 

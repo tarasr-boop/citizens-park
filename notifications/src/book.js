@@ -38,6 +38,9 @@ const ALERT_TTL = 4 * 3600;
 const WELCOME_TTL = 3600;
 const MOST_HOSTS_NOTED = 10;
 const MOST_NOTED_PER_HOST = 100;
+// How many different refusals are remembered for the status page. A new kind
+// takes the place of the one not seen for the longest time.
+const MOST_REFUSALS_NOTED = 10;
 
 function reply(status, body) {
   return { status, body };
@@ -97,27 +100,40 @@ export class Book {
    * Write `message` to each of `entries` (pairs of name and entry), a few at a
    * time. Returns triples of name, entry and what happened: "sent", "gone",
    * "refused" or "later". Never throws.
+   *
+   * Each refusal is noted for the status page (see `noteRefusals`). The push
+   * service's own words are kept only with `words`: for addresses that are in
+   * the book, which have taken a message before.
    */
-  async deliver(entries, message, topic, ttl) {
+  async deliver(entries, message, topic, ttl, words = true) {
     const now = this.now();
     const proofs = new Map(); // one signed proof for each push service, shared by all its addresses
     const results = [];
+    const refusals = [];
     let next = 0;
     const lane = async () => {
       while (next < entries.length) {
         const [name, entry] = entries[next];
         next += 1;
         let result;
-        let origin = "";
+        let address = null;
         try {
-          origin = new URL(entry.endpoint).origin;
+          address = new URL(entry.endpoint);
         } catch {
           result = "refused"; // an entry that is not an address
+          refusals.push({ host: "no-address", status: 0, said: "the entry is not an address" });
         }
-        if (origin) {
+        if (address) {
+          const origin = address.origin;
           try {
             if (!proofs.has(origin)) proofs.set(origin, authorization(origin, this.keys, this.settings.siteUrl, now));
-            result = await send(entry, message, { authorization: await proofs.get(origin), ttl, topic, fetch: this.fetch });
+            result = await send(entry, message, {
+              authorization: await proofs.get(origin),
+              ttl,
+              topic,
+              fetch: this.fetch,
+              refused: (status, said) => refusals.push({ host: address.hostname, status, said: words || !status ? said : "" }),
+            });
           } catch {
             result = "later"; // the proof could not be signed: the trouble is here, not with the address
           }
@@ -126,7 +142,31 @@ export class Book {
       }
     };
     await Promise.all(Array.from({ length: Math.min(LANES, entries.length) }, lane));
+    if (refusals.length) await this.noteRefusals(refusals).catch(() => {});
     return results;
+  }
+
+  /**
+   * Keep, for the status page, why messages were refused: the push service's
+   * name and the number of its answer, with how often, on which day last, and
+   * its words. A refusal is the one answer that can mean the fault is on this
+   * side, and without this nobody could tell. No address and no key is kept.
+   */
+  async noteRefusals(found) {
+    const noted = (await this.storage.get("refusals")) || {};
+    const on = localTime(this.now(), this.settings.zone).date;
+    for (const { host, status, said } of found) {
+      // Only a plain name is noted: the status page can be read by anyone.
+      if (!/^[a-z0-9.-]{1,80}$/.test(host) || !Number.isInteger(status)) continue;
+      const kind = `${host} ${status}`;
+      const seen = Object.hasOwn(noted, kind) ? noted[kind] : null;
+      if (!seen && Object.keys(noted).length >= MOST_REFUSALS_NOTED) {
+        const oldest = Object.keys(noted).reduce((a, b) => (noted[b].on < noted[a].on ? b : a));
+        delete noted[oldest];
+      }
+      noted[kind] = { times: Math.min((seen ? seen.times : 0) + 1, MOST_NOTED_PER_HOST), on, said: said || (seen ? seen.said : "") };
+    }
+    await this.storage.put("refusals", noted);
   }
 
   async noteHost(host) {
@@ -174,7 +214,7 @@ export class Book {
 
     // A new address, or one whose last alert was refused: it is written to now.
     const hello = messageFor(welcome(this.settings), this.settings, "welcome");
-    const [[, , result]] = await this.deliver([[name, mine]], hello, "welcome", WELCOME_TTL);
+    const [[, , result]] = await this.deliver([[name, mine]], hello, "welcome", WELCOME_TTL, Boolean(known));
     if (result === "later") {
       // No clear answer. An address in the book stays there, a new one is not added.
       return known ? reply(200, { ok: true, new: false }) : reply(503, { ok: false, reason: "later" });
@@ -223,6 +263,8 @@ export class Book {
       last: (await this.storage.get("last")) || null,
       timer: (await this.storage.get("tick")) || null,
       unknownServices: (await this.storage.get("hosts")) || {},
+      // Why messages were refused, if any were: the service, its answer, how often, when last, and its words.
+      refusals: (await this.storage.get("refusals")) || {},
     });
   }
 

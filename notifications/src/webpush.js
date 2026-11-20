@@ -123,18 +123,40 @@ export function outcome(status) {
 }
 
 /**
+ * A push service's own words for why it would not take a message, made safe
+ * to show on the status page: plain letters only, at most 160 of them, and
+ * nothing that could be a piece of a device's address or of a key. Such a
+ * piece is long, or longer than a dozen letters with digits among them.
+ */
+export function plainWords(text) {
+  return String(text || "")
+    .slice(0, 600)
+    .replace(/[^A-Za-z0-9 .,:_-]+/g, " ")
+    .split(" ")
+    .filter((word) => /[A-Za-z0-9]/.test(word) && word.length <= 24 && (word.length <= 12 || !/\d/.test(word)))
+    .join(" ")
+    .slice(0, 160)
+    .trim();
+}
+
+/**
  * Send `message` (bytes) to one address. Returns "sent", "gone", "refused" or
  * "later". Never throws for something the other side did.
  *
  * `to` is `{ endpoint, p256dh, auth }` with the two keys as base64url text.
- * `how` is `{ authorization, ttl, topic, fetch, timeout }`.
+ * `how` is `{ authorization, ttl, topic, fetch, timeout, refused }`. If the
+ * push service refuses the message, `refused`, when given, is called with the
+ * number of its answer and its words (see `plainWords`). If the message could
+ * not be made for this address at all, the number is 0 and the words are ours.
  */
 export async function send(to, message, how) {
   let body;
   try {
     body = await encrypt(message, fromBase64Url(to.p256dh), fromBase64Url(to.auth));
   } catch {
-    return "refused"; // keys that are not keys: this address can never be written to
+    // Keys that are not keys, or more words than fit: nothing can be sent to this address like this.
+    if (how.refused) how.refused(0, message.length > LARGEST_MESSAGE ? "the message is too long" : "the device's keys could not be used");
+    return "refused";
   }
   try {
     const response = await how.fetch(to.endpoint, {
@@ -154,9 +176,22 @@ export async function send(to, message, how) {
       redirect: "manual",
       signal: AbortSignal.timeout(how.timeout || 10000),
     });
-    // Let go of the answer's body, so the connection is free for the next message.
-    if (response.body && response.body.cancel) await response.body.cancel().catch(() => {});
-    return outcome(response.status);
+    const result = outcome(response.status);
+    if (result === "refused" && how.refused) {
+      // The service says why in a few words. They are worth keeping: a refusal
+      // is the one answer that can mean the fault is on this side.
+      let said = "";
+      try {
+        said = plainWords(await response.text());
+      } catch {
+        // No words, then. The number alone is still worth having.
+      }
+      how.refused(response.status, said);
+    } else if (response.body && response.body.cancel) {
+      // Let go of the answer's body, so the connection is free for the next message.
+      await response.body.cancel().catch(() => {});
+    }
+    return result;
   } catch {
     return "later"; // no answer in time, or no connection
   }
