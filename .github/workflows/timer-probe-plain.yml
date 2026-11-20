@@ -1,0 +1,23 @@
+name: Timer probe, plain (temporary)
+
+# A temporary test, to find out why GitHub's timer has not started the Daily
+# check. This one is written the plain way, in UTC: does GitHub's timer start
+# anything at all in this repository? It only says the time, and it is removed
+# once the answer is known.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+# No rights at all: it reads nothing and changes nothing.
+permissions: {}
+
+jobs:
+  say:
+    name: Say the time
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Say the time
+        run: date -u "+%Y-%m-%d %H:%M UTC"
