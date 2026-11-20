@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from parkbot.council import Closure, DayEntry
 from parkbot.pattern import ScheduleError, load_seasons, usual_for
-from parkbot.status import free_text, free_windows, plan_day, plan_days
+from parkbot.status import free_windows, plan_day, plan_days
 from parkbot.store import CouncilStore, State
 from parkbot.timeparse import Slot
 
@@ -96,6 +96,7 @@ class PlanDayTest(unittest.TestCase):
         self.assertEqual(texts(plan.slots), ["16:00-20:00"])
         self.assertEqual(plan.note, "From the council's schedule.")
         self.assertEqual(plan.why, "")  # nothing to explain: the day is confirmed
+        self.assertFalse(plan.stale)
 
     def test_a_day_past_the_council_page_uses_the_usual_pattern(self):
         today = date(2026, 11, 20)
@@ -110,6 +111,13 @@ class PlanDayTest(unittest.TestCase):
         store = october_store(date(2026, 10, 20))
         plan = plan_day(date(2026, 10, 30), store, seasons(), date(2026, 10, 30))
         self.assertEqual(plan.note, "From the council's schedule, last read on Tue 20 Oct.")
+        self.assertTrue(plan.confirmed)
+        self.assertTrue(plan.stale)
+
+    def test_a_read_from_yesterday_is_still_fresh(self):
+        plan = plan_day(date(2026, 10, 30), october_store(date(2026, 10, 29)), seasons(), date(2026, 10, 30))
+        self.assertEqual(plan.note, "From the council's schedule.")
+        self.assertFalse(plan.stale)
 
     def test_rough_season(self):
         plan = plan_day(date(2027, 4, 13), CouncilStore(), seasons(), date(2027, 4, 13))
@@ -160,24 +168,28 @@ class PlanDayTest(unittest.TestCase):
         self.assertEqual([plan.basis for plan in plans], ["council"] * 3 + ["usual"] * 5)
 
 
-class FreeTextTest(unittest.TestCase):
+class FreeWindowsTest(unittest.TestCase):
     EVENING = (Slot(16 * 60 + 15, 19 * 60 + 30),)
 
     def test_before_the_booking(self):
-        self.assertEqual(free_text(self.EVENING, 15 * 60, 22 * 60), "until 4:15 PM, then from 7:30 PM")
+        self.assertEqual(free_windows(self.EVENING, 15 * 60, 22 * 60), [(15 * 60, 16 * 60 + 15), (19 * 60 + 30, 22 * 60)])
 
     def test_during_the_booking(self):
-        self.assertEqual(free_text(self.EVENING, 17 * 60, 22 * 60), "from 7:30 PM")
+        self.assertEqual(free_windows(self.EVENING, 17 * 60, 21 * 60), [(19 * 60 + 30, 21 * 60)])
 
     def test_after_the_booking(self):
-        self.assertEqual(free_text(self.EVENING, 20 * 60, 22 * 60), "for the rest of today")
+        self.assertEqual(free_windows(self.EVENING, 20 * 60, 22 * 60), [(20 * 60, 22 * 60)])
 
     def test_gap_between_two_bookings(self):
         slots = (Slot(10 * 60, 13 * 60), Slot(16 * 60, 18 * 60))
-        self.assertEqual(free_text(slots, 9 * 60, 22 * 60), "until 10 AM, then 1 PM to 4 PM, then from 6 PM")
+        self.assertEqual(free_windows(slots, 9 * 60, 22 * 60), [(9 * 60, 10 * 60), (13 * 60, 16 * 60), (18 * 60, 22 * 60)])
 
-    def test_booked_until_lights_off(self):
-        self.assertEqual(free_text((Slot(15 * 60, 22 * 60),), 15 * 60, 22 * 60), "")
+    def test_booked_to_the_end(self):
+        self.assertEqual(free_windows((Slot(15 * 60, 22 * 60),), 15 * 60, 22 * 60), [])
+        self.assertEqual(free_windows((Slot(15 * 60, 22 * 60),), 17 * 60, 21 * 60), [])
+
+    def test_no_bookings(self):
+        self.assertEqual(free_windows((), 17 * 60, 21 * 60), [(17 * 60, 21 * 60)])
 
     def test_tiny_gaps_are_not_offered(self):
         slots = (Slot(16 * 60, 17 * 60), Slot(17 * 60 + 10, 18 * 60))

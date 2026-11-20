@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta
 
 from .pattern import Season, usual_for
 from .store import CouncilStore
-from .timeparse import MINUTES_PER_DAY, Slot, clock, merge
+from .timeparse import MINUTES_PER_DAY, Slot, merge
 
 # After this many days without a successful read, council data is called out as old.
 _FRESH_DAYS = 1
@@ -34,6 +34,7 @@ class DayPlan:
     label: str = ""  # "Maintenance", or the words of the closure notice
     note: str = ""  # one sentence for people: where this comes from
     why: str = ""  # only when the day is not confirmed: why the council's page does not settle it
+    stale: bool = False  # from the council's page, but the page has not been read for more than a day
 
     @property
     def confirmed(self) -> bool:
@@ -100,10 +101,11 @@ def plan_day(
     entry = store.days.get(day)
     if entry is not None:
         note = "From the council's schedule."
-        if store.last_read and (today - store.last_read).days > _FRESH_DAYS:
+        stale = bool(store.last_read and (today - store.last_read).days > _FRESH_DAYS)
+        if stale:
             note = f"From the council's schedule, last read on {short_date(store.last_read)}."
         label = entry.label or (closure_text if closed_slots else "")
-        return DayPlan(day, merge(list(entry.slots) + list(closed_slots)), "council", False, label, note)
+        return DayPlan(day, merge(list(entry.slots) + list(closed_slots)), "council", False, label, note, stale=stale)
 
     usual = usual_for(day, store.days, seasons)
     if usual is not None:
@@ -146,7 +148,7 @@ def plan_days(
 
 
 # --------------------------------------------------------------------------
-# Sentences shared by the Telegram post and the page
+# Free time
 # --------------------------------------------------------------------------
 
 
@@ -165,21 +167,3 @@ def free_windows(slots: tuple[Slot, ...], from_minute: int, until_minute: int) -
     if cursor < until_minute:
         windows.append((cursor, until_minute))
     return [(start, end) for start, end in windows if end - start >= 15]
-
-
-def free_text(slots: tuple[Slot, ...], now_minute: int, lights_off: int) -> str:
-    """Free periods for the rest of the day in words: ``until 4:15 PM, then from 7:30 PM``."""
-    windows = free_windows(slots, now_minute, lights_off)
-    parts: list[str] = []
-    for start, end in windows:
-        if start <= now_minute and end >= lights_off:
-            return "for the rest of today"
-        if start <= now_minute:
-            parts.append(f"until {clock(end)}")
-        elif end >= lights_off:
-            parts.append(f"from {clock(start)}")
-        else:
-            parts.append(f"{clock(start)} to {clock(end)}")
-    if not parts:
-        return ""
-    return ", then ".join(parts)

@@ -34,6 +34,8 @@ class ConfigTest(unittest.TestCase):
         # With no day_end, the page's timeline runs until the lights go off.
         self.assertEqual(config.day_end, 22 * 60)
         self.assertEqual((config.post_from, config.post_until), (14 * 60 + 30, 19 * 60))
+        # With no advice hours, the post looks for the best window between 5 and 9 PM.
+        self.assertEqual((config.advice_from, config.advice_until), (17 * 60, 21 * 60))
         self.assertEqual(config.channel, "ExampleParkDogs")
         self.assertEqual(config.channel_url, "https://t.me/ExampleParkDogs")
         self.assertEqual(config.site_url, "https://example.org/park/")
@@ -115,9 +117,15 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, r"about should be a section that starts with a \[about\] line"):
             self.load('about = "Hello."\n' + GOOD)
 
+    def test_the_hours_for_the_best_window_can_be_set(self):
+        config = self.changed('post_until = "19:00"', 'post_until = "19:00"\nadvice_from = "16:30"\nadvice_until = "20:00"')
+        self.assertEqual((config.advice_from, config.advice_until), (16 * 60 + 30, 20 * 60))
+
     def test_times_must_make_sense(self):
         with self.assertRaisesRegex(ConfigError, "post_from must be earlier than telegram.post_until"):
             self.changed('post_from = "14:30"', 'post_from = "19:30"')
+        with self.assertRaisesRegex(ConfigError, "advice_from must be earlier than telegram.advice_until"):
+            self.changed('post_until = "19:00"', 'post_until = "19:00"\nadvice_from = "21:00"\nadvice_until = "17:00"')
         with self.assertRaisesRegex(ConfigError, "day_start must be earlier than park.lights_off"):
             self.changed('day_start = "06:00"', 'day_start = "23:00"')
         with self.assertRaisesRegex(ConfigError, "day_start must be earlier than park.day_end"):
@@ -183,6 +191,8 @@ class RealFilesTest(unittest.TestCase):
         self.assertTrue(config.council_url.startswith("https://"))
         self.assertLess(config.post_from, config.post_until)
         self.assertLess(config.day_start, config.day_end)
+        # Taras asked for the best window to be looked for between 5 and 9 PM.
+        self.assertEqual((config.advice_from, config.advice_until), (17 * 60, 21 * 60))
 
     def test_the_job_checks_morning_afternoon_and_evening(self):
         # At least one planned check before noon and one after it, so the page is never

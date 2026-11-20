@@ -7,7 +7,8 @@ from parkbot import message, weather
 from parkbot.council import DayEntry
 from parkbot.status import plan_day, plan_days
 from parkbot.store import CouncilStore
-from parkbot.weather import HourRain, WeatherError, outlook
+from parkbot.timeparse import Slot
+from parkbot.weather import HourRain, WeatherError, Window, best_window, outlook
 
 from .helpers import forecast_json, load_config, october_store, seasons
 
@@ -103,9 +104,171 @@ class OutlookTest(unittest.TestCase):
         self.assertEqual(outlook(hours({}), 23 * 60).level, "unknown")
 
 
+class BestWindowTest(unittest.TestCase):
+    """The best part of the free time for staying out of the rain, between 5 and 9 PM."""
+
+    EVENING = (17 * 60, 21 * 60)
+    ALL_FREE = [EVENING]
+
+    def best(self, chances, mm, free=None, first=17 * 60, last=21 * 60):
+        return best_window(hours(chances, mm), self.ALL_FREE if free is None else free, first, last)
+
+    def test_nothing_to_say_on_a_dry_evening(self):
+        self.assertIsNone(self.best({}, {}))
+        # Rain earlier in the day, or after 9 PM, does not count.
+        self.assertIsNone(self.best({10: 90, 16: 90, 21: 90}, {10: 3.0, 16: 2.0, 21: 4.0}))
+        # A small chance with nothing measurable is still a dry hour.
+        self.assertIsNone(self.best({18: 40}, {}))
+
+    def test_the_dry_stretch_after_the_rain(self):
+        window = self.best({17: 90, 18: 80}, {17: 2.0, 18: 1.0})
+        self.assertEqual(window, Window(19 * 60, 21 * 60, True))
+
+    def test_the_dry_stretch_before_the_rain(self):
+        window = self.best({19: 70, 20: 90}, {19: 0.5, 20: 3.0})
+        self.assertEqual(window, Window(17 * 60, 19 * 60, True))
+
+    def test_the_longer_of_two_dry_stretches(self):
+        window = self.best({18: 90}, {18: 2.0})
+        self.assertEqual(window, Window(19 * 60, 21 * 60, True))
+
+    def test_between_equal_dry_stretches_the_earlier_one(self):
+        window = self.best({18: 90, 19: 90}, {18: 2.0, 19: 2.0})
+        self.assertEqual(window, Window(17 * 60, 18 * 60, True))
+
+    def test_likely_rain_is_not_dry_even_with_nothing_measurable(self):
+        window = self.best({17: 60}, {})
+        self.assertEqual(window, Window(18 * 60, 21 * 60, True))
+
+    def test_only_free_time_is_offered(self):
+        # Booked 4 to 8 PM. The dry hours at 5 and 6 PM are no use to a dog.
+        window = self.best({19: 90, 20: 30}, {19: 2.0}, free=[(20 * 60, 21 * 60)])
+        self.assertEqual(window, Window(20 * 60, 21 * 60, True))
+
+    def test_free_time_that_starts_on_the_half_hour(self):
+        # Booked 4:15 to 7:30 PM, raining until 7.
+        window = self.best({17: 90, 18: 90}, {17: 2.0, 18: 2.0}, free=[(19 * 60 + 30, 21 * 60)])
+        self.assertEqual(window, Window(19 * 60 + 30, 21 * 60, True))
+
+    def test_with_no_dry_hour_the_lightest_rain(self):
+        window = self.best({17: 90, 18: 95, 19: 85, 20: 60}, {17: 0.9, 18: 4.2, 19: 1.2, 20: 0.2})
+        self.assertEqual(window, Window(20 * 60, 21 * 60, False))
+
+    def test_hours_much_like_the_lightest_join_it(self):
+        window = self.best({17: 90, 18: 90, 19: 90, 20: 90}, {17: 0.3, 18: 0.2, 19: 0.4, 20: 2.0})
+        self.assertEqual(window, Window(17 * 60, 20 * 60, False))
+
+    def test_wet_free_time_is_offered_even_when_the_booked_hours_are_dry(self):
+        window = self.best({20: 90}, {20: 3.0}, free=[(20 * 60, 21 * 60)])
+        self.assertEqual(window, Window(20 * 60, 21 * 60, False))
+
+    def test_nothing_when_nothing_is_free(self):
+        self.assertIsNone(self.best({18: 90}, {18: 2.0}, free=[]))
+        # A quarter of an hour between two bookings is not a window.
+        self.assertIsNone(self.best({18: 90}, {18: 2.0}, free=[(17 * 60, 17 * 60 + 15)]))
+
+    def test_a_late_post_looks_only_at_what_is_left(self):
+        window = self.best({19: 90}, {19: 2.0}, free=[(18 * 60 + 20, 21 * 60)], first=18 * 60 + 20)
+        self.assertEqual(window, Window(20 * 60, 21 * 60, True))
+        self.assertIsNone(self.best({19: 90}, {19: 2.0}, free=[], first=21 * 60 + 5))
+
+    def test_nothing_without_a_forecast_for_the_evening(self):
+        self.assertIsNone(best_window(None, self.ALL_FREE, *self.EVENING))
+        self.assertIsNone(best_window([], self.ALL_FREE, *self.EVENING))
+        partly = [hour for hour in hours({18: 90}, {18: 2.0}) if hour.hour != 20]
+        self.assertIsNone(best_window(partly, self.ALL_FREE, *self.EVENING))
+        blank = [HourRain(hour, None, None) for hour in range(24)]
+        self.assertIsNone(best_window(blank, self.ALL_FREE, *self.EVENING))
+
+
 class DailyMessageTest(unittest.TestCase):
     def setUp(self):
         self.config = load_config()
+
+    def rainy(self, day, mm_by_hour, chance=90):
+        """A forecast with rain in the given hours of ``day`` and none in the others."""
+        return weather.parse(
+            forecast_json(
+                day,
+                1,
+                chance=lambda d, hour: chance if hour in mm_by_hour else 5,
+                mm=lambda d, hour: mm_by_hour.get(hour, 0.0),
+            )
+        )
+
+    def test_a_rainy_evening_names_the_best_window(self):
+        # Friday 30 October is booked 4 to 8 PM. Rain from 3 to 8 PM, then dry.
+        day = date(2026, 10, 30)
+        plan = plan_day(day, october_store(day), seasons(), day)
+        forecast = self.rainy(day, {15: 0.3, 16: 4.6, 17: 0.9, 18: 4.2, 19: 1.2})
+        text = message.daily(plan, forecast, at(day, 14, 44), self.config)
+        self.assertEqual(
+            text,
+            "🐕 <b>Citizens Park oval</b>\n"
+            "\n"
+            "🔴 Booked 4 to 8 PM\n"
+            "\n"
+            "🌧 Rain likely between 3 PM and 8 PM (up to 90%, about 11 mm).\n"
+            "Heavy rain can cancel training, so the oval may free up early.\n"
+            "Based on the hourly forecast, the best window to avoid the rain is 8 to 9 PM.\n"
+            "\n"
+            '<a href="https://example.org/park/">Press here for the week ahead and rain by the hour</a>',
+        )
+
+    def test_when_the_best_window_is_wet_too_the_post_says_so(self):
+        day = date(2026, 10, 30)
+        plan = plan_day(day, october_store(day), seasons(), day)
+        forecast = self.rainy(day, {16: 4.6, 17: 0.9, 18: 4.2, 19: 1.2, 20: 0.2})
+        text = message.daily(plan, forecast, at(day, 14, 44), self.config)
+        self.assertIn("\nBased on the hourly forecast, the best window to avoid the rain is 8 to 9 PM, though it may still rain then.\n", text)
+
+    def test_the_window_is_chosen_from_the_time_that_is_not_booked(self):
+        # Tuesday 27 October is booked 4:15 to 7:30 PM. It is dry at 5 PM, but the oval is taken then.
+        day = date(2026, 10, 27)
+        plan = plan_day(day, october_store(day), seasons(), day)
+        text = message.daily(plan, self.rainy(day, {18: 2.0, 19: 1.0}), at(day, 14, 45), self.config)
+        self.assertIn("the best window to avoid the rain is 8 to 9 PM.", text)
+
+    def test_no_window_on_a_dry_evening(self):
+        day = date(2026, 10, 27)
+        plan = plan_day(day, october_store(day), seasons(), day)
+        for forecast in (self.rainy(day, {}), self.rainy(day, {9: 3.0, 15: 2.0}), None):
+            with self.subTest(forecast=forecast):
+                self.assertNotIn("best window", message.daily(plan, forecast, at(day, 14, 45), self.config))
+
+    def test_no_window_when_the_oval_is_booked_all_evening_or_closed(self):
+        day = date(2026, 10, 27)
+        store = october_store(day)
+        store.days[day] = DayEntry((Slot(16 * 60, 21 * 60),))
+        plan = plan_day(day, store, seasons(), day)
+        self.assertNotIn("best window", message.daily(plan, self.rainy(day, {18: 2.0}), at(day, 14, 45), self.config))
+        closed = date(2026, 9, 20)
+        plan = plan_day(closed, october_store(closed), seasons(), closed)
+        self.assertNotIn("best window", message.daily(plan, self.rainy(closed, {18: 2.0}), at(closed, 14, 45), self.config))
+
+    def test_a_day_with_no_bookings_gets_the_window_too(self):
+        day = date(2026, 10, 27)
+        store = october_store(day)
+        store.days[day] = DayEntry()
+        plan = plan_day(day, store, seasons(), day)
+        text = message.daily(plan, self.rainy(day, {17: 2.0, 18: 1.0}), at(day, 14, 45), self.config)
+        self.assertIn("🟢 No bookings today.\n", text)
+        self.assertIn("the best window to avoid the rain is 7 to 9 PM.", text)
+
+    def test_a_late_post_counts_the_window_from_now(self):
+        day = date(2026, 10, 26)  # Monday, booked 4 to 5 PM
+        plan = plan_day(day, october_store(day), seasons(), day)
+        text = message.daily(plan, self.rainy(day, {19: 2.0, 20: 2.0}), at(day, 17, 40), self.config)
+        self.assertIn("the best window to avoid the rain is from now until 7 PM.", text)
+
+    def test_the_hours_for_the_window_are_settings(self):
+        day = date(2026, 10, 27)
+        store = october_store(day)
+        store.days[day] = DayEntry()
+        plan = plan_day(day, store, seasons(), day)
+        early = load_config(advice_from=15 * 60, advice_until=18 * 60)
+        text = message.daily(plan, self.rainy(day, {15: 2.0, 20: 5.0}), at(day, 14, 45), early)
+        self.assertIn("the best window to avoid the rain is 4 to 6 PM.", text)
 
     def test_usual_pattern_friday(self):
         plan = plan_day(FRIDAY, october_store(FRIDAY), seasons(), FRIDAY)
@@ -113,43 +276,69 @@ class DailyMessageTest(unittest.TestCase):
         text = message.daily(plan, forecast, at(FRIDAY, 14, 45), self.config)
         self.assertEqual(
             text,
-            "🐕 <b>Citizens Park oval · Fri 20 Nov</b>\n"
+            "🐕 <b>Citizens Park oval</b>\n"
             "\n"
             "🟠 Usually booked 4 to 8 PM\n"
-            "🟢 Usually free until 4 PM, then from 8 PM\n"
             "\n"
             "🌦 Slight chance of rain (40% around 6 PM).\n"
             "⚠️ Usual pattern only, not confirmed. The council's page only goes up to 31 October.\n"
             "\n"
-            '<a href="https://example.org/park/">The week ahead and rain by the hour</a>',
+            '<a href="https://example.org/park/">Press here for the week ahead and rain by the hour</a>',
         )
 
     def test_confirmed_day(self):
         day = date(2026, 10, 27)  # Tuesday
         plan = plan_day(day, october_store(day), seasons(), day)
         text = message.daily(plan, None, at(day, 14, 45), self.config)
-        self.assertIn("🔴 Booked 4:15 to 7:30 PM\n🟢 Free until 4:15 PM, then from 7:30 PM", text)
-        self.assertIn("❔ No rain forecast available.", text)
-        self.assertIn("✅ From the council's schedule.", text)
+        self.assertEqual(
+            text,
+            "🐕 <b>Citizens Park oval</b>\n"
+            "\n"
+            "🔴 Booked 4:15 to 7:30 PM\n"
+            "\n"
+            "❔ No rain forecast available.\n"
+            "\n"
+            '<a href="https://example.org/park/">Press here for the week ahead and rain by the hour</a>',
+        )
+
+    def test_the_post_says_what_is_booked_and_leaves_the_rest_unsaid(self):
+        day = date(2026, 10, 27)
+        plan = plan_day(day, october_store(day), seasons(), day)
+        text = message.daily(plan, None, at(day, 14, 45), self.config)
+        self.assertNotIn("Free", text)  # the free times follow from the booked ones
+        self.assertNotIn("council's schedule", text)  # only a doubt is worth a line
+        self.assertNotIn("✅", text)
+        self.assertNotIn("27 Oct", text)  # Telegram shows the date itself
+        self.assertNotIn("Tue", text)
+
+    def test_old_council_times_carry_a_warning(self):
+        day = date(2026, 10, 27)
+        plan = plan_day(day, october_store(date(2026, 10, 24)), seasons(), day)
+        text = message.daily(plan, None, at(day, 14, 45), self.config)
+        self.assertIn("🔴 Booked 4:15 to 7:30 PM\n", text)
+        self.assertIn("\n⚠️ From the council's schedule, last read on Sat 24 Oct.\n", text)
 
     def test_saturday_match_in_progress(self):
         day = date(2026, 10, 24)
         plan = plan_day(day, october_store(day), seasons(), day)
         text = message.daily(plan, None, at(day, 15, 0), self.config)
-        self.assertIn("🔴 Booked until 6 PM\n🟢 Free from 6 PM", text)
+        self.assertIn("🔴 Booked until 6 PM\n\n", text)
+        self.assertNotIn("Free", text)
 
     def test_late_post_after_the_booking(self):
         day = date(2026, 10, 26)  # Monday, booked 4 to 5 PM
         plan = plan_day(day, october_store(day), seasons(), day)
         text = message.daily(plan, None, at(day, 17, 30), self.config)
-        self.assertIn("🟢 Today's bookings have finished. The oval is free for the rest of the day.", text)
+        self.assertIn("🟢 Today's bookings have finished.\n", text)
+        self.assertNotIn("free", text)
 
     def test_free_day(self):
         store = october_store(date(2026, 10, 27))
         store.days[date(2026, 10, 27)] = DayEntry()
         plan = plan_day(date(2026, 10, 27), store, seasons(), date(2026, 10, 27))
         text = message.daily(plan, None, at(date(2026, 10, 27), 14, 45), self.config)
-        self.assertIn("🟢 No bookings today. The oval is free all day.", text)
+        self.assertIn("🟢 No bookings today.\n", text)
+        self.assertNotIn("free", text)
 
     def test_closed_day_escapes_the_council_words(self):
         day = date(2026, 9, 20)
@@ -158,7 +347,8 @@ class DailyMessageTest(unittest.TestCase):
         text = message.daily(plan, None, at(day, 14, 45), self.config)
         self.assertIn("⛔ The oval is closed today.", text)
         self.assertIn("Council notice: Due to turf improvement works", text)
-        self.assertIn("✅ From a notice on the council's page.", text)
+        self.assertNotIn("From a notice", text)  # the notice itself is already quoted
+        self.assertNotIn("✅", text)
 
     def test_label_with_markup_is_escaped(self):
         store = CouncilStore()
@@ -226,7 +416,7 @@ class WeeklyMessageTest(unittest.TestCase):
             "⚠️ Usual pattern only, not confirmed. The council's page only goes up to 31 October.\n"
             "Dogs can use the oval outside these times.\n"
             "\n"
-            '<a href="https://example.org/park/">Today and rain by the hour</a>',
+            '<a href="https://example.org/park/">Press here for today and rain by the hour</a>',
         )
 
     def test_mixed_week_marks_the_unconfirmed_days(self):
@@ -241,8 +431,17 @@ class WeeklyMessageTest(unittest.TestCase):
         sunday = date(2026, 10, 18)
         plans = plan_days(sunday, 8, october_store(sunday), seasons())[1:]
         text = message.weekly(plans, None, self.config)
-        self.assertIn("✅ From the council's schedule.", text)
+        self.assertNotIn("council's schedule", text)
+        self.assertNotIn("✅", text)
+        self.assertNotIn("⚠️", text)
         self.assertNotIn("(usual)", text)
+        self.assertIn("Sun 25 Oct: 11 AM to 5 PM\n\nDogs can use the oval outside these times.\n", text)
+
+    def test_a_week_from_an_old_copy_carries_a_warning(self):
+        sunday = date(2026, 10, 18)
+        plans = plan_days(sunday, 8, october_store(date(2026, 10, 15)), seasons())[1:]
+        text = message.weekly(plans, None, self.config)
+        self.assertIn("\n\n⚠️ From the council's schedule, last read on Thu 15 Oct.\nDogs can use the oval outside these times.\n", text)
 
 
 if __name__ == "__main__":

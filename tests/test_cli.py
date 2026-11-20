@@ -128,7 +128,9 @@ class RunTest(unittest.TestCase):
         self.world.run("2026-11-20T14:45")
         self.world.run("2026-11-21T14:45")
         self.assertEqual(len(self.world.sent), 2)
-        self.assertIn("Sat 21 Nov", self.world.sent[1]["text"])
+        # The post no longer names its day, so tell Saturday's by its booking.
+        self.assertIn("Usually booked until 6 PM", self.world.sent[1]["text"])
+        self.assertEqual(self.world.state().last_daily_post, date(2026, 11, 21))
 
     def test_a_late_run_still_posts(self):
         self.world.run("2026-11-20T16:20")
@@ -204,7 +206,9 @@ class RunTest(unittest.TestCase):
         self.world.council_html = fetch.FetchError("timed out")
         self.world.run("2026-10-27T14:45")
         self.assertIn("🔴 Booked 4:15 to 7:30 PM", self.world.sent[0]["text"])
-        self.assertIn("✅ From the council's schedule.", self.world.sent[0]["text"])
+        # The copy was read this morning, so the post has nothing to warn about.
+        self.assertNotIn("⚠️", self.world.sent[0]["text"])
+        self.assertNotIn("council's schedule", self.world.sent[0]["text"])
 
     def page_data(self) -> dict:
         return json.loads((Path(self._folder.name) / "site" / "data.json").read_text(encoding="utf-8"))

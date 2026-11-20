@@ -31,6 +31,8 @@ class Config:
     channel: str  # Telegram channel link name, without "@"
     post_from: int
     post_until: int
+    advice_from: int  # on a rainy day the post names the best part of the evening, between these two times
+    advice_until: int
     site_name: str  # the page's own name, such as "Citizens Bark"; may be empty
     site_url: str  # always ends with "/"
     tip_url: str
@@ -110,6 +112,8 @@ def load(path: str | Path = "config.toml") -> Config:
             channel=channel,
             post_from=parse_hhmm(str(telegram.get("post_from", "14:30"))),
             post_until=parse_hhmm(str(telegram.get("post_until", "19:00"))),
+            advice_from=parse_hhmm(str(telegram.get("advice_from", "17:00"))),
+            advice_until=parse_hhmm(str(telegram.get("advice_until", "21:00"))),
             site_name=str(site.get("name", "")).strip(),
             site_url=site_url if site_url.endswith("/") else site_url + "/",
             tip_url=_web_address(str(site.get("tip_url", "")), "site.tip_url"),
@@ -131,6 +135,8 @@ def load(path: str | Path = "config.toml") -> Config:
         raise ConfigError("park.day_start must be earlier than park.day_end")
     if not config.post_from < config.post_until:
         raise ConfigError("telegram.post_from must be earlier than telegram.post_until")
+    if not config.advice_from < config.advice_until:
+        raise ConfigError("telegram.advice_from must be earlier than telegram.advice_until")
     try:
         ZoneInfo(config.timezone_name)
     except Exception as error:  # an unknown time zone name

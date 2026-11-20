@@ -12,24 +12,27 @@ It is unofficial. It is not affiliated with the council or the sports clubs.
 ## What a post looks like
 
 ```
-🐕 Citizens Park oval · Fri 20 Nov
+🐕 Citizens Park oval
 
 🔴 Booked 4 to 8 PM
-🟢 Free until 4 PM, then from 8 PM
 
 🌧 Rain likely between 5 PM and 8 PM (up to 80%, about 3 mm).
-✅ From the council's schedule.
+Based on the hourly forecast, the best window to avoid the rain is 8 to 9 PM.
 
-The week ahead and rain by the hour
+Press here for the week ahead and rain by the hour
 ```
 
-Every post says how sure it is:
+The post says when the oval is booked. Dogs can use it at any other time.
 
-| Mark | Meaning |
+On a rainy day the post also names the best window to stay out of the rain. It looks between 5 and 9 PM (`advice_from` and `advice_until` in `config.toml`) and only at times when the oval is not booked. When no rain is forecast for those hours it says nothing, because any time outside the bookings is as good as another.
+
+A post with no warning comes straight from the council's page. A post carries a warning only when there is a doubt:
+
+| Warning | Meaning |
 | --- | --- |
-| ✅ From the council's schedule | The day is on the council's page. |
 | ⚠️ Usual pattern only | The council's page does not cover the day yet, so the usual weekly pattern stands in. |
 | ⚠️ Rough guide only | The usual pattern itself is a guess (see `schedule.toml`). |
+| ⚠️ From the council's schedule, last read on ... | The council's page could not be read for more than a day, so the times come from the last copy. |
 
 ## How it works
 
@@ -66,6 +69,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | The tip button | `tip_url` in `config.toml`. Paste your Ko-fi link. Leave it empty to hide the button. |
 | The usual weekly pattern | `schedule.toml`. It is only used on days the council's page does not cover. |
 | The time of the daily post | `post_from` in `config.toml`, and the run times in `.github/workflows/daily.yml` |
+| The hours searched for the best window on a rainy day | `advice_from` and `advice_until` under `[telegram]` in `config.toml` |
 
 The **Tests** workflow runs after every change. If you get an email saying it failed, the edit probably has a typing slip, such as a missing quotation mark. Open the failed run to see which file it names.
 
