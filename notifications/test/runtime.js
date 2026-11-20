@@ -78,9 +78,12 @@ async function outbound(request) {
 }
 
 // The worker's own files, as modules. A bundle made by wrangler is one file.
-// The files in src/ are the worker and the four it imports.
+// The files in src/ are the worker and the six it imports.
 async function modules() {
-  const names = path.basename(path.dirname(scriptPath)) === "src" ? ["worker.js", "book.js", "rules.js", "starter.js", "webpush.js"] : [path.basename(scriptPath)];
+  const names =
+    path.basename(path.dirname(scriptPath)) === "src"
+      ? ["worker.js", "book.js", "rules.js", "starter.js", "stats.js", "statspage.js", "webpush.js"]
+      : [path.basename(scriptPath)];
   const found = {};
   for (const name of names) {
     found[name] = { type: "esm", contents: await readFile(path.join(path.dirname(scriptPath), name), "utf8") };
@@ -113,8 +116,9 @@ function start(folder) {
             CHECK_TIMES: text(setTime),
             DAILY_CHECK_TOKEN: text(TOKEN),
             SUBSCRIBERS: { type: "durable-object", worker: "alerts", exportName: "Subscribers" },
+            STATS: { type: "durable-object", worker: "alerts", exportName: "Stats" },
           },
-          exports: { Subscribers: { type: "durable-object", storage: "sqlite" } },
+          exports: { Subscribers: { type: "durable-object", storage: "sqlite" }, Stats: { type: "durable-object", storage: "sqlite" } },
           triggers: [{ type: "scheduled", schedule: cron }],
         },
         // Everything the worker asks of the outside world comes here instead.
@@ -358,6 +362,23 @@ try {
     const answer = await ask(mf, "POST", "/unsubscribe", { body: { endpoint: phones[1].endpoint } });
     assert.deepEqual(answer.body, { ok: true });
     assert.equal((await ask(mf, "GET", "/status")).body.devices, 44);
+  });
+
+  await check("the page's visits and presses are counted, kept through a restart and shown on the stats page", async () => {
+    const send = (body) =>
+      mf.dispatchFetch(`${BACKEND}/hit`, { method: "POST", headers: { Origin: PAGE, "Content-Type": "text/plain;charset=UTF-8" }, body: JSON.stringify(body) });
+    assert.equal((await send({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true })).status, 204);
+    assert.equal((await send({ kind: "visit", newToday: false, newThisMonth: false, firstEver: false })).status, 204);
+    assert.equal((await send({ kind: "press", name: "buttons:t.me" })).status, 204);
+    assert.equal((await mf.dispatchFetch(`${BACKEND}/hit`, { method: "POST", headers: { Origin: "https://example.org" }, body: "{}" })).status, 403);
+    await mf.dispose();
+    mf = start(folder);
+    const page = await mf.dispatchFetch(`${BACKEND}/stats`);
+    assert.equal(page.status, 200);
+    assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
+    const html = await page.text();
+    assert.match(html, /today<\/span><\/td><td>2<\/td><td>1<\/td><td>1</);
+    assert.match(html, /Telegram button<\/td><td>1</);
   });
 
   await check("through all of that, GitHub was asked nothing more", async () => {

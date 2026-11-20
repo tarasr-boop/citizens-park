@@ -171,6 +171,14 @@ To switch the second timer off, make `CHECK_TIMES` empty (`""`) in `notification
 
 `CHECK_TIMES` holds the run times of `.github/workflows/daily.yml`. If you change one, change the other. The tests fail until they agree.
 
+## Stats
+
+<https://alerts.citizensbark.com/stats> shows how many times the page was opened, from how many different devices, and which buttons and links were pressed, for each day of a month and for every month since counting began. The arrows at the top go to earlier months. Every day is kept for good.
+
+The page counts for itself, through the same backend as the notifications, so it needs no outside service and no cookies. It sends only what happened ("a visit, the first from this device today", or "the first button was pressed"), never anything about the person. A device knows it has been here before only because its browser remembers the date of its last visit. A private window, or a browser whose history was cleared, counts as a new device. Programs that do not run the page's script, such as most search engines, are not counted.
+
+The stats page is open to anyone who knows its address, like the backend's own numbers. It shows counts only.
+
 ## Setting it up from scratch
 
 1. Make the repository public. In **Settings**, **Pages**, set the source to **GitHub Actions**.
@@ -220,7 +228,9 @@ notifications/  the backend that sends notifications to phones (JavaScript, runs
   src/rules.js     the small decisions: the time at the park, which addresses are taken, the words, the settings
   src/book.js      the book of devices, and the daily sending
   src/starter.js   the second timer, which starts the Daily check when GitHub's own timer has not
-  src/worker.js    connects both to Cloudflare: requests, the timer, the storage
+  src/stats.js     the counter behind the stats page: visits, devices and presses, kept by the day
+  src/statspage.js the stats page itself
+  src/worker.js    connects them to Cloudflare: requests, the timer, the storage
   test/            its tests
   wrangler.jsonc   its settings on Cloudflare
 config.toml     settings

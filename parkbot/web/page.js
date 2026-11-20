@@ -714,6 +714,7 @@
             function () {
               show(true);
               say(words.on);
+              count("alerts:on");
             },
             function (error) {
               show(false);
@@ -741,6 +742,7 @@
             function () {
               show(false);
               say(words.off);
+              count("alerts:off");
             },
             function () {
               say(words.browser);
@@ -796,5 +798,104 @@
           .catch(function () {});
       }
     })();
+  }
+
+  // ---- Counting visits and presses, for the stats page ----
+  //
+  // The backend counts how many times the page is opened, from how many
+  // different devices, and which buttons and links are pressed. What is sent
+  // is only what happened, such as "a visit, the first from this device today"
+  // or "a press of the first button": no cookie, no address, nothing about the person.
+  // This device only remembers the date of its last visit, in its own storage.
+
+  // Only the real page counts, not a copy of it opened somewhere else, and not a program steering a browser.
+  var counting = !!backend && !navigator.webdriver && (function () {
+    try {
+      return new URL(data.site).origin === window.location.origin;
+    } catch (error) {
+      return false;
+    }
+  })();
+
+  function send(what) {
+    if (!counting) return;
+    var text = JSON.stringify(what);
+    // A beacon still goes out when the press takes the reader to another page.
+    try {
+      if (navigator.sendBeacon && navigator.sendBeacon(backend + "/hit", text)) return;
+    } catch (error) {
+      // try the other way
+    }
+    try {
+      fetch(backend + "/hit", { method: "POST", body: text, keepalive: true, mode: "no-cors", credentials: "omit" }).catch(function () {});
+    } catch (error) {
+      // not counted, which is fine
+    }
+  }
+
+  function count(name) {
+    send({ kind: "press", name: name });
+  }
+
+  function countVisit() {
+    var today = parkNow().date;
+    var last = null;
+    try {
+      last = window.localStorage.getItem("lastVisit");
+      window.localStorage.setItem("lastVisit", today);
+    } catch (error) {
+      // Nowhere to remember the date, so this device counts as new.
+    }
+    send({ kind: "visit", newToday: last !== today, newThisMonth: !last || last.slice(0, 7) !== today.slice(0, 7), firstEver: !last });
+  }
+
+  // The part of the page a button or link is in, and what it is: "buttons:t.me", "share:copy", "how:open".
+  var AREAS = [["nav.actions", "buttons"], ["#app", "status"], [".about", "about"], ["#share", "share"], ["#how", "how"], ["footer", "footer"]];
+
+  function pressName(target) {
+    var area = "page";
+    for (var index = 0; index < AREAS.length; index += 1) {
+      if (target.closest(AREAS[index][0])) {
+        area = AREAS[index][1];
+        break;
+      }
+    }
+    var what = target.getAttribute("data-stat") || "";
+    if (!what && target.tagName === "SUMMARY") what = "open";
+    if (!what) what = target.id || "";
+    if (!what && target.tagName === "A") {
+      var href = target.getAttribute("href") || "";
+      if (href.charAt(0) === "#") what = "to-" + href.slice(1);
+      else if (/^mailto:/i.test(href)) what = "email";
+      else what = String(target.hostname || "").replace(/^www\./, "");
+    }
+    what = String(what || target.tagName || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9.:_-]+/g, "-")
+      .replace(/^[^a-z0-9]+/, "");
+    return what ? (area + ":" + what).slice(0, 64) : "";
+  }
+
+  if (counting && document.addEventListener) {
+    countVisit();
+    // Looking at the page again after half an hour away counts as another visit.
+    var hiddenAt = 0;
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) hiddenAt = Date.now();
+      else if (hiddenAt && Date.now() - hiddenAt >= 30 * 60 * 1000) countVisit();
+    });
+    // Caught on the way down, before anything else sees the press.
+    document.addEventListener(
+      "click",
+      function (event) {
+        var target = event.target && event.target.closest ? event.target.closest("a[href], button, summary") : null;
+        if (!target) return;
+        // A fold counts when it is opened, not when it is closed.
+        if (target.tagName === "SUMMARY" && target.parentNode && target.parentNode.open) return;
+        var name = pressName(target);
+        if (name) count(name);
+      },
+      true
+    );
   }
 })();

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { MOST_BYTES } from "../src/rules.js";
 import * as everything from "../src/worker.js";
-import worker, { Subscribers } from "../src/worker.js";
+import worker, { Stats, Subscribers } from "../src/worker.js";
 import { CHECK, ENV, GITHUB, SITE, at, day, memoryStorage, newDevice, pageData, world } from "./standins.js";
 
 const PAGE = "https://citizensbark.example";
@@ -65,7 +65,23 @@ function cloudflare(env = ENV) {
           };
         },
       },
+      STATS: {
+        idFromName: (name) => ({ name }),
+        get(id, options) {
+          it.statsAsked.push({ id, options });
+          return {
+            async fetch(address, init) {
+              if (!it.statsObject) it.statsObject = new Stats({ storage: it.statsStorage }, env);
+              return it.statsObject.fetch(new Request(address, init));
+            },
+          };
+        },
+      },
     },
+    // The counter behind the stats page: an object of its own, with storage of its own.
+    statsStorage: memoryStorage(),
+    statsObject: null,
+    statsAsked: [],
     waits: [],
     ctx: {
       waitUntil(work) {
@@ -94,8 +110,9 @@ const status = async (cf) => (await ask(cf, "GET", "/status")).json();
 
 test("the worker's file exports only what Cloudflare can call", () => {
   // Cloudflare refuses a worker whose main file exports anything else, a plain number for example.
-  assert.deepEqual(Object.keys(everything).sort(), ["Subscribers", "default"]);
+  assert.deepEqual(Object.keys(everything).sort(), ["Stats", "Subscribers", "default"]);
   assert.equal(typeof everything.Subscribers, "function");
+  assert.equal(typeof everything.Stats, "function");
   assert.deepEqual(Object.keys(everything.default).sort(), ["fetch", "scheduled"]);
 });
 
@@ -416,4 +433,51 @@ test("from the tap on the page to the afternoon's notification", async () => {
   now = at(TODAY, "14:50");
   await tick(cf);
   assert.equal(net.pushes.length, 6);
+});
+
+test("the page counts a visit and a press, the way a browser sends them as it leaves", async () => {
+  const cf = cloudflare();
+  // A beacon is sent as plain text, so the browser asks nothing beforehand.
+  const headers = { "Content-Type": "text/plain;charset=UTF-8" };
+  const visit = await ask(cf, "POST", "/hit", { headers, body: JSON.stringify({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true }) });
+  assert.equal(visit.status, 204);
+  assert.equal(await visit.text(), "");
+  assert.equal(visit.headers.get("Access-Control-Allow-Origin"), PAGE);
+  const press = await ask(cf, "POST", "/hit", { headers, body: JSON.stringify({ kind: "press", name: "buttons:t.me" }) });
+  assert.equal(press.status, 204);
+  assert.deepEqual(cf.statsStorage.kept.get(`day:${TODAY}`), { visits: 1, devices: 1, monthly: 1, fresh: 1, presses: { "buttons:t.me": 1 }, counted: 2 });
+  // One counter for everyone, near the people it serves, and the book of devices is not woken for it.
+  assert.deepEqual(cf.statsAsked[0], { id: { name: "all" }, options: { locationHint: "oc" } });
+  assert.equal(cf.asked.length, 0);
+});
+
+test("only the page may count, and only what it sends is counted", async () => {
+  const cf = cloudflare();
+  const body = { kind: "visit", newToday: true };
+  for (const origin of [null, "https://example.org", "null"]) {
+    assert.equal((await ask(cf, "POST", "/hit", { origin, body })).status, 403, String(origin));
+  }
+  assert.equal((await ask(cf, "POST", "/hit", { body: "not json" })).status, 400);
+  assert.equal((await ask(cf, "POST", "/hit", { body: { kind: "press", name: "<img>" } })).status, 400);
+  assert.equal((await ask(cf, "POST", "/hit", { body: { kind: "press", name: "x".repeat(600) } })).status, 413);
+  assert.equal((await ask(cf, "GET", "/hit")).status, 404);
+  assert.equal(cf.statsStorage.writes, 0);
+});
+
+test("anyone may open the stats page, which runs no script and shows counts only", async () => {
+  const cf = cloudflare();
+  await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true } });
+  const page = await ask(cf, "GET", "/stats", { origin: null });
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get("Content-Type"), "text/html; charset=utf-8");
+  assert.equal(page.headers.get("Cache-Control"), "no-store");
+  assert.match(page.headers.get("Content-Security-Policy"), /^default-src 'none';.*frame-ancestors 'none'/);
+  const html = await page.text();
+  assert.match(html, /<strong>November 2026<\/strong>/);
+  assert.match(html, /Fri 20 <span class="muted">today<\/span><\/td><td>1</);
+
+  const october = await (await ask(cf, "GET", "/stats?month=2026-10", { origin: null })).text();
+  assert.match(october, /<strong>October 2026<\/strong>/);
+  const odd = await (await ask(cf, "GET", "/stats?month=%3Cb%3E", { origin: null })).text();
+  assert.match(odd, /<strong>November 2026<\/strong>/);
 });
