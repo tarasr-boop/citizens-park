@@ -1,71 +1,33 @@
 name: Probe (temporary)
 
-# A one-off check that GitHub accepts the schedule lines used in daily.yml,
-# time zones included. Schedules only ever fire from the main branch, so this
-# copy never runs on a timer. This file is removed before the pull request is ready.
+# A one-off check that the Pages actions named in daily.yml exist at those
+# versions. This file is removed before the pull request is ready.
 
 on:
-  schedule:
-    - cron: "17 6 * * *"
-      timezone: "Australia/Melbourne"
-    - cron: "47 11 * * *"
-      timezone: "Australia/Melbourne"
-    - cron: "40 14 * * *"
-      timezone: "Australia/Melbourne"
-    - cron: "10 15 * * *"
-      timezone: "Australia/Melbourne"
-    - cron: "45 15 * * *"
-      timezone: "Australia/Melbourne"
-    - cron: "55 4 * * *"
   push:
     branches: ["claude/first-build"]
     paths:
       - ".github/workflows/probe.yml"
-  workflow_dispatch:
-    inputs:
-      post:
-        description: "Telegram post. auto: only if it is due. force: post now. never: just rebuild the page."
-        type: choice
-        default: auto
-        options:
-          - auto
-          - force
-          - never
-      show_sources:
-        description: "Print the raw council table in the log (to diagnose a failed read)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 jobs:
   probe:
-    name: Check the schedule lines and the tools
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      page: ${{ steps.check.outputs.page }}
-    steps:
-      - name: Inputs fall back to their defaults on a push
-        id: check
-        env:
-          POST_MODE: ${{ inputs.post || 'auto' }}
-          SHOW_SOURCES: ${{ inputs.show_sources && '--show-sources' || '' }}
-        run: |
-          echo "post mode: [$POST_MODE] show sources: [$SHOW_SOURCES]"
-          echo "page=ready" >> "$GITHUB_OUTPUT"
-      - name: Tools on the runner
-        run: |
-          python3 --version
-          gh --version | head -1
-          node --version
-          git --version
-  after:
-    name: Reads the first job's output
-    needs: probe
-    if: ${{ !cancelled() && needs.probe.outputs.page == 'ready' }}
+    name: Check the Pages actions
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: echo "page output was ready"
+      - name: Get the code
+        uses: actions/checkout@v7
+      - name: Build the page offline
+        run: python3 -m parkbot run --post never --offline --data "$RUNNER_TEMP/data" --site site
+      - name: Package the page
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      # Never runs here. It is only named so that GitHub fetches the action and
+      # shows whether this version exists.
+      - name: Publish (skipped)
+        if: ${{ false }}
+        uses: actions/deploy-pages@v5
