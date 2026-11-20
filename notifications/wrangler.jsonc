@@ -9,6 +9,10 @@
   // The backend's public address: a name under the page's own domain, which
   // Cloudflare sets up by itself. It is not given an address at workers.dev,
   // because that one would show the name of the Cloudflare account.
+  //
+  // Careful: a deploy from GitHub takes this name over, whatever it pointed
+  // to before. So it must never be the page's own name, or "www" before it.
+  // The tests refuse both.
   "routes": [{ "pattern": "alerts.citizensbark.com", "custom_domain": true }],
   "workers_dev": false,
   "preview_urls": false,
