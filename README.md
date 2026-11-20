@@ -7,7 +7,7 @@ The oval is a dog off-lead area, but dogs must stay off it while organised sport
 - **A Telegram channel.** One post at about 3 PM Melbourne time, plus a quiet "week ahead" post on Sundays.
 - **A web page.** Today's booked times, the week ahead, rain by the hour, a QR code and a poster to print: <https://tarasr-boop.github.io/citizens-park/>
 
-It is unofficial. It is run by a local dog owner, not by the council or the sports clubs.
+It is unofficial. It is run by a local dog trainer, not by the council or the sports clubs.
 
 ## What a post looks like
 
@@ -59,6 +59,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | --- | --- |
 | The Telegram channel | `channel` in `config.toml`. Use the link name: the part after `t.me/`. |
 | The name shown at the top of the page | `name` under `[site]` in `config.toml` |
+| Who the page says it is run by | `run_by` under `[site]` in `config.toml` |
 | The tip button | `tip_url` in `config.toml`. Paste your Ko-fi link. Leave it empty to hide the button. |
 | The usual weekly pattern | `schedule.toml`. It is only used on days the council's page does not cover. |
 | The time of the daily post | `post_from` in `config.toml`, and the run times in `.github/workflows/daily.yml` |

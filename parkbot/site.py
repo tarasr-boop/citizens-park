@@ -196,6 +196,7 @@ def build(
         "short_name": escape(config.display_name),
         "suburb": escape(config.suburb),
         "council_url": escape(config.council_url),
+        "run_by": escape(config.run_by),
     }
 
     page = _fill(
@@ -234,9 +235,9 @@ def build(
                 f"A free alert at about {post_time} each day on Telegram" if config.channel else "Free, with no sign-up"
             ),
             "unofficial": escape(
-                f"{config.site_name} is an unofficial page run by a local dog owner."
+                f"{config.site_name} is an unofficial page run by {config.run_by}."
                 if config.site_name
-                else "Unofficial page run by a local dog owner."
+                else f"Unofficial page run by {config.run_by}."
             ),
         },
     )

@@ -22,7 +22,7 @@ user_agent = "Mozilla/5.0 (compatible; CitizensParkAlerts/1.0; community dog-wal
 [telegram]
 # The public channel's link name: the part after "t.me/".
 # While this is empty nothing is posted, and the page leaves out its Telegram button.
-channel = ""
+channel = "CitizensBark"
 # The daily post goes out on the first run inside this window (Melbourne time).
 # If you change these, change the run times in .github/workflows/daily.yml too.
 post_from = "14:30"
@@ -31,7 +31,9 @@ post_until = "19:00"
 [site]
 # A name for the page itself, for example "Citizens Bark". It appears at the top
 # of the page and under the home-screen icon. Leave it empty to use the park's name.
-name = ""
+name = "Citizens Bark"
+# Who runs the page. It finishes the sentence "This page is run by ...".
+run_by = "a local dog trainer"
 # The public address of the page. The QR code points here, so if this ever
 # changes, the QR code must be made again (see the README).
 url = "https://tarasr-boop.github.io/citizens-park/"

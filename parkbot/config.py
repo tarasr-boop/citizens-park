@@ -31,6 +31,7 @@ class Config:
     post_from: int
     post_until: int
     site_name: str  # the page's own name, such as "Citizens Bark"; may be empty
+    run_by: str  # who runs the page; finishes the sentence "This page is run by ..."
     site_url: str  # always ends with "/"
     tip_url: str
     repo_url: str
@@ -102,6 +103,7 @@ def load(path: str | Path = "config.toml") -> Config:
             post_from=parse_hhmm(str(telegram.get("post_from", "14:30"))),
             post_until=parse_hhmm(str(telegram.get("post_until", "19:00"))),
             site_name=str(site.get("name", "")).strip(),
+            run_by=str(site.get("run_by", "")).strip() or "a local dog owner",
             site_url=site_url if site_url.endswith("/") else site_url + "/",
             tip_url=_web_address(str(site.get("tip_url", "")), "site.tip_url"),
             repo_url=_web_address(str(site.get("repo_url", "")), "site.repo_url"),

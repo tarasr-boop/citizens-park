@@ -86,6 +86,12 @@ class ConfigTest(unittest.TestCase):
         without = self.load(GOOD.replace('name = ""\n', ""))
         self.assertEqual(without.site_name, "")
 
+    def test_who_runs_the_page_is_optional(self):
+        self.assertEqual(self.load(GOOD).run_by, "a local dog owner")
+        named = self.changed('name = ""', 'name = ""\nrun_by = " a local dog trainer "')
+        self.assertEqual(named.run_by, "a local dog trainer")
+        self.assertEqual(self.changed('name = ""', 'name = ""\nrun_by = ""').run_by, "a local dog owner")
+
     def test_times_must_make_sense(self):
         with self.assertRaisesRegex(ConfigError, "post_from must be earlier than telegram.post_until"):
             self.changed('post_from = "14:30"', 'post_from = "19:30"')

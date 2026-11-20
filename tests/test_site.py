@@ -166,6 +166,16 @@ class BuildTest(unittest.TestCase):
         poster = (self.out / "poster.html").read_text(encoding="utf-8")
         self.assertIn("Citizens Bark is an unofficial page run by a local dog owner.", poster)
 
+    def test_the_page_says_who_runs_it(self):
+        plain = self.build()
+        self.assertIn("This page is run by a local dog owner, not by the council or the clubs.", plain)
+
+        changed = self.build(load_config(run_by="a local dog trainer & <friends>"))
+        self.assertIn("This page is run by a local dog trainer &amp; &lt;friends&gt;, not by the council or the clubs.", changed)
+        self.assertNotIn("dog owner,", changed)
+        poster = (self.out / "poster.html").read_text(encoding="utf-8")
+        self.assertIn("Unofficial page run by a local dog trainer &amp; &lt;friends&gt;.", poster)
+
     def test_manifest_lets_the_page_be_saved_to_a_home_screen(self):
         self.build()
         manifest = json.loads((self.out / "manifest.webmanifest").read_text(encoding="utf-8"))
