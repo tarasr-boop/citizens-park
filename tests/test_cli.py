@@ -6,11 +6,12 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 from parkbot import cli, fetch, telegram
 from parkbot.store import State
 
-from .helpers import CONFIG_FILE, ROOT, SCHEDULE_FILE, forecast_json, october_html
+from .helpers import CONFIG_FILE, EAST, ROOT, SCHEDULE_FILE, WEST, forecast_json, october_html
 
 
 class FakeWorld:
@@ -21,6 +22,14 @@ class FakeWorld:
         self.council_html: str | Exception = october_html()
         self.forecast: str | Exception | None = None  # None: build one for the day of the run
         self.fetches: list[tuple[str, dict]] = []
+        # Where the weather service's name leads right now.
+        self.addresses: list[str] = [WEST]
+        # Set to (address, reason) to play a run on which the usual route to the
+        # weather service failed for that reason and this other server answered.
+        self.detour: tuple[str, str] | None = None
+        # What each server says when it is asked directly. Anything not listed sends the forecast.
+        self.direct: dict[str, str | Exception] = {}
+        self.asked_directly: list[str] = []
         self.send_error: Exception | None = None
         self.sent: list[dict] = []
         self.lines: list[str] = []
@@ -34,6 +43,15 @@ class FakeWorld:
             source = self.forecast if self.forecast is not None else forecast_json(self.first_day, 8)
         else:
             source = self.council_html
+        if isinstance(source, Exception):
+            raise source
+        if "open-meteo" in url and self.detour:
+            kwargs["detour"](*self.detour)
+        return source
+
+    def fetch_at(self, url, user_agent, address, **kwargs):
+        self.asked_directly.append(address)
+        source = self.direct.get(address, forecast_json(self.first_day, 8))
         if isinstance(source, Exception):
             raise source
         return source
@@ -51,9 +69,10 @@ class FakeWorld:
     def tools(self) -> cli.Tools:
         return cli.Tools(
             fetch=self.fetch,
+            fetch_at=self.fetch_at,
             send=self.send,
             sync_issues=self.sync_issues,
-            lookup=lambda url: "192.0.2.7",  # never look anything up on the real network
+            lookup=lambda url: list(self.addresses),  # never look anything up on the real network
             environ=self.environ,
             say=self.lines.append,
         )
@@ -283,14 +302,63 @@ class RunTest(unittest.TestCase):
         longest = tries * timeout + pause * sum(range(1, tries))
         self.assertGreaterEqual(tries, 4)
         self.assertGreaterEqual(longest, 120, "long enough to outlast a one-minute stall")
+        # At worst every try also waits in vain for the service's other servers.
+        longest += tries * fetch._DETOURS * min(timeout, fetch._DETOUR_TIMEOUT)
         self.assertLessEqual(longest, 240, "short enough that the post still goes out at about the usual time")
 
     def test_a_forecast_that_will_not_load_notes_the_services_address(self):
         self.world.forecast = fetch.FetchError("could not connect (The handshake operation timed out)")
         self.world.run("2026-11-20T14:45")
-        self.assertIn("Rain forecast: the weather service's address at the time was 192.0.2.7", self.world.said())
-        # It is a note in the log only. Nothing about it is saved in the public data folder.
-        self.assertNotIn("192.0.2.7", (Path(self._folder.name) / "data" / "state.json").read_text(encoding="utf-8"))
+        self.assertIn(f"Rain forecast: the weather service's address at the time was {WEST}", self.world.said())
+        # It is a note in the log only. A server is remembered when it answers, not when it is silent.
+        self.assertEqual(self.world.state().weather_addresses, {})
+
+    def test_remembers_each_server_that_answers(self):
+        self.world.run("2026-11-20T11:50")
+        self.assertEqual(self.world.state().weather_addresses, {WEST: date(2026, 11, 20)})
+        self.world.addresses = [EAST]  # a run on a runner somewhere else is sent to the other server
+        self.world.run("2026-11-21T06:20")
+        self.assertEqual(self.world.state().weather_addresses, {WEST: date(2026, 11, 20), EAST: date(2026, 11, 21)})
+
+    def test_offers_the_servers_it_knows_as_a_detour(self):
+        self.world.run("2026-11-20T11:50")
+        self.world.addresses = [EAST]
+        self.world.run("2026-11-21T06:20")
+        self.world.run("2026-11-21T11:50")
+        offered = [kwargs["addresses"] for url, kwargs in self.world.fetches if "open-meteo" in url]
+        # The first run knows no server yet. Later ones offer the one seen most recently first.
+        self.assertEqual(offered, [[], [WEST], [EAST, WEST]])
+        # The council's page has one route only.
+        self.assertTrue(all("addresses" not in kwargs for url, kwargs in self.world.fetches if "open-meteo" not in url))
+
+    def test_a_forecast_that_came_by_the_detour_is_as_good_as_any(self):
+        self.world.forecast = self.wet_evening()
+        self.world.run("2026-11-19T11:50")
+        self.world.addresses = [EAST]
+        self.world.run("2026-11-19T15:15")  # both servers are known now
+        self.world.sent.clear()
+        self.world.addresses = [WEST]
+        self.world.detour = (EAST, "could not connect (The handshake operation timed out)")
+        summary = Path(self._folder.name) / "summary.md"
+        self.world.environ["GITHUB_STEP_SUMMARY"] = str(summary)
+        self.assertEqual(self.world.run("2026-11-20T14:45"), 0)
+        text = self.world.sent[0]["text"]
+        self.assertIn("🌧 Rain likely between 5 PM and 8 PM (up to 80%, about 3 mm).", text)
+        self.assertNotIn("Forecast from", text)  # it is today's forecast, not a saved copy
+        said = self.world.said()
+        self.assertIn("Rain forecast: no forecast by the usual route (could not connect (The handshake operation timed out))", said)
+        self.assertIn(f"Rain forecast: read from the weather service's other server ({EAST})", said)
+        self.assertIn(f"- Rain forecast: read from the weather service's other server ({EAST})", summary.read_text(encoding="utf-8"))
+        state = self.world.state()
+        self.assertEqual(state.weather_failures, 0)
+        # The server that answered was seen today. The one that said nothing was not.
+        self.assertEqual(state.weather_addresses, {EAST: date(2026, 11, 20), WEST: date(2026, 11, 19)})
+        self.assertIn('"fetched": "2026-11-20T14:45+11:00"', self.forecast_copy().read_text(encoding="utf-8"))
+
+    def test_never_remembers_an_address_that_is_not_public(self):
+        self.world.addresses = ["10.0.0.8", "127.0.0.1", "169.254.169.254", "::1"]
+        self.world.run("2026-11-20T14:45")
+        self.assertEqual(self.world.state().weather_addresses, {})
 
     def test_a_failed_forecast_never_replaces_the_copy(self):
         self.world.run("2026-11-20T06:20")
@@ -344,6 +412,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual((state.council_failures, state.weather_failures), (0, 0))
         self.assertIn("not checked (offline)", self.world.said())
         self.assertFalse((Path(self._folder.name) / "data" / "forecast.json").exists())
+        self.assertEqual(state.weather_addresses, {})
 
     def test_bad_config_stops_the_run(self):
         bad = Path(self._folder.name) / "config.toml"
@@ -352,7 +421,96 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self.world.sent, [])
 
 
+class RoutesTest(unittest.TestCase):
+    """``python3 -m parkbot routes``: the detour to the weather service, taken on purpose."""
+
+    def setUp(self):
+        self._folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self._folder.cleanup)
+        self.world = FakeWorld(Path(self._folder.name))
+
+    def routes(self, **extra) -> int:
+        options = argparse.Namespace(config=str(CONFIG_FILE), data=str(self.world.folder / "data"))
+        for key, value in extra.items():
+            setattr(options, key, value)
+        return cli.routes(options, self.world.tools())
+
+    def test_asks_the_server_the_name_leads_to_and_the_others_it_knows(self):
+        State(weather_addresses={WEST: date(2026, 11, 20), EAST: date(2026, 11, 19)}).save(self.world.folder / "data" / "state.json")
+        self.world.addresses = [EAST]
+        self.assertEqual(self.routes(), 0)
+        self.assertEqual(self.world.asked_directly, [EAST, WEST])
+        self.assertEqual(
+            self.world.lines,
+            [
+                "By the usual route: the forecast loaded",
+                f"Straight to {EAST} (where the service's name leads right now): the forecast loaded",
+                f"Straight to {WEST} (another of its servers): the forecast loaded",
+            ],
+        )
+        # One try by the usual route, with nothing to fall back on: this is a check, not a run.
+        ((url, kwargs),) = self.world.fetches
+        self.assertEqual((kwargs["tries"], kwargs.get("addresses")), (1, None))
+
+    def test_a_fresh_copy_of_the_code_knows_only_the_current_server(self):
+        self.assertEqual(self.routes(), 0)
+        self.assertEqual(self.world.asked_directly, [WEST])
+
+    def test_fails_when_the_same_server_answers_by_name_but_not_by_address(self):
+        self.world.environ["GITHUB_ACTIONS"] = "true"
+        for broken in (
+            fetch.FetchError("the server's certificate was not accepted (Hostname mismatch)"),
+            fetch.FetchError("the server answered 404"),
+            "<html>not a forecast</html>",
+        ):
+            with self.subTest(broken=str(broken)):
+                self.world.lines.clear()
+                self.world.direct = {WEST: broken}
+                self.assertEqual(self.routes(), 1)
+                self.assertIn(f"Straight to {WEST} (where the service's name leads right now): it did not work (", self.world.said())
+                self.assertIn("::error::The detour to the weather service is broken", self.world.said())
+
+    def test_a_silent_server_proves_nothing(self):
+        # The service's own bad moment must not fail the tests of this code.
+        self.world.direct = {WEST: fetch.NoAnswer("TimeoutError: The handshake operation timed out")}
+        self.assertEqual(self.routes(), 0)
+        self.assertIn(f"Straight to {WEST} (where the service's name leads right now): no answer (TimeoutError", self.world.said())
+
+    def test_nothing_to_compare_with_when_the_usual_route_fails_too(self):
+        self.world.forecast = fetch.FetchError("could not connect (The handshake operation timed out)")
+        self.world.direct = {WEST: fetch.FetchError("the server answered 503")}
+        self.assertEqual(self.routes(), 0)
+        self.assertIn("By the usual route: it did not work (could not connect (The handshake operation timed out))", self.world.said())
+
+    def test_trouble_at_another_server_is_reported_but_is_not_this_codes_fault(self):
+        State(weather_addresses={EAST: date(2026, 11, 19)}).save(self.world.folder / "data" / "state.json")
+        self.world.direct = {EAST: fetch.FetchError("the server's certificate was not accepted (Hostname mismatch)")}
+        self.assertEqual(self.routes(), 0)
+        self.assertIn(f"Straight to {EAST} (another of its servers): it did not work (the server's certificate", self.world.said())
+
+    def test_says_so_when_the_address_cannot_be_looked_up(self):
+        self.world.addresses = []
+        self.assertEqual(self.routes(), 0)
+        self.assertEqual(self.world.asked_directly, [])
+        self.assertIn("The weather service's address could not be looked up.", self.world.said())
+
+    def test_bad_config_stops_it(self):
+        bad = Path(self._folder.name) / "config.toml"
+        bad.write_text("[park]\nname = 'x'\n")
+        self.assertEqual(self.routes(config=str(bad)), 2)
+        self.assertEqual(self.world.asked_directly, [])
+
+
 class MainTest(unittest.TestCase):
+    def test_the_routes_command_reads_the_real_settings_and_data(self):
+        with tempfile.TemporaryDirectory() as folder:
+            world = FakeWorld(Path(folder))
+            State(weather_addresses={EAST: date(2026, 11, 19)}).save(Path(folder) / "state.json")
+            with mock.patch.object(cli, "Tools", return_value=world.tools()):
+                self.assertEqual(cli.main(["routes", "--config", str(ROOT / "config.toml"), "--data", folder]), 0)
+            self.assertEqual(world.asked_directly, [WEST, EAST])
+            self.assertIn("api.open-meteo.com", world.fetches[0][0])
+
     def test_the_command_builds_the_page_from_the_real_settings(self):
         # The same command the scheduled job runs, with the repository's own
         # config.toml and schedule.toml, but offline and without posting.

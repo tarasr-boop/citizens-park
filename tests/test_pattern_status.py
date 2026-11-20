@@ -9,7 +9,7 @@ from parkbot.status import free_text, free_windows, plan_day, plan_days
 from parkbot.store import CouncilStore, State
 from parkbot.timeparse import Slot
 
-from .helpers import october_store, seasons
+from .helpers import EAST, WEST, october_store, seasons
 
 
 def texts(slots):
@@ -220,11 +220,72 @@ class StoreTest(unittest.TestCase):
             self.assertEqual(CouncilStore.load(path).days, {})
 
     def test_state_round_trip(self):
-        state = State(last_daily_post=date(2026, 11, 20), council_failures=2, council_error="the server answered 503")
+        state = State(
+            last_daily_post=date(2026, 11, 20),
+            council_failures=2,
+            council_error="the server answered 503",
+            weather_addresses={WEST: date(2026, 11, 20), EAST: date(2026, 11, 19)},
+        )
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "state.json"
             state.save(path)
             self.assertEqual(State.load(path), state)
+
+    def test_a_state_file_from_before_the_addresses_were_kept(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "state.json"
+            path.write_text('{"last_daily_post": "2026-11-20", "weather_failures": 1}')
+            state = State.load(path)
+        self.assertEqual(state.last_daily_post, date(2026, 11, 20))
+        self.assertEqual(state.weather_addresses, {})
+        self.assertEqual(state.weather_servers(), [])
+
+
+class WeatherServersTest(unittest.TestCase):
+    """The addresses the weather service has answered from, kept in state.json."""
+
+    def test_the_server_seen_most_recently_comes_first(self):
+        state = State()
+        state.saw_weather_servers([WEST], date(2026, 11, 20))
+        state.saw_weather_servers([EAST], date(2026, 11, 21))
+        self.assertEqual(state.weather_servers(), [EAST, WEST])
+        state.saw_weather_servers([WEST], date(2026, 11, 22))
+        self.assertEqual(state.weather_servers(), [WEST, EAST])
+        self.assertEqual(state.weather_addresses, {WEST: date(2026, 11, 22), EAST: date(2026, 11, 21)})
+
+    def test_a_server_not_seen_for_a_month_is_forgotten(self):
+        state = State(weather_addresses={WEST: date(2026, 10, 21), EAST: date(2026, 10, 20)})
+        state.saw_weather_servers([], date(2026, 11, 20))  # 30 and 31 days later
+        self.assertEqual(state.weather_servers(), [WEST])
+
+    def test_only_a_handful_are_kept(self):
+        state = State()
+        for number in range(1, 10):
+            state.saw_weather_servers([f"51.81.167.{number}"], date(2026, 11, number))
+        self.assertEqual(
+            state.weather_servers(),
+            ["51.81.167.9", "51.81.167.8", "51.81.167.7", "51.81.167.6", "51.81.167.5", "51.81.167.4"],
+        )
+
+    def test_only_public_addresses_are_kept(self):
+        # A run only ever asks a public address directly, wherever the list came from.
+        state = State()
+        state.saw_weather_servers(["10.0.0.8", "127.0.0.1", "169.254.169.254", "::1", "weather.example", "", WEST], date(2026, 11, 20))
+        self.assertEqual(state.weather_servers(), [WEST])
+
+    def test_junk_in_the_file_is_ignored(self):
+        junk = (
+            '{"weather_addresses": {"51.81.167.44": "2026-11-20", "127.0.0.1": "2026-11-20", '
+            '"167.114.211.86": "last week", "weather.example": "2026-11-20", "10.1.2.3": null}}'
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "state.json"
+            path.write_text(junk)
+            self.assertEqual(State.load(path).weather_addresses, {WEST: date(2026, 11, 20)})
+            for wrong_kind in ('["51.81.167.44"]', '"51.81.167.44"', "7", "null"):
+                path.write_text('{"weather_addresses": ' + wrong_kind + ', "weather_failures": 2}')
+                state = State.load(path)
+                self.assertEqual((state.weather_addresses, state.weather_failures), ({}, 2))
 
 
 if __name__ == "__main__":

@@ -5,8 +5,8 @@ scheduled job:
 
 * ``council.json``: every day read from the council's page so far. If the
   page cannot be read on some run, the last good copy is still there.
-* ``state.json``: when the last posts went out, and how many times in a row
-  each source has failed.
+* ``state.json``: when the last posts went out, how many times in a row each
+  source has failed, and the addresses of the weather service's servers.
 * ``forecast.json``: the last rain forecast that loaded, for a run on which
   the weather service does not answer.
 
@@ -21,10 +21,15 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .council import Closure, CouncilPage, DayEntry
+from .fetch import is_public
 from .timeparse import Slot
 
 # Days older than this are dropped from council.json to keep it small.
 _KEEP_DAYS = 400
+# An address of the weather service is forgotten when it has not answered for this
+# many days, and no more than this many are kept.
+_ADDRESS_DAYS = 30
+_ADDRESS_LIMIT = 6
 
 
 def _read_json(path: Path) -> dict:
@@ -141,6 +146,10 @@ class State:
     weather_error: str = ""
     telegram_error: str = ""
     uncovered_since: date | None = None  # first day in the current run of days the council page did not cover
+    # The addresses the weather service has answered from, and the day each one last
+    # did. The service has more than one server. When the one its name leads to says
+    # nothing, the forecast is asked for at another of these (see fetch.get).
+    weather_addresses: dict[str, date] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> State:
@@ -152,6 +161,12 @@ class State:
             except (TypeError, ValueError):
                 return 0
 
+        addresses: dict[str, date] = {}
+        listed = raw.get("weather_addresses")
+        for address, value in listed.items() if isinstance(listed, dict) else ():
+            seen = _date(value)
+            if seen and is_public(address):
+                addresses[address] = seen
         return cls(
             last_daily_post=_date(raw.get("last_daily_post")),
             last_weekly_post=_date(raw.get("last_weekly_post")),
@@ -161,6 +176,7 @@ class State:
             weather_error=str(raw.get("weather_error") or ""),
             telegram_error=str(raw.get("telegram_error") or ""),
             uncovered_since=_date(raw.get("uncovered_since")),
+            weather_addresses=addresses,
         )
 
     def save(self, path: str | Path) -> None:
@@ -179,8 +195,22 @@ class State:
                 "weather_error": self.weather_error,
                 "telegram_error": self.telegram_error,
                 "uncovered_since": iso(self.uncovered_since),
+                "weather_addresses": {address: seen.isoformat() for address, seen in self.weather_addresses.items()},
             },
         )
+
+    def weather_servers(self) -> list[str]:
+        """The weather service's known addresses, the one seen most recently first."""
+        return sorted(self.weather_addresses, key=lambda address: (-self.weather_addresses[address].toordinal(), address))
+
+    def saw_weather_servers(self, addresses: list[str], today: date) -> None:
+        """Note that the weather service answered from these addresses today, and forget the stale ones."""
+        for address in addresses:
+            if is_public(address):
+                self.weather_addresses[address] = today
+        cutoff = today - timedelta(days=_ADDRESS_DAYS)
+        keep = [address for address in self.weather_servers() if self.weather_addresses[address] >= cutoff]
+        self.weather_addresses = {address: self.weather_addresses[address] for address in keep[:_ADDRESS_LIMIT]}
 
 
 @dataclass

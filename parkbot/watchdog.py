@@ -74,7 +74,8 @@ def alerts(state: State, store: CouncilStore, today: date, config: Config) -> li
                 "The rain forecast cannot be read",
                 f"The last {state.weather_failures} checks could not get the forecast from Open-Meteo.\n\n"
                 f"- Problem: {state.weather_error or 'unknown'}\n\n"
-                "The alerts keep going without the rain line.\n\n"
+                "The alerts keep going. They use the last forecast that loaded for up to 12 hours, "
+                "and after that they leave out the rain line.\n\n"
                 "This issue closes by itself when the forecast is back.",
             )
         )

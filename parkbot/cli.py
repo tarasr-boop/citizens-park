@@ -17,9 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
-import socket
 import traceback
-import urllib.parse
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -40,32 +38,27 @@ DAYS_AHEAD = 8
 FORECAST_COPY_MAX_AGE = timedelta(hours=12)
 # A fresh forecast replaces the copy only this often, to keep the saved data quiet.
 FORECAST_KEEP_EVERY = timedelta(hours=1)
-# From GitHub's runners the weather service now and then accepts a connection and
-# then says nothing for a minute or so. So the forecast is asked for patiently:
-# five tries spread over about two and a half minutes.
+# The weather service has more than one server, and GitHub's runners are sent to
+# one or another depending on where they are. One of those servers now and then
+# accepts a connection and then says nothing for a minute or two. So a run
+# remembers each address that answers (in data/state.json), and when the usual
+# route gets no answer it asks another of them directly. If that does not help
+# either, it keeps asking patiently: five tries spread over a few minutes.
 FORECAST_TIMEOUT = 12  # seconds for each try
 FORECAST_TRIES = 5
 FORECAST_PAUSE = 10  # seconds after the first failed try, then 20, 30 and 40
-
-
-def _addresses(url: str) -> str:
-    """The addresses a web address leads to right now, for the log. Empty if they cannot be found."""
-    try:
-        host = urllib.parse.urlsplit(url).hostname or ""
-        found = {info[4][0] for info in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)}
-    except Exception:  # noqa: BLE001 - this is only a note in the log
-        return ""
-    return ", ".join(sorted(found))
 
 
 @dataclass
 class Tools:
     """The outside world, gathered in one place so tests can swap it out."""
 
+    # These two come first: below the next field, "fetch" means that field, not the module.
+    fetch_at: Callable[..., str] = fetch.get_at
+    lookup: Callable[[str], list[str]] = fetch.addresses_of
     fetch: Callable[..., str] = fetch.get
     send: Callable[..., int] = telegram.send
     sync_issues: Callable[[list[watchdog.Alert]], list[str]] = watchdog.sync
-    lookup: Callable[[str], str] = _addresses
     environ: Mapping[str, str] = field(default_factory=lambda: os.environ)
     say: Callable[[str], None] = print
 
@@ -168,11 +161,13 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     forecast: weather.Forecast | None = None
     weather_problem = ""
     forecast_text: str | None = None
+    forecast_route = ""  # words for the log when the forecast came by the detour
     live = not options.weather_file and not options.offline
     if options.weather_file:
         forecast_text = Path(options.weather_file).read_text(encoding="utf-8", errors="replace")
     elif live:
         forecast_url = weather.url(config.latitude, config.longitude, config.timezone_name, DAYS_AHEAD)
+        detours: list[tuple[str, str]] = []
         try:
             forecast_text = tools.fetch(
                 forecast_url,
@@ -181,13 +176,24 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
                 timeout=FORECAST_TIMEOUT,
                 tries=FORECAST_TRIES,
                 pause=FORECAST_PAUSE,
+                addresses=state.weather_servers(),
+                detour=lambda address, reason: detours.append((address, reason)),
             )
         except fetch.FetchError as error:
             weather_problem = f"the forecast could not be fetched: {error}"
             # Which of the service's servers was it? Worth knowing if this keeps happening.
             addresses = tools.lookup(forecast_url)
             if addresses:
-                say(f"Rain forecast: the weather service's address at the time was {addresses}")
+                say(f"Rain forecast: the weather service's address at the time was {', '.join(addresses)}")
+        else:
+            # Remember the server that answered, so that a later run can turn to it.
+            if detours:
+                address, reason = detours[-1]
+                state.saw_weather_servers([address], today)
+                say(f"Rain forecast: no forecast by the usual route ({reason})")
+                forecast_route = f" from the weather service's other server ({address})"
+            else:
+                state.saw_weather_servers(tools.lookup(forecast_url), today)
     if forecast_text is not None:
         if options.show_sources:
             say(f"Forecast: {len(forecast_text)} characters, starts {forecast_text[:300]!r}")
@@ -210,8 +216,8 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     else:
         state.weather_failures = 0
         state.weather_error = ""
-        say("Rain forecast: read")
-        summary.append("- Rain forecast: read")
+        say(f"Rain forecast: read{forecast_route}")
+        summary.append(f"- Rain forecast: read{forecast_route}")
 
     if live:
         copy = ForecastCopy.load(data_dir / "forecast.json")
@@ -329,6 +335,58 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     return 1 if problems else 0
 
 
+def routes(options: argparse.Namespace, tools: Tools | None = None) -> int:
+    """Ask each of the weather service's known servers for the forecast, one at a time.
+
+    A run takes this detour only when the usual route gets no answer, which is
+    rare. This command takes it on purpose, so that a change which breaks the
+    detour shows up in the tests and not on the first bad day.
+    """
+    tools = tools or Tools()
+    say = tools.say
+    on_github = bool(tools.environ.get("GITHUB_ACTIONS"))
+    try:
+        config = load_config(options.config)
+    except ConfigError as error:
+        say(f"::error::{error}" if on_github else f"ERROR: {error}")
+        return 2
+    url = weather.url(config.latitude, config.longitude, config.timezone_name, DAYS_AHEAD)
+
+    def ask(fetcher: Callable[..., str], *where: str, **extra: int) -> tuple[str, str]:
+        """Whether a forecast came back: "yes", "silent" (nothing was learned) or "no", and the reason."""
+        try:
+            weather.parse(fetcher(url, config.user_agent, *where, accept="application/json", timeout=FORECAST_TIMEOUT, **extra))
+        except fetch.NoAnswer as error:
+            return "silent", str(error)
+        except (fetch.FetchError, weather.WeatherError) as error:
+            return "no", str(error)
+        return "yes", ""
+
+    words = {"yes": "the forecast loaded", "silent": "no answer", "no": "it did not work"}
+    usual, why = ask(tools.fetch, tries=1)
+    say("By the usual route: " + ("the forecast loaded" if usual == "yes" else f"it did not work ({why})"))
+
+    current = tools.lookup(url)
+    known = State.load(Path(options.data) / "state.json").weather_servers()
+    here: list[str] = []  # how it went at the addresses the service's name leads to right now
+    for address in current + [other for other in known if other not in current]:
+        outcome, why = ask(tools.fetch_at, address)
+        where = "where the service's name leads right now" if address in current else "another of its servers"
+        say(f"Straight to {address} ({where}): {words[outcome]}" + (f" ({why})" if why else ""))
+        if address in current:
+            here.append(outcome)
+    if not current:
+        say("The weather service's address could not be looked up.")
+
+    # Only one result points at this code and not at the weather service: the usual
+    # route works, yet the very same server will not serve us when asked by its address.
+    if usual == "yes" and "no" in here and "yes" not in here:
+        problem = "The detour to the weather service is broken: the usual route works, but asking the same server by its address does not."
+        say(f"::error::{problem}" if on_github else f"ERROR: {problem}")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="parkbot", description="Citizens Park alerts: daily check, web page and Telegram post.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -351,6 +409,13 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--weather-file", help="read the forecast from this JSON file instead of the web")
     run_parser.add_argument("--show-sources", action="store_true", help="print the raw council tables and forecast, to diagnose a failed read")
     run_parser.set_defaults(handler=run)
+
+    routes_parser = commands.add_parser(
+        "routes", help="ask each of the weather service's known servers for the forecast, to try out the detour"
+    )
+    routes_parser.add_argument("--config", default="config.toml", help="settings file (default: config.toml)")
+    routes_parser.add_argument("--data", default="data", help="folder with the addresses the job has learned (default: data)")
+    routes_parser.set_defaults(handler=routes)
 
     options = parser.parse_args(argv)
     return options.handler(options)
