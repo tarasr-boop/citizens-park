@@ -127,6 +127,9 @@ export function hoursMessage(chat, kind, bot) {
   return { text: lines.join("\n"), reply_markup: { inline_keyboard: rows } };
 }
 
+/** What an old message of the bot's says once Telegram no longer lets the bot take it away (after two days). */
+export const LEFTOVER = { summary: "Your alerts have changed. The latest are further down.", picker: "Closed." };
+
 export const FULL = "Sorry, the bot has as many people as it can take at the moment. The channel and the page have the same news.";
 
 /** The bot's description, shown in an empty chat before someone presses Start, and on its profile. */

@@ -79,6 +79,7 @@ async function outbound(request) {
     const call = { url: request.url, method: request.url.split("/").pop(), body: JSON.parse((await request.text()) || "{}") };
     outside.telegram.push(call);
     const results = { getMe: { id: 123456789, is_bot: true, username: "standin_park_bot" }, getWebhookInfo: { pending_update_count: 0 }, getMyDescription: { description: "" }, getMyShortDescription: { short_description: "" } };
+    if (call.method === "sendMessage") results.sendMessage = { message_id: 1000 + outside.telegram.filter((one) => one.method === "sendMessage").length };
     return new Response(JSON.stringify({ ok: true, result: results[call.method] ?? true }), { headers: { "Content-Type": "application/json" } });
   }
   if (request.url.startsWith(SITE)) {
@@ -232,14 +233,17 @@ try {
     assert.equal(taken.status, 200);
     assert.deepEqual(await taken.json(), { ok: true });
     const said = outside.telegram.filter((one) => one.method === "sendMessage");
-    assert.equal(said.length, 2);
-    assert.match(said[0].body.text, /Citizens Park oval/);
+    assert.equal(said.length, 1);
+    assert.match(said[0].body.text, /^Your alerts:/);
+    // The "/start" is taken away, so the chat keeps only the times.
+    assert.ok(outside.telegram.some((one) => one.method === "deleteMessage" && one.body.message_id === 1));
     // The person picks this very hour, for today's kind of day.
     const press = { update_id: 2, callback_query: { id: "q1", from: { id: 5 }, message: { message_id: 9, chat: { id: 5, type: "private" } }, data: `set:${weekend ? "weekend" : "weekday"}:${hourNow}` } };
     const pressed = await send(press);
     assert.equal(pressed.status, 200);
     await pressed.arrayBuffer();
-    assert.match(outside.telegram.at(-1).body.text, /^✅/);
+    const times = outside.telegram.filter((one) => one.method === "sendMessage").at(-1);
+    assert.match(times.body.text, new RegExp(`${weekend ? "Weekends" : "Weekdays"}: ${hourNow % 12 || 12} ${hourNow < 12 ? "AM" : "PM"}`));
     assert.equal((await ask(mf, "GET", "/status")).body.telegram.chats, 1);
   });
 

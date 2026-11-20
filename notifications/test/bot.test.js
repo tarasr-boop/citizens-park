@@ -320,6 +320,29 @@ test("the times change through a picker that goes away once a time is chosen", a
   assert.match(lastSaid(it).text, /• Weekdays: no alert\n• Weekends: no alert\n\nYou have no alerts set\./);
 });
 
+test("a message too old for Telegram to take away is emptied instead, so its buttons go", async () => {
+  const it = open();
+  const secret = await ready(it);
+  await say(it, secret, message(5, "/start"));
+  const old = it.sql.chats()[0].summary;
+  // As Telegram answers once a message is more than two days old.
+  it.net.telegram = (call) => (call.method === "deleteMessage" ? { status: 400, description: "Bad Request: message can't be deleted for everyone" } : null);
+  it.net.calls.length = 0;
+  await say(it, secret, press(5, "pause", old));
+  const emptied = it.net.bot.filter((call) => call.method === "editMessageText");
+  assert.deepEqual(emptied.map((call) => call.body), [
+    { chat_id: 5, message_id: old, text: "Your alerts have changed. The latest are further down.", reply_markup: { inline_keyboard: [] } },
+  ]);
+  assert.match(lastSaid(it).text, /Notifications are paused/);
+  // What a person wrote is only ever taken away, never emptied.
+  const paused = it.sql.chats()[0].summary;
+  it.net.calls.length = 0;
+  const resume = message(5, "/resume");
+  await say(it, secret, resume);
+  assert.ok(deleted(it).includes(resume.message.message_id));
+  assert.deepEqual(it.net.bot.filter((call) => call.method === "editMessageText").map((call) => call.body.message_id), [paused]);
+});
+
 test("a picker that is closed, or left open, goes away", async () => {
   const it = open();
   const secret = await ready(it);

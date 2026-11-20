@@ -310,8 +310,12 @@ export class Bot {
   }
 
   /** Take one message out of a chat. A message that is already gone, or too old for Telegram to take away, is left. */
-  async remove(id, messageId) {
-    if (Number.isSafeInteger(messageId)) await this.telegram("deleteMessage", { chat_id: id, message_id: messageId });
+  async remove(id, messageId, leftover = null) {
+    if (!Number.isSafeInteger(messageId)) return;
+    const said = await this.telegram("deleteMessage", { chat_id: id, message_id: messageId });
+    // Telegram lets a bot take a message away only in its first two days. An older one is
+    // emptied instead, when there are words to put in its place, so its buttons go.
+    if (!said.ok && leftover) await this.telegram("editMessageText", { chat_id: id, message_id: messageId, text: leftover, reply_markup: { inline_keyboard: [] } });
   }
 
   /** Write down the number of one of the bot's messages that is now in the chat, or null once it is gone. */
@@ -340,7 +344,7 @@ export class Bot {
     const chat = this.chat(id);
     await this.tidy(chat);
     const said = await this.send(id, words.summaryMessage(chat, this.settings.bot));
-    await this.remove(id, chat.summary);
+    await this.remove(id, chat.summary, words.LEFTOVER.summary);
     this.keep(id, "summary", Bot.sentId(said));
   }
 
@@ -349,7 +353,7 @@ export class Bot {
     const chat = this.chat(id);
     await this.tidy(chat);
     const said = await this.send(id, words.pickerMessage());
-    await this.remove(id, chat.picker);
+    await this.remove(id, chat.picker, words.LEFTOVER.picker);
     this.keep(id, "picker", Bot.sentId(said));
   }
 
@@ -393,24 +397,24 @@ export class Bot {
       await edit(words.hoursMessage(chat, button.kind, bot));
       // The message pressed is the picker now, wherever it came from.
       if (chat.picker !== where.message_id) {
-        await this.remove(id, chat.picker);
+        await this.remove(id, chat.picker, words.LEFTOVER.picker);
         this.keep(id, "picker", where.message_id);
       }
     } else if (button.action === "back") {
       await edit(words.pickerMessage());
     } else if (button.action === "close") {
-      await this.remove(id, where.message_id);
+      await this.remove(id, where.message_id, words.LEFTOVER.picker);
       if (chat.picker === where.message_id) this.keep(id, "picker", null);
     } else {
       if (button.action === "set") this.sql.exec(`UPDATE chats SET ${COLUMN[button.kind]} = ? WHERE id = ?`, button.hour, id);
       else this.sql.exec("UPDATE chats SET paused = ? WHERE id = ?", button.action === "pause" ? 1 : 0, id);
       if (button.action === "set") {
         // A time is chosen: the picker has done its job.
-        await this.remove(id, where.message_id);
+        await this.remove(id, where.message_id, words.LEFTOVER.picker);
         if (chat.picker === where.message_id) this.keep(id, "picker", null);
       } else if (chat.summary !== where.message_id) {
         // Pause or resume pressed under an older "Your alerts": that one goes too.
-        await this.remove(id, where.message_id);
+        await this.remove(id, where.message_id, words.LEFTOVER.summary);
       }
       await this.showSummary(id);
     }
