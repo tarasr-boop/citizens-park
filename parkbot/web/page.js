@@ -160,7 +160,7 @@
 
   // Where today's answer comes from, as a link to that source: the council's
   // page, or the part of this page that explains the usual pattern.
-  function pill(day) {
+  function source(day) {
     var council = String((data.council && data.council.url) || "");
     if (!/^https:\/\//.test(council)) council = "";
     if (day.closed) return { sure: "yes", text: "From a notice on the council’s page", href: council, outside: true };
@@ -170,15 +170,13 @@
     return null;
   }
 
-  function pillHtml(day) {
-    var badge = pill(day);
-    if (!badge) return "";
-    if (!badge.href) return '<p class="source-row"><span class="pill" data-sure="' + badge.sure + '">' + esc(badge.text) + "</span></p>";
-    return (
-      '<p class="source-row"><a class="pill" data-sure="' + badge.sure + '" href="' + esc(badge.href) + '"' +
-      (badge.outside ? ' rel="noopener"' : "") + ">" + esc(badge.text) +
-      '<span aria-hidden="true">' + NBSP + "›</span></a></p>"
-    );
+  // One quiet line under the answer. It is a link only when there is somewhere to lead.
+  function sourceHtml(day) {
+    var from = source(day);
+    if (!from) return "";
+    var words = esc(from.text);
+    if (from.href) words = '<a href="' + esc(from.href) + '"' + (from.outside ? ' rel="noopener"' : "") + ">" + words + "</a>";
+    return '<p class="source-row" data-sure="' + from.sure + '">' + words + "</p>";
   }
 
   function heroHtml(day, now) {
@@ -189,7 +187,7 @@
       "<h1>" + esc(found.title) + "</h1>" +
       (found.sub ? '<p class="sub">' + esc(found.sub) + "</p>" : "") +
       (found.rule ? '<p class="rule">' + esc(found.rule) + "</p>" : "") +
-      pillHtml(day) +
+      sourceHtml(day) +
       (day.why ? '<p class="why">' + esc(day.why) + "</p>" : "") +
       "</section>"
     );
@@ -483,7 +481,7 @@
 
   // ---- Links and buttons ----
 
-  // The "usual pattern" badge leads to "How this works", which is folded shut.
+  // The "usual pattern" link leads to "How this works", which is folded shut.
   app.addEventListener("click", function (event) {
     var target = event.target;
     var link = target && target.closest ? target.closest('a[href="#how"]') : null;

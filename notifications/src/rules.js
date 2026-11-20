@@ -304,7 +304,7 @@ export function messageFor(notice, settings, tag) {
         tag,
         renotify: true,
         lang: "en-AU",
-        icon: settings.siteUrl + "icon-192.png",
+        // No picture of the page's own, only the small mark for a phone's status bar.
         badge: settings.siteUrl + "badge.png",
       },
     })

@@ -11,6 +11,11 @@
 var FALLBACK = { title: "Today's update is ready", body: "Tap to see when the oval is booked." };
 // How long to wait for the page's data before showing the plain notice instead.
 var PATIENCE = 8000;
+// A notification brings no picture of the page's own: the words say it all.
+// Left without one, a browser on an Android phone draws a picture itself in
+// that place (a tile with the first letter of the site), so there it is handed
+// a picture with nothing on it. Everywhere else none is named.
+var NO_PICTURE = /Android/i.test((self.navigator && self.navigator.userAgent) || "") ? "blank.png" : "";
 
 // A new version of this script takes over straight away.
 self.addEventListener("install", function () {
@@ -75,17 +80,19 @@ function ownAddress(address) {
 }
 
 function show(notice) {
-  return self.registration.showNotification(String(notice.title), {
+  var how = {
     body: typeof notice.body === "string" ? notice.body : "",
     // One notification at a time: today's takes the place of yesterday's, and
     // still makes itself heard.
     tag: typeof notice.tag === "string" && notice.tag ? notice.tag : "daily",
     renotify: true,
-    icon: "icon-192.png",
+    // The small mark some phones put in the status bar.
     badge: "badge.png",
     lang: "en-AU",
     data: { url: ownAddress(notice.navigate) }
-  });
+  };
+  if (NO_PICTURE) how.icon = NO_PICTURE;
+  return self.registration.showNotification(String(notice.title), how);
 }
 
 self.addEventListener("push", function (event) {

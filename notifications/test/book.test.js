@@ -93,7 +93,6 @@ test("a new device gets a first notification and is then written into the book",
       tag: "welcome",
       renotify: true,
       lang: "en-AU",
-      icon: `${SITE}icon-192.png`,
       badge: `${SITE}badge.png`,
     },
   });
@@ -338,7 +337,6 @@ test("today's alert goes to every device, forty at a time, and only once", async
       tag: "daily",
       renotify: true,
       lang: "en-AU",
-      icon: `${SITE}icon-192.png`,
       badge: `${SITE}badge.png`,
     });
   }

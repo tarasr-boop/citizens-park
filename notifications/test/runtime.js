@@ -455,7 +455,6 @@ try {
         tag: "daily",
         renotify: true,
         lang: "en-AU",
-        icon: `${SITE}icon-192.png`,
         badge: `${SITE}badge.png`,
       });
     }

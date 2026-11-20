@@ -67,6 +67,11 @@ def badge(size: int, paw: float = 1.45) -> Image.Image:
     return canvas.resize((size, size), Image.LANCZOS)
 
 
+def blank(size: int) -> Image.Image:
+    """A picture with nothing on it. A notification names it on Android phones, which would otherwise draw a picture of their own."""
+    return Image.new("RGBA", (size, size), (0, 0, 0, 0))
+
+
 def favicon_svg() -> str:
     shapes = "".join(
         f'<ellipse cx="{cx}" cy="{cy}" rx="{rx}" ry="{ry}"' + (f' transform="rotate({tilt} {cx} {cy})"' if tilt else "") + "/>"
@@ -90,5 +95,6 @@ if __name__ == "__main__":
     # iPhones round the corners themselves and do not like transparency.
     icon(180, rounded=False, paw=1.02).convert("RGB").save(assets / "apple-touch-icon.png", optimize=True)
     badge(96).save(assets / "badge.png", optimize=True)
+    blank(192).save(assets / "blank.png", optimize=True)
     (assets / "favicon.svg").write_text(favicon_svg(), encoding="utf-8")
     print("Icons written to assets/")

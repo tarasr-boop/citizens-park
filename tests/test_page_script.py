@@ -105,12 +105,16 @@ class LiveViewTest(unittest.TestCase):
         self.assertNotIn("Last checked", html)
         self.assertIn('<p class="kicker">Fri 20 Nov</p>', html)
 
-    def test_the_badge_links_to_the_source_and_the_source_is_named_once(self):
+    def test_the_source_is_a_quiet_link_and_is_named_once(self):
         html = self.draw(self.friday(), "2026-11-20T14:20")
+        # A line of plain words that is a link: no button, and no arrow after it.
         self.assertIn(
-            '<a class="pill" data-sure="yes" href="https://council.example/parks/citizens-park" rel="noopener">From the council’s schedule',
+            '<p class="source-row" data-sure="yes">'
+            '<a href="https://council.example/parks/citizens-park" rel="noopener">From the council’s schedule</a></p>',
             html,
         )
+        self.assertNotIn("pill", html)
+        self.assertNotIn("›", html)
         self.assertEqual(html.count("From the council"), 1)
         self.assertNotIn('class="why"', html)
         self.assertNotIn('class="source"', html)
@@ -119,7 +123,7 @@ class LiveViewTest(unittest.TestCase):
         # Wednesday 2 December: the council's table stops at 30 November.
         data = self.data(at(date(2026, 12, 2), 15, 12))
         html = self.draw(data, "2026-12-02T15:30")
-        self.assertIn('<a class="pill" data-sure="no" href="#how">Usual pattern, not confirmed', html)
+        self.assertIn('<p class="source-row" data-sure="no"><a href="#how">Usual pattern, not confirmed</a></p>', html)
         self.assertIn('<p class="why">The council&#39;s page only goes up to 30 November.</p>', html)
         self.assertIn("<h1>Probably free until 4:15 PM</h1>", html)
 
@@ -128,7 +132,7 @@ class LiveViewTest(unittest.TestCase):
         data["council"]["url"] = "javascript:alert(1)"
         html = self.draw(data, "2026-11-20T14:20")
         self.assertNotIn("javascript:", html)
-        self.assertIn('<span class="pill" data-sure="yes">From the council’s schedule</span>', html)
+        self.assertIn('<p class="source-row" data-sure="yes">From the council’s schedule</p>', html)
 
     # ---- the one line that says how things stand ----
 

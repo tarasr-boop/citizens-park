@@ -37,7 +37,12 @@ function subscriptionFrom(given) {
   });
 }
 
+// The browser the script finds itself in: an Android phone, unless the scenario
+// names another one ("agent") or says that the browser does not tell (null).
+const ANDROID = "Mozilla/5.0 (Linux; Android 16; Pixel 9) Chrome/142.0 Mobile Safari/537.36";
+
 const self = {
+  navigator: scenario.agent === null ? undefined : { userAgent: scenario.agent || ANDROID },
   addEventListener(type, handler) {
     listeners[type] = handler;
   },
