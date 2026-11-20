@@ -1,7 +1,7 @@
 // The small decisions of the alerts backend, kept apart from storage and the
 // network so that each can be tried on its own: what time it is at the park,
-// whether an address really belongs to a browser's notification service, and
-// what an alert says.
+// whether an address really belongs to a browser's notification service,
+// what an alert says, and which check on GitHub the second timer looks after.
 
 import { fromBase64Url, toBase64Url } from "./webpush.js";
 
@@ -58,9 +58,35 @@ export function settingsFrom(env) {
     zone,
     from: minutes(env.ALERT_FROM, "ALERT_FROM"),
     until: minutes(env.ALERT_UNTIL, "ALERT_UNTIL"),
+    check: checkFrom(env),
   };
   if (settings.from >= settings.until) throw new Error("ALERT_FROM should be earlier than ALERT_UNTIL");
   return settings;
+}
+
+/**
+ * The check on GitHub that the second timer looks after (see starter.js), as
+ * `{ repository, workflow, branch, times }`, with the times as minutes of the
+ * day. Null while CHECK_TIMES is empty, which switches the second timer off.
+ */
+function checkFrom(env) {
+  const written = String(env.CHECK_TIMES || "").trim();
+  if (!written) return null;
+  const times = written.split(/\s+/).map((one) => minutes(one, "Each time in CHECK_TIMES"));
+  if (times.length > 24) throw new Error("CHECK_TIMES should name at most 24 times");
+  if (times.some((time, index) => index && time <= times[index - 1])) throw new Error("CHECK_TIMES should go from the earliest time to the latest, each time once");
+  // These three become part of an address at GitHub, so only plain names are taken.
+  const repository = String(env.CHECK_REPOSITORY || "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}$/.test(repository)) {
+    throw new Error("CHECK_REPOSITORY should look like owner/name");
+  }
+  const workflow = String(env.CHECK_WORKFLOW || "");
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}\.ya?ml$/.test(workflow)) throw new Error("CHECK_WORKFLOW should be a file name such as daily.yml");
+  const branch = String(env.CHECK_BRANCH || "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(branch) || branch.includes("..") || branch.includes("//")) {
+    throw new Error("CHECK_BRANCH should be a branch name such as main");
+  }
+  return { repository, workflow, branch, times };
 }
 
 /** The date and the minute of the day at the park: `{ date: "2026-11-20", minute: 885 }`. */

@@ -1,7 +1,8 @@
-// The small decisions: the time at the park, which addresses are taken, and
-// what a notification says.
+// The small decisions: the time at the park, which addresses are taken, what
+// a notification says, and the settings.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -20,10 +21,10 @@ import {
   welcome,
 } from "../src/rules.js";
 import { LARGEST_MESSAGE } from "../src/webpush.js";
-import { ENV, SITE, at, day, newDevice, pageData, settings } from "./standins.js";
+import { CHECK, ENV, SITE, at, day, newDevice, pageData, readJsonc, settings } from "./standins.js";
 
 test("the settings are read and tidied", () => {
-  assert.deepEqual(settings, { siteUrl: SITE, origin: "https://citizensbark.example", zone: "Australia/Melbourne", from: 870, until: 1140 });
+  assert.deepEqual(settings, { siteUrl: SITE, origin: "https://citizensbark.example", zone: "Australia/Melbourne", from: 870, until: 1140, check: null });
   // An address without its last slash gets one, so that file names can be added to it.
   assert.equal(settingsFrom({ ...ENV, SITE_URL: "https://example.org/park" }).siteUrl, "https://example.org/park/");
   assert.equal(settingsFrom({ ...ENV, SITE_URL: "https://example.org/park" }).origin, "https://example.org");
@@ -46,6 +47,73 @@ test("settings that make no sense are turned down with a plain reason", () => {
   for (const [change, reason] of wrong) {
     assert.throws(() => settingsFrom({ ...ENV, ...change }), reason, JSON.stringify(change));
   }
+});
+
+test("the second timer's settings name the check on GitHub and its times of day", () => {
+  assert.deepEqual(settingsFrom({ ...ENV, ...CHECK }).check, {
+    repository: "someone/park",
+    workflow: "daily.yml",
+    branch: "main",
+    times: [377, 707, 827, 880, 910, 945, 1067, 1187],
+  });
+  assert.deepEqual(settingsFrom({ ...ENV, ...CHECK, CHECK_TIMES: "  6:05   14:40 " }).check.times, [365, 880]);
+  assert.equal(settingsFrom({ ...ENV, ...CHECK, CHECK_WORKFLOW: "Daily_check-2.yaml", CHECK_BRANCH: "release/v1.2" }).check.workflow, "Daily_check-2.yaml");
+  // Without times of day the second timer is off, whatever else is written.
+  for (const empty of ["", "   ", undefined]) {
+    assert.equal(settingsFrom({ ...ENV, ...CHECK, CHECK_TIMES: empty }).check, null);
+    assert.equal(settingsFrom({ ...ENV, CHECK_TIMES: empty, CHECK_REPOSITORY: "not a repository" }).check, null);
+  }
+});
+
+test("second timer settings that make no sense are turned down with a plain reason", () => {
+  const wrong = [
+    [{ CHECK_TIMES: "25:00" }, /CHECK_TIMES/],
+    [{ CHECK_TIMES: "2:40 PM" }, /CHECK_TIMES/],
+    [{ CHECK_TIMES: "14:40,15:10" }, /CHECK_TIMES/],
+    [{ CHECK_TIMES: "14:40 14:40" }, /earliest/],
+    [{ CHECK_TIMES: "15:10 14:40" }, /earliest/],
+    [{ CHECK_TIMES: Array.from({ length: 25 }, (_, index) => `${String(index % 24).padStart(2, "0")}:${index < 24 ? "00" : "30"}`).join(" ") }, /at most 24/],
+    [{ CHECK_REPOSITORY: undefined }, /CHECK_REPOSITORY/],
+    [{ CHECK_REPOSITORY: "someone" }, /CHECK_REPOSITORY/],
+    [{ CHECK_REPOSITORY: "someone/park/extra" }, /CHECK_REPOSITORY/],
+    [{ CHECK_REPOSITORY: "some one/park" }, /CHECK_REPOSITORY/],
+    [{ CHECK_REPOSITORY: "someone/.." }, /CHECK_REPOSITORY/],
+    [{ CHECK_REPOSITORY: "../park" }, /CHECK_REPOSITORY/],
+    [{ CHECK_REPOSITORY: "someone/park?x=1" }, /CHECK_REPOSITORY/],
+    [{ CHECK_REPOSITORY: "https://github.com/someone/park" }, /CHECK_REPOSITORY/],
+    [{ CHECK_WORKFLOW: undefined }, /CHECK_WORKFLOW/],
+    [{ CHECK_WORKFLOW: "daily" }, /CHECK_WORKFLOW/],
+    [{ CHECK_WORKFLOW: ".yml" }, /CHECK_WORKFLOW/],
+    [{ CHECK_WORKFLOW: "../daily.yml" }, /CHECK_WORKFLOW/],
+    [{ CHECK_WORKFLOW: "daily.yml/dispatches" }, /CHECK_WORKFLOW/],
+    [{ CHECK_BRANCH: undefined }, /CHECK_BRANCH/],
+    [{ CHECK_BRANCH: "main branch" }, /CHECK_BRANCH/],
+    [{ CHECK_BRANCH: "../main" }, /CHECK_BRANCH/],
+    [{ CHECK_BRANCH: "a..b" }, /CHECK_BRANCH/],
+    [{ CHECK_BRANCH: "feature//x" }, /CHECK_BRANCH/],
+    [{ CHECK_BRANCH: "-main" }, /CHECK_BRANCH/],
+  ];
+  for (const [change, reason] of wrong) {
+    assert.throws(() => settingsFrom({ ...ENV, ...CHECK, ...change }), reason, JSON.stringify(change));
+  }
+});
+
+test("the settings in wrangler.jsonc are ones the backend takes", () => {
+  const file = readJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
+  const real = settingsFrom(file.vars);
+  assert.equal(real.siteUrl.startsWith("https://"), true);
+  assert.equal(real.from < real.until, true);
+  // The second timer has a handful of times of day there. Without any, it is switched off on purpose.
+  if (real.check) assert.ok(real.check.times.length >= 3 && real.check.times.length <= 24);
+  assert.equal(settingsFrom({ ...file.vars, CHECK_TIMES: "" }).check, null);
+  assert.deepEqual(Object.keys(file.vars).sort(), ["ALERT_FROM", "ALERT_UNTIL", "CHECK_BRANCH", "CHECK_REPOSITORY", "CHECK_TIMES", "CHECK_WORKFLOW", "SITE_URL", "TIMEZONE"]);
+  // No token is ever written in this file: it is a secret, handed over at deploy time.
+  assert.equal(JSON.stringify(file).includes("DAILY_CHECK_TOKEN"), false);
+});
+
+test("the comments in a settings file are left out, and addresses are not", () => {
+  const text = '// a note\n{\n  "a": "https://example.org/x", // another\n  "b": "say \\"//hi\\"" // and one more\n}\n';
+  assert.deepEqual(readJsonc(text), { a: "https://example.org/x", b: 'say "//hi"' });
 });
 
 test("the time at the park, in summer and in winter", () => {

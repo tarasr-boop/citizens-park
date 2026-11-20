@@ -2,9 +2,10 @@
 
 The backend itself (the notifications/ folder) is written in JavaScript and has
 its own tests in that folder. These tests look at what surrounds it: that what
-it is told on Cloudflare agrees with config.toml, that its timer covers the
-alert window in summer and in winter, that its tools are pinned, and that the
-workflows hand the Cloudflare secrets to one step only.
+it is told on Cloudflare agrees with config.toml and with the daily check's
+own times, that its timer covers the alert window and every one of those times
+in summer and in winter, that its tools are pinned, and that the workflows
+hand each secret only to the steps that need it.
 """
 
 from __future__ import annotations
@@ -120,7 +121,10 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(told["TIMEZONE"], self.config.timezone_name, hint)
         self.assertEqual(told["ALERT_FROM"], hhmm(self.config.post_from), hint)
         self.assertEqual(told["ALERT_UNTIL"], hhmm(self.config.post_until), hint)
-        self.assertEqual(sorted(told), ["ALERT_FROM", "ALERT_UNTIL", "SITE_URL", "TIMEZONE"])
+        self.assertEqual(
+            sorted(told),
+            ["ALERT_FROM", "ALERT_UNTIL", "CHECK_BRANCH", "CHECK_REPOSITORY", "CHECK_TIMES", "CHECK_WORKFLOW", "SITE_URL", "TIMEZONE"],
+        )
 
     def test_the_timer_covers_the_alert_window_in_summer_and_in_winter(self):
         crons = self.settings["triggers"]["crons"]
@@ -145,11 +149,16 @@ class SettingsTest(unittest.TestCase):
                 gaps = [later - earlier for earlier, later in zip(looks, looks[1:])]
                 self.assertLessEqual(max(gaps), 5)
 
-    def test_the_timer_does_not_run_all_day(self):
-        # A look every five minutes around the clock would be 288 a day. The
-        # afternoon is enough, and leaves the free plan's allowance alone.
+    def test_the_timer_rests_at_night(self):
+        # A look every five minutes around the clock would be 288 a day. Nothing
+        # needs looking after at night, in summer or in winter.
         fires = set().union(*(utc_minutes(cron) for cron in self.settings["triggers"]["crons"]))
-        self.assertLessEqual(len(fires), 100)
+        self.assertLessEqual(len(fires), 17 * 12)
+        zone = ZoneInfo(self.config.timezone_name)
+        for day in (date(2027, 1, 15), date(2027, 7, 15)):
+            for minute in [*range(23 * 60, 24 * 60), *range(0, 5 * 60)]:
+                moment = datetime.combine(day, time(minute // 60, minute % 60), tzinfo=zone).astimezone(ZoneInfo("UTC"))
+                self.assertNotIn(moment.hour * 60 + moment.minute, fires, f"{day} {hhmm(minute)}")
 
     def test_the_book_is_set_up_the_way_the_free_plan_needs(self):
         self.assertEqual(self.settings["durable_objects"], {"bindings": [{"name": "SUBSCRIBERS", "class_name": "Subscribers"}]})
@@ -182,6 +191,141 @@ class SettingsTest(unittest.TestCase):
         chosen = date.fromisoformat(self.settings["compatibility_date"])
         self.assertLess(chosen, date.today() + timedelta(days=1))
         self.assertGreater(chosen, date(2026, 1, 1))
+
+
+class SecondTimerTest(unittest.TestCase):
+    """The second timer starts the daily check when GitHub's own timer has not. What it is told has to fit that check."""
+
+    def setUp(self):
+        self.config = config_module.load(ROOT / "config.toml")
+        self.settings = read_jsonc((BACKEND / "wrangler.jsonc").read_text(encoding="utf-8"))
+        self.told = self.settings["vars"]
+        self.daily = (WORKFLOWS / "daily.yml").read_text(encoding="utf-8")
+        self.starter = (BACKEND / "src" / "starter.js").read_text(encoding="utf-8")
+
+    def number(self, name: str) -> int:
+        """A number the second timer's code is written with, such as START_AFTER."""
+        return int(re.search(rf"^export const {name} = (\d+);$", self.starter, flags=re.MULTILINE).group(1))
+
+    def set_times(self) -> list[int]:
+        """The set times as minutes of the day. None at all means that the second timer is switched off."""
+        return [int(text[:2]) * 60 + int(text[3:]) for text in self.told["CHECK_TIMES"].split()]
+
+    def test_it_looks_after_this_repositorys_daily_check(self):
+        self.assertEqual("https://github.com/" + self.told["CHECK_REPOSITORY"], self.config.repo_url)
+        self.assertEqual(self.told["CHECK_WORKFLOW"], "daily.yml")
+        self.assertTrue((WORKFLOWS / self.told["CHECK_WORKFLOW"]).is_file())
+        # The check is published from this branch, and the timed runs use it too.
+        self.assertIn(f"\n  push:\n    branches: [{self.told['CHECK_BRANCH']}]\n", self.daily)
+
+    def test_the_check_can_be_started_from_outside_and_then_decides_by_itself_whether_to_post(self):
+        # The second timer asks for a run the way the "Run workflow" button does, and chooses nothing.
+        self.assertIn("\n  workflow_dispatch:\n", self.daily)
+        self.assertIn("POST_MODE: ${{ inputs.post || 'auto' }}", self.daily)
+        self.assertRegex(self.daily, r"\n      post:\n(?:        .*\n)*?        default: auto\n")
+        self.assertIn('body: body ? JSON.stringify(body) : undefined', self.starter)
+        self.assertIn("{ ref: check.branch }", self.starter)
+        # One run at a time, so a run it starts can never post beside a run GitHub started.
+        self.assertRegex(self.daily, r"\nconcurrency:\n  group: daily-check\n  cancel-in-progress: false\n")
+
+    def test_its_times_are_the_times_github_is_asked_to_run_the_check(self):
+        lines = re.findall(r'- cron: "(\d+) (\d+) \* \* \*"\n\s+timezone: "([^"]+)"', self.daily)
+        self.assertGreaterEqual(len(lines), 3)
+        self.assertEqual({zone for _, _, zone in lines}, {self.config.timezone_name})
+        self.assertEqual(self.told["TIMEZONE"], self.config.timezone_name)
+        if not self.set_times():
+            return  # switched off on purpose, as the README describes
+        asked = sorted(f"{int(hour):02d}:{int(minute):02d}" for minute, hour, _ in lines)
+        self.assertEqual(
+            self.told["CHECK_TIMES"].split(),
+            asked,
+            "CHECK_TIMES in notifications/wrangler.jsonc and the run times in .github/workflows/daily.yml no longer agree",
+        )
+
+    def test_the_timer_looks_after_every_set_time_in_summer_and_in_winter(self):
+        fires = set().union(*(utc_minutes(cron) for cron in self.settings["triggers"]["crons"]))
+        zone = ZoneInfo(self.config.timezone_name)
+        start_after, leave_after = self.number("START_AFTER"), self.number("LEAVE_AFTER")
+        self.assertEqual((start_after, leave_after), (15, 60))
+        for day in (date(2027, 1, 15), date(2027, 7, 15), date(2026, 10, 4), date(2027, 4, 4)):
+            for set_time in self.set_times():
+                with self.subTest(day=day.isoformat(), set_time=hhmm(set_time)):
+                    first, last = set_time + start_after, set_time + start_after + leave_after
+                    self.assertLess(last, 24 * 60, "a set time this late would be looked after past midnight")
+                    looks = []
+                    for minute in range(first, last):
+                        moment = datetime.combine(day, time(minute // 60, minute % 60), tzinfo=zone).astimezone(ZoneInfo("UTC"))
+                        if moment.hour * 60 + moment.minute in fires:
+                            looks.append(minute)
+                    # A look within five minutes of the moment the check is due, then every five minutes for the hour.
+                    self.assertTrue(looks, "the timer never looks while this set time is looked after")
+                    self.assertLess(looks[0], first + 5)
+                    self.assertGreaterEqual(looks[-1], last - 5)
+                    self.assertLessEqual(max(later - earlier for earlier, later in zip(looks, looks[1:])), 5)
+
+    def test_one_set_time_falls_due_early_in_the_posting_window(self):
+        # If only the second timer works, the post still goes out near its
+        # usual time: some check falls due after the window opens and before
+        # the alert stops waiting for a fresh check.
+        rules = (BACKEND / "src" / "rules.js").read_text(encoding="utf-8")
+        grace = int(re.search(r"^export const GRACE_MINUTES = (\d+);$", rules, flags=re.MULTILINE).group(1))
+        early_enough = self.number("EARLY_ENOUGH")
+        if not self.set_times():
+            return  # switched off on purpose
+        due = [set_time + self.number("START_AFTER") for set_time in self.set_times()]
+        in_time = [minute for minute in due if self.config.post_from <= minute < self.config.post_from + grace]
+        self.assertTrue(in_time, "no set time falls due between the window opening and the alert going out without a fresh check")
+        # A run from just before the window opened would not post, so it must not count for that set time.
+        for set_time in self.set_times():
+            if self.config.post_from <= set_time + self.number("START_AFTER") < self.config.post_from + grace:
+                self.assertGreaterEqual(set_time - early_enough, self.config.post_from)
+
+    def test_set_times_are_far_enough_apart_for_one_check_to_finish(self):
+        # A check is started a quarter of an hour after its set time. The one
+        # before it should be over by then, so that runs do not pile up.
+        times = self.set_times()
+        self.assertEqual(times, sorted(set(times)))
+        if len(times) > 1:
+            self.assertGreaterEqual(min(later - earlier for earlier, later in zip(times, times[1:])), 20)
+
+    def test_the_second_timer_may_be_switched_off(self):
+        # The README says how: make CHECK_TIMES empty. The checks above must
+        # then stay quiet, or the change could not be deployed.
+        self.told = {**self.told, "CHECK_TIMES": ""}
+        self.assertEqual(self.set_times(), [])
+        self.test_its_times_are_the_times_github_is_asked_to_run_the_check()
+        self.test_the_timer_looks_after_every_set_time_in_summer_and_in_winter()
+        self.test_one_set_time_falls_due_early_in_the_posting_window()
+        self.test_set_times_are_far_enough_apart_for_one_check_to_finish()
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("To switch the second timer off, make `CHECK_TIMES` empty", readme)
+        # And while it is on, there are set times to look after.
+        self.told = self.settings["vars"]
+        if self.set_times():
+            self.assertGreaterEqual(len(self.set_times()), 3)
+
+    def test_the_token_is_a_secret_and_is_written_nowhere(self):
+        # In the settings file it is named in a comment only: the value comes from a secret at deploy time.
+        for path in (BACKEND / "wrangler.jsonc", BACKEND / "package.json", ROOT / "config.toml"):
+            self.assertNotRegex(path.read_text(encoding="utf-8"), r"github_pat_|ghp_[A-Za-z0-9]", path.name)
+        self.assertNotIn("DAILY_CHECK_TOKEN", json.dumps(self.settings))
+        worker = (BACKEND / "src" / "worker.js").read_text(encoding="utf-8")
+        self.assertEqual(worker.count("DAILY_CHECK_TOKEN"), 1)
+        self.assertIn("token: env.DAILY_CHECK_TOKEN", worker)
+        # The code that holds the token never writes it to the log, and sends it to GitHub's API only.
+        # It is used in five places: kept, asked whether it is there (twice), put in the request to GitHub,
+        # and turned into its mark, the eight letters that tell one token from the next.
+        self.assertEqual(self.starter.count("this.token"), 5)
+        self.assertEqual(self.starter.count("${this.token}"), 1)
+        self.assertIn("Authorization: `Bearer ${this.token}`,", self.starter)
+        self.assertIn("this.mark = await markOf(this.token);", self.starter)
+        # The mark is a piece of the token's SHA-256, from which the token cannot be worked out.
+        self.assertIn('crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))', self.starter)
+        self.assertIn("hash.slice(0, 4)", self.starter)
+        self.assertIn('const GITHUB = "https://api.github.com";', self.starter)
+        self.assertIn("await this.fetch(GITHUB + path, {", self.starter)
+        self.assertEqual(self.starter.count("this.fetch("), 1)
+        self.assertIn('redirect: "manual"', self.starter)
 
 
 class ToolsTest(unittest.TestCase):
@@ -268,25 +412,60 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("run: npm test", self.test_job)
         self.assertIn("run: npm run runtime", self.test_job)
 
-    def test_the_secrets_reach_one_step_only(self):
+    def test_the_secrets_reach_only_the_steps_that_need_them(self):
         self.assertEqual(secrets_named(self.header), [])
         self.assertEqual(secrets_named(self.test_job), [])
         with_secrets = [step for step in self.steps(self.deploy_job) if secrets_named(step)]
-        self.assertEqual(len(with_secrets), 2)
-        look, deploy = with_secrets
+        self.assertEqual(len(with_secrets), 3)
+        look, deploy, hand_over = with_secrets
         both = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
-        # The first only learns whether both secrets exist: "true" or "false" is all it is handed.
+        # The first only learns which secrets exist: "true" or "false" is all it is handed.
         self.assertIn("BOTH_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}", look)
-        self.assertEqual(secrets_named(look), both)
+        self.assertIn("TIMER_SET: ${{ secrets.DAILY_CHECK_TOKEN != '' }}", look)
+        self.assertEqual(secrets_named(look), [*both, "DAILY_CHECK_TOKEN"])
+        self.assertEqual(len(re.findall(r"\$\{\{ secrets\.", look)), 2)
         # The second is the deploy itself, and it runs nothing but the pinned deploy tool.
         self.assertIn("CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}", deploy)
         self.assertIn("CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}", deploy)
         self.assertEqual(secrets_named(deploy), both)
         self.assertRegex(deploy, r"\n        run: npx --no-install wrangler deploy\n")
-        # No other workflow is handed them.
+        # The third hands the second timer its token, with the same tool and nothing else.
+        self.assertEqual(secrets_named(hand_over), [*both, "DAILY_CHECK_TOKEN"])
+        self.assertTrue(hand_over.startswith("      - name: Hand the second timer its token\n"))
+        # No other workflow is handed any of them.
         for other in sorted(WORKFLOWS.glob("*.yml")):
             if other.name != "alerts.yml":
-                self.assertNotIn("CLOUDFLARE", other.read_text(encoding="utf-8"), other.name)
+                text = other.read_text(encoding="utf-8")
+                self.assertNotIn("CLOUDFLARE", text, other.name)
+                self.assertNotIn("DAILY_CHECK_TOKEN", text, other.name)
+
+    def test_the_second_timers_token_goes_straight_into_the_deploy_tool(self):
+        hand_over = [step for step in self.steps(self.deploy_job) if step.startswith("      - name: Hand the second timer its token\n")][0]
+        # Only when there is a token to hand over, and after the deploy.
+        self.assertIn("\n        if: steps.secrets.outputs.found == 'yes' && steps.secrets.outputs.timer == 'yes'\n", hand_over)
+        names = [re.match(r"      - name: (.*)", step).group(1) for step in self.steps(self.deploy_job)]
+        self.assertEqual(names.index("Hand the second timer its token"), names.index("Deploy to Cloudflare") + 1)
+        # One command: the token is piped into the pinned tool. No file, no echo, nothing that prints commands.
+        runs = re.findall(r"\n        run: (.*)\n", hand_over)
+        self.assertEqual(runs, ["""printf '%s' "$DAILY_CHECK_TOKEN" | npx --no-install wrangler secret put DAILY_CHECK_TOKEN"""])
+        self.assertNotIn("run: |", hand_over)
+        # The name it is kept under on Cloudflare is the name the backend reads.
+        self.assertIn("token: env.DAILY_CHECK_TOKEN", (BACKEND / "src" / "worker.js").read_text(encoding="utf-8"))
+        # Nothing else in the workflow ever sees the token's value.
+        self.assertEqual(self.text.count("${{ secrets.DAILY_CHECK_TOKEN }}"), 1)
+        self.assertEqual(self.text.count('"$DAILY_CHECK_TOKEN"'), 1)
+
+    def test_the_run_checks_that_the_second_timer_switched_on(self):
+        ask = [step for step in self.steps(self.deploy_job) if step.startswith("      - name: Ask the backend how things are")][0]
+        self.assertIn("TIMER: ${{ steps.secrets.outputs.timer }}", ask)
+        # What it looks for is what the backend really says.
+        self.assertIn("""grep -q '"starter":{"on":true'""", ask)
+        worker = (BACKEND / "src" / "worker.js").read_text(encoding="utf-8")
+        self.assertIn("{ ...answer.body, starter: await this.starter.status() }", worker)
+        starter = (BACKEND / "src" / "starter.js").read_text(encoding="utf-8")
+        self.assertRegex(starter, r"return \{\n      on: true,\n")
+        # Switched off on purpose is not a fault.
+        self.assertIn("""grep -q '"CHECK_TIMES": *""' wrangler.jsonc""", ask)
 
     def test_a_step_called_secrets_is_not_mistaken_for_a_secret(self):
         self.assertEqual(secrets_named("if: steps.secrets.outputs.found == 'yes'"), [])
@@ -295,10 +474,15 @@ class WorkflowTest(unittest.TestCase):
     def test_without_the_secrets_every_later_step_is_skipped(self):
         steps = self.steps(self.deploy_job)
         names = [re.match(r"      - name: (.*)", step).group(1) for step in steps]
-        self.assertEqual(names[:2], ["Get the code", "Look for the Cloudflare secrets"])
+        self.assertEqual(names[:2], ["Get the code", "Look for the secrets"])
         for step in steps[2:]:
             with self.subTest(step=step.splitlines()[0].strip()):
-                self.assertIn("\n        if: steps.secrets.outputs.found == 'yes'\n", step)
+                self.assertRegex(step, r"\n        if: steps\.secrets\.outputs\.found == 'yes'( && steps\.secrets\.outputs\.timer == 'yes')?\n")
+        # Without the Cloudflare secrets the step that looks for them says nothing about the second timer.
+        look = steps[1]
+        self.assertLess(look.index('echo "found=no"'), look.index("exit 0"))
+        self.assertLess(look.index("exit 0"), look.index('echo "found=yes"'))
+        self.assertLess(look.index('echo "found=yes"'), look.index('echo "timer=yes"'))
 
     def test_tools_are_installed_as_the_lockfile_says_and_run_no_scripts(self):
         self.assertIn("run: npm ci --ignore-scripts\n", self.test_job)
@@ -324,8 +508,9 @@ class WorkflowTest(unittest.TestCase):
                 found += 1
                 with self.subTest(workflow=path.name, title=title):
                     self.assertRegex(title, r"^[A-Za-z][A-Za-z ]+$")
-        self.assertGreaterEqual(found, 2)
+        self.assertGreaterEqual(found, 4)
         self.assertIn("::notice title=Tested but not deployed::", self.deploy_job)
+        self.assertIn("::notice title=Second timer is off::", self.deploy_job)
 
     def test_the_address_asked_is_the_one_in_the_settings(self):
         settings = read_jsonc((BACKEND / "wrangler.jsonc").read_text(encoding="utf-8"))

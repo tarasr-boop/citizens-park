@@ -1,16 +1,19 @@
 // The alerts backend for the Citizens Bark page, as a Cloudflare Worker.
 //
-// It does three things:
+// It does four things:
 //   - takes in the address a browser makes when someone turns alerts on
 //     (and removes it again when they turn them off)
 //   - once a day, in the afternoon, sends today's notice to every address
+//   - starts the daily check on GitHub when GitHub's own timer has not
 //   - answers "how are things" with a few numbers
 //
-// The real work is in book.js. This file only connects it to Cloudflare: the
-// requests that come in, the timer, and the place where the book is kept.
+// The real work is in book.js and starter.js. This file only connects them to
+// Cloudflare: the requests that come in, the timer, and the place where
+// things are kept.
 
 import { Book } from "./book.js";
 import { MOST_BYTES, corsHeaders, settingsFrom } from "./rules.js";
+import { Starter } from "./starter.js";
 
 // Cloudflare reads everything this file exports as something it can call: the
 // worker below and the class for the book. So nothing else is exported here.
@@ -54,13 +57,16 @@ async function textUpTo(request, most) {
  */
 export class Subscribers {
   constructor(state, env) {
-    this.book = new Book({
+    const parts = {
       storage: state.storage,
       fetch: (address, options) => fetch(address, options),
       now: () => Date.now(),
       settings: settingsFrom(env),
       log: (line) => console.log(line),
-    });
+    };
+    this.book = new Book(parts);
+    // The second timer keeps its few notes in the same place, under names of its own.
+    this.starter = new Starter({ ...parts, page: (now) => this.book.pageData(now), token: env.DAILY_CHECK_TOKEN });
     // Nothing is handled until the signing keys are ready.
     state.blockConcurrencyWhile(() => this.book.open());
   }
@@ -77,12 +83,28 @@ export class Subscribers {
     }
     let answer;
     if (path === "/key") answer = this.book.key();
-    else if (path === "/status") answer = await this.book.status();
+    else if (path === "/status") answer = await this.status();
     else if (path === "/subscribe") answer = await this.book.subscribe(given);
     else if (path === "/unsubscribe") answer = await this.book.unsubscribe(given);
-    else if (path === "/tick") answer = await this.book.tick();
+    else if (path === "/tick") answer = await this.tick();
     else answer = { status: 404, body: { ok: false, reason: "unknown" } };
     return json(answer.status, answer.body);
+  }
+
+  async status() {
+    const answer = await this.book.status();
+    return { status: answer.status, body: { ...answer.body, starter: await this.starter.status() } };
+  }
+
+  /** One look of the timer. It has two jobs, and trouble with one must not stop the other. */
+  async tick() {
+    const stumbled = (what) => (error) => {
+      console.log(`${what} stumbled: ${String(error && error.message).slice(0, 200)}`);
+      return null;
+    };
+    const alert = await this.book.tick().catch(stumbled("the alert's look"));
+    const starter = await this.starter.look().catch(stumbled("the second timer's look"));
+    return { status: alert && starter ? 200 : 500, body: { ok: Boolean(alert && starter), alert: alert && alert.body, starter } };
   }
 
   async alarm() {
@@ -132,7 +154,7 @@ export default {
     }
   },
 
-  // Runs every few minutes through the afternoon (see "crons" in wrangler.jsonc).
+  // Runs every five minutes through the day (see "crons" in wrangler.jsonc).
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(
       book(env)

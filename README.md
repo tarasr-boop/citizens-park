@@ -54,7 +54,7 @@ It is built to keep going when something fails:
 
 - If the council's page cannot be read, it uses the last good copy, and then the usual weekly pattern, and says so.
 - If the weather service's usual server does not answer, it asks the service's other server straight away. If that fails too, it tries again for a few minutes. Then it uses the last forecast that did load (up to 12 hours old) and says when it is from.
-- GitHub often starts scheduled jobs late, so there are several runs each afternoon. Only the first one posts.
+- GitHub often starts scheduled jobs late, and sometimes not at all. So there are several runs each afternoon, of which only the first posts, and a [second timer](#the-second-timer) on Cloudflare starts a run that GitHub has missed.
 - If a source keeps failing, it opens an issue in this repository, and GitHub emails you. See [When something goes wrong](#when-something-goes-wrong).
 
 ## Everyday changes
@@ -69,7 +69,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | The hours on the page's timeline | `day_start` and `day_end` under `[park]` in `config.toml` |
 | The tip button | `tip_url` in `config.toml`. Paste your Ko-fi link. Leave it empty to hide the button. |
 | The usual weekly pattern | `schedule.toml`. It is only used on days the council's page does not cover. |
-| The time of the daily post | `post_from` in `config.toml`, the run times in `.github/workflows/daily.yml`, and `ALERT_FROM` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
+| The time of the daily post | `post_from` in `config.toml`, the run times in `.github/workflows/daily.yml`, and `ALERT_FROM` and `CHECK_TIMES` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 | The hours searched for the best window on a rainy day | `advice_from` and `advice_until` under `[telegram]` in `config.toml` |
 
 The **Tests** workflow runs after every change. If you get an email saying it failed, the edit probably has a typing slip, such as a missing quotation mark. Open the failed run to see which file it names.
@@ -97,7 +97,7 @@ The job watches itself. When there is a problem it opens an issue whose title st
 
 If the post did not arrive:
 
-1. Open **Actions** and look at the latest **Daily check** run. Its summary shows what happened.
+1. Open **Actions** and look at the latest **Daily check** run. Its summary shows what happened. If there was no run this afternoon, start one by hand (see [Running it by hand](#running-it-by-hand)), then see [The second timer](#the-second-timer).
 2. Check that the secret `TELEGRAM_BOT_TOKEN` exists (**Settings**, **Secrets and variables**, **Actions**).
 3. Check that the bot is an administrator of the channel and is allowed to post messages.
 4. Check that `channel` in `config.toml` matches the channel's link.
@@ -127,7 +127,7 @@ How it works:
 The backend is put on Cloudflare by the **Alerts backend** workflow. It needs two secrets, and until both exist it only runs the tests.
 
 1. In Cloudflare, open [Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages). Under **Account Details**, copy the **Account ID**.
-2. Open [Account API tokens](https://dash.cloudflare.com/?to=/:account/api-tokens) and press **Create Token**. Under **Permission policies**, open the **Custom** dropdown and choose **Edit Cloudflare Workers**. Give the token a name. For the resources it may reach, choose your account and the zone `citizensbark.com`. Create the token and copy it. Cloudflare shows it only once.
+2. Open [Account API tokens](https://dash.cloudflare.com/?to=/:account/api-tokens) and press **Create Token**. Under **Permission policies**, open the **Custom** dropdown and choose **Edit Cloudflare Workers**. Two lines of permissions appear, for your account and for its zones. Leave them as they are and give the token a name. Create the token and copy it. Cloudflare shows it only once.
 3. In this repository, open **Settings**, **Secrets and variables**, **Actions**, and save two repository secrets: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
 4. Open **Actions**, choose **Alerts backend**, then press **Run workflow**. The run ends by asking the backend how things are. The first time, Cloudflare needs a few minutes to set up the address.
 5. Put the backend's address in `config.toml`, as `url` under `[notifications]`. The button appears on the page a minute or two later. While `url` is empty, the page has no button.
@@ -142,6 +142,32 @@ The backend is put on Cloudflare by the **Alerts backend** workflow. It needs tw
 - **`unknownServices` is not empty.** A browser uses a notification service that the backend does not know yet. Add its name to the list in `notifications/src/rules.js` if it belongs to a real browser.
 
 Limits: the backend takes up to 5,000 devices, and sends to them forty at a time, which the free plan carries comfortably.
+
+## The second timer
+
+GitHub's own timer starts the Daily check late on some days and, in a new repository, sometimes not at all. So the backend on Cloudflare keeps a second timer for it. A quarter of an hour after each of the check's set times, it looks at the page. If the page still shows an older check, it asks GitHub to run the check now, the same way the **Run workflow** button does. If the page is no newer ten minutes later, it asks again, up to three times for each set time. A run too many does no harm, because the check posts once a day.
+
+It needs the backend to be on Cloudflare (see [Switching it on](#switching-it-on)) and one more secret: a token from GitHub that lets the backend start this repository's workflows.
+
+1. Open [the form for a new token](https://github.com/settings/personal-access-tokens/new?name=Citizens+Bark+second+timer&description=Lets+the+alerts+backend+start+the+Daily+check&expires_in=none&actions=write) on GitHub. This link fills in the name, no expiry date and the one permission.
+2. Under **Repository access**, choose **Only select repositories** and pick this repository.
+3. Under **Permissions**, check that **Actions** is there with **Read and write**. If it is not, add it. GitHub adds **Metadata** by itself. Nothing else is needed.
+4. Press **Generate token** and copy the token. GitHub shows it only once.
+5. In this repository, open **Settings**, **Secrets and variables**, **Actions**, and save it as a repository secret named `DAILY_CHECK_TOKEN`.
+6. Open **Actions**, choose **Alerts backend**, then press **Run workflow**. The run hands the token to Cloudflare and checks that the backend then says its second timer is on.
+
+The token lets its holder start, cancel and switch off this repository's workflows. It cannot change a file or read a secret, and it has no rights in any other repository. **It is still a password.** Never put it in a file here or in a chat. If it leaks, delete it under [Fine-grained tokens](https://github.com/settings/personal-access-tokens) and go through the six steps again.
+
+To see what the second timer is doing, open <https://alerts.citizensbark.com> and read `starter`:
+
+- `on` is `true` once the token has been handed over.
+- `look` is what it last did, and why.
+- `check` is the last set time it looked after: how often it started the check (`tries`), how often GitHub did not take the request (`fails`), the number of GitHub's last answer, and whether the page has shown the check since (`done`). A number from 200 to 299, usually 204, means taken. 403 or 404 means the token may not start this repository's workflows, so make a new one and take care with steps 2 and 3.
+- `token` is GitHub's answer to a question the backend asks once a day: is the token still good? 200 means yes. 401 means GitHub does not know the token. The backend then leaves the token alone and asks again every half hour. If the answer stays 401, make a new token.
+
+To switch the second timer off, make `CHECK_TIMES` empty (`""`) in `notifications/wrangler.jsonc`. After that the token is no longer needed, and you can delete it on GitHub.
+
+`CHECK_TIMES` holds the run times of `.github/workflows/daily.yml`. If you change one, change the other. The tests fail until they agree.
 
 ## Setting it up from scratch
 
@@ -189,9 +215,10 @@ parkbot/
   store.py      what is remembered between runs (the data/ folder)
 notifications/  the backend that sends notifications to phones (JavaScript, runs on Cloudflare)
   src/webpush.js   encrypts and sends one notification, the way the web standards describe
-  src/rules.js     the small decisions: the time at the park, which addresses are taken, the words
+  src/rules.js     the small decisions: the time at the park, which addresses are taken, the words, the settings
   src/book.js      the book of devices, and the daily sending
-  src/worker.js    connects the book to Cloudflare: requests, the timer, the storage
+  src/starter.js   the second timer, which starts the Daily check when GitHub's own timer has not
+  src/worker.js    connects both to Cloudflare: requests, the timer, the storage
   test/            its tests
   wrangler.jsonc   its settings on Cloudflare
 config.toml     settings
@@ -237,7 +264,7 @@ npm test
 npm run runtime
 ```
 
-`npm test` runs the backend with stand-ins for Cloudflare, the notification services and the page. A stand-in phone decrypts every notification, to check that the words arrive. `npm run runtime` bundles the code the way a deploy does and runs it in `workerd`, the program that runs it on Cloudflare's servers. Both run in the **Tests** workflow after every change.
+`npm test` runs the backend with stand-ins for Cloudflare, the notification services, the page and GitHub. A stand-in phone decrypts every notification, to check that the words arrive. `npm run runtime` bundles the code the way a deploy does and runs it in `workerd`, the program that runs it on Cloudflare's servers. Both run in the **Tests** workflow after every change.
 
 The tools are pinned to exact versions in `notifications/package.json`. To move to a newer `wrangler`, change its version there, set `miniflare` to the version that `wrangler` asks for, and run `npm install` in that folder. The code in `notifications/src/` uses no package at all.
 

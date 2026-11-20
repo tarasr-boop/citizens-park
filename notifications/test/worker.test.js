@@ -8,11 +8,14 @@ import { afterEach, beforeEach, test } from "node:test";
 import { MOST_BYTES } from "../src/rules.js";
 import * as everything from "../src/worker.js";
 import worker, { Subscribers } from "../src/worker.js";
-import { ENV, SITE, at, day, memoryStorage, newDevice, pageData, world } from "./standins.js";
+import { CHECK, ENV, GITHUB, SITE, at, day, memoryStorage, newDevice, pageData, world } from "./standins.js";
 
 const PAGE = "https://citizensbark.example";
 const BACKEND = "https://alerts.example";
 const TODAY = "2026-11-20";
+// Made up for these tests. On Cloudflare the real one is a secret, handed over at deploy time.
+const TOKEN = "github_pat_11STANDIN0aBcDeFgHiJkLmNoPqRsTuVwXyZ";
+const OFF = { on: false, look: null, check: null, token: null };
 
 let net;
 let realFetch;
@@ -83,9 +86,11 @@ function ask(cf, method, path, { origin = PAGE, body, headers = {} } = {}) {
 }
 
 async function tick(cf) {
-  await worker.scheduled({ cron: "*/5 3-8 * * *", scheduledTime: now }, cf.env, cf.ctx);
+  await worker.scheduled({ cron: "*/5 0-11,19-23 * * *", scheduledTime: now }, cf.env, cf.ctx);
   await Promise.all(cf.waits);
 }
+
+const status = async (cf) => (await ask(cf, "GET", "/status")).json();
 
 test("the worker's file exports only what Cloudflare can call", () => {
   // Cloudflare refuses a worker whose main file exports anything else, a plain number for example.
@@ -102,7 +107,7 @@ test("anyone may ask how things are, and gets numbers only", async () => {
     assert.equal(answer.headers.get("Content-Type"), "application/json; charset=utf-8");
     assert.equal(answer.headers.get("Cache-Control"), "no-store");
     assert.equal(answer.headers.get("X-Content-Type-Options"), "nosniff");
-    assert.deepEqual(await answer.json(), { ok: true, devices: 0, sending: false, last: null, timer: null, unknownServices: {} });
+    assert.deepEqual(await answer.json(), { ok: true, devices: 0, sending: false, last: null, timer: null, unknownServices: {}, starter: OFF });
   }
   // One book for everyone, kept near the people it serves.
   assert.deepEqual(cf.asked[0], { id: { name: "all" }, options: { locationHint: "oc" } });
@@ -295,6 +300,76 @@ test("the timer's look is passed on to the book, and a failure of it is only not
     },
   });
   await tick(broken); // does not throw
+});
+
+test("without a token the second timer stays off, and the timer's look asks nothing of GitHub", async () => {
+  // The four settings are there, as in wrangler.jsonc, but no token has been handed over.
+  const cf = cloudflare({ ...ENV, ...CHECK });
+  net.page = pageData({ generated: `${TODAY}T13:50:00+11:00`, days: [day(TODAY)] });
+  now = at(TODAY, "14:55");
+  await tick(cf);
+  assert.equal(net.asks.length, 0);
+  const said = await status(cf);
+  assert.deepEqual(said.starter, OFF);
+  assert.deepEqual(said.timer, { at: now, did: "nothing", why: "no device to tell" });
+});
+
+test("with a token, the timer's look starts the check on GitHub when the page shows none", async () => {
+  const cf = cloudflare({ ...ENV, ...CHECK, DAILY_CHECK_TOKEN: TOKEN });
+  net.page = pageData({ generated: `${TODAY}T13:50:00+11:00`, days: [day(TODAY)] });
+  now = at(TODAY, "14:55");
+  await tick(cf);
+
+  assert.deepEqual(
+    net.asks.map((call) => `${call.method} ${call.url}`),
+    [`GET ${GITHUB}repos/someone/park/actions/workflows/daily.yml`, `POST ${GITHUB}repos/someone/park/actions/workflows/daily.yml/dispatches`]
+  );
+  assert.equal(net.starts[0].headers.Authorization, `Bearer ${TOKEN}`);
+  assert.deepEqual(JSON.parse(net.starts[0].body), { ref: "main" });
+
+  const answer = await ask(cf, "GET", "/status", { origin: null });
+  const text = await answer.text();
+  // Anyone may read the status, so the token must not be in it.
+  assert.equal(text.includes(TOKEN), false);
+  assert.equal(text.includes("github_pat"), false);
+  assert.deepEqual(JSON.parse(text).starter, {
+    on: true,
+    look: { at: now, did: "started", why: "the page showed no 2:40 PM check" },
+    check: { date: TODAY, time: "14:40", tries: 1, fails: 0, at: now, answer: 204, done: false },
+    token: { date: TODAY, at: now, answer: 200, ok: true },
+  });
+
+  // The check ran. Five minutes later the page is new, and nothing more is asked of GitHub.
+  net.page = pageData({ generated: `${TODAY}T14:56:00+11:00`, days: [day(TODAY)] });
+  now = at(TODAY, "15:00");
+  await tick(cf);
+  assert.equal(net.asks.length, 2);
+  assert.equal((await status(cf)).starter.check.done, true);
+});
+
+test("the timer's look has two jobs, and trouble with one does not stop the other", async () => {
+  const cf = cloudflare({ ...ENV, ...CHECK, DAILY_CHECK_TOKEN: TOKEN });
+  net.page = pageData({ generated: `${TODAY}T13:50:00+11:00`, days: [day(TODAY)] });
+  now = at(TODAY, "14:55");
+  await status(cf); // wakes the object, so that its parts can be reached
+
+  // The alert's look stumbles: the second timer still starts the check.
+  const alertsLook = cf.object.book.tick;
+  cf.object.book.tick = async () => {
+    throw new Error("the alert's look broke");
+  };
+  await tick(cf);
+  assert.equal(net.starts.length, 1);
+  assert.equal((await status(cf)).timer, null);
+
+  // The second timer stumbles: the alert's look still happens.
+  cf.object.book.tick = alertsLook;
+  cf.object.starter.look = async () => {
+    throw new Error("the second timer broke");
+  };
+  now = at(TODAY, "15:00");
+  await tick(cf);
+  assert.deepEqual((await status(cf)).timer, { at: now, did: "nothing", why: "no device to tell" });
 });
 
 test("from the tap on the page to the afternoon's notification", async () => {
