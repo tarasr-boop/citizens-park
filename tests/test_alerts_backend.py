@@ -313,6 +313,17 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotRegex(ask, r'\$answer[^\n]*GITHUB_STEP_SUMMARY')
         self.assertNotRegex(ask, r'echo[^\n]*\$answer')
 
+    def test_a_heading_in_the_runs_summary_is_shown_whole(self):
+        # GitHub cuts the heading of a notice at the first comma, and ends it at the first colon.
+        found = 0
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            for title in re.findall(r"::(?:notice|warning|error) title=(.*?)::", path.read_text(encoding="utf-8")):
+                found += 1
+                with self.subTest(workflow=path.name, title=title):
+                    self.assertRegex(title, r"^[A-Za-z][A-Za-z ]+$")
+        self.assertGreaterEqual(found, 2)
+        self.assertIn("::notice title=Tested but not deployed::", self.deploy_job)
+
     def test_the_address_asked_is_the_one_in_the_settings(self):
         settings = read_jsonc((BACKEND / "wrangler.jsonc").read_text(encoding="utf-8"))
         found = re.search(r'"pattern": *"([a-z0-9.-]*)"', (BACKEND / "wrangler.jsonc").read_text(encoding="utf-8"))
