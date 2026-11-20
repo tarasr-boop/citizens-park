@@ -33,6 +33,7 @@ class DayPlan:
     closed: bool = False  # closed all day by a council notice
     label: str = ""  # "Maintenance", or the words of the closure notice
     note: str = ""  # one sentence for people: where this comes from
+    why: str = ""  # only when the day is not confirmed: why the council's page does not settle it
 
     @property
     def confirmed(self) -> bool:
@@ -115,6 +116,7 @@ def plan_day(
                 False,
                 closure_text if closed_slots else "",
                 f"Rough guide only, based on {usual.source}. {why}",
+                f"Based on {usual.source}. {why}",
             )
         return DayPlan(
             day,
@@ -123,11 +125,13 @@ def plan_day(
             False,
             closure_text if closed_slots else "",
             f"Usual pattern only, not confirmed. {why}",
+            why,
         )
 
     if closed_slots:
         return DayPlan(day, closed_slots, "council", False, closure_text, "From a notice on the council's page.")
-    return DayPlan(day, (), "none", False, "", f"No booking information for this day. {_why_not_confirmed(day, store)}")
+    why = _why_not_confirmed(day, store)
+    return DayPlan(day, (), "none", False, "", f"No booking information for this day. {why}", why)
 
 
 def plan_days(

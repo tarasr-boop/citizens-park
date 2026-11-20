@@ -63,12 +63,22 @@ class CouncilStore:
     days: dict[date, DayEntry] = field(default_factory=dict)
     closures: list[Closure] = field(default_factory=list)
     last_read: date | None = None  # the last day the page was read successfully
+    # The moment of that read, in local time with its time zone. The public page shows it
+    # as "Last checked". None if the page was last read before this was recorded.
+    last_read_at: datetime | None = None
     page_modified: date | None = None  # the page's own "last updated" date
 
     @classmethod
     def load(cls, path: str | Path) -> CouncilStore:
         raw = _read_json(Path(path))
         store = cls(last_read=_date(raw.get("last_read")), page_modified=_date(raw.get("page_modified")))
+        try:
+            read_at = datetime.fromisoformat(str(raw.get("last_read_at")))
+        except ValueError:
+            read_at = None
+        # Only a time that names its zone, and that agrees with the day beside it, is believed.
+        if read_at is not None and read_at.tzinfo is not None and read_at.date() == store.last_read:
+            store.last_read_at = read_at
         for key, value in (raw.get("days") or {}).items():
             day = _date(key)
             if day is None or not isinstance(value, dict):
@@ -106,6 +116,7 @@ class CouncilStore:
             {
                 "about": "Bookings read from the council's Citizens Park page. Written by the daily job; do not edit.",
                 "last_read": self.last_read.isoformat() if self.last_read else None,
+                "last_read_at": self.last_read_at.isoformat(timespec="minutes") if self.last_read_at else None,
                 "page_modified": self.page_modified.isoformat() if self.page_modified else None,
                 "closures": [
                     {"start": closure.start.isoformat(), "end": closure.end.isoformat(), "text": closure.text}
@@ -115,8 +126,8 @@ class CouncilStore:
             },
         )
 
-    def update(self, page: CouncilPage, today: date) -> None:
-        """Take in a fresh read of the page."""
+    def update(self, page: CouncilPage, today: date, at: datetime | None = None) -> None:
+        """Take in a fresh read of the page, made on ``today`` (at the moment ``at``, if known)."""
         if page.days:
             first, last = min(page.days), max(page.days)
             # Whatever the page now shows for its date range replaces what we held,
@@ -127,6 +138,7 @@ class CouncilStore:
         self.days = {day: entry for day, entry in self.days.items() if day >= cutoff}
         self.closures = list(page.closures)
         self.last_read = today
+        self.last_read_at = at
         self.page_modified = page.modified.date() if page.modified else self.page_modified
 
     @property

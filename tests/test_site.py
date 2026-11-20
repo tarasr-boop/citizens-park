@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import json
 import re
 import tempfile
@@ -32,11 +34,12 @@ class BuildTest(unittest.TestCase):
         self.addCleanup(self._folder.cleanup)
         self.out = Path(self._folder.name) / "site"
 
-    def build(self, config=None, plans=None, forecast=None, day: date = FRIDAY) -> str:
-        """Build the site and return the text of its main page."""
+    def build(self, config=None, plans=None, forecast=None, day: date = FRIDAY, store: CouncilStore | None = None) -> str:
+        """Build the site and return the text of its main page. The council's page was read at 2:45 PM that day."""
         config = config or load_config()
         plans = plans or plans_from(day)
-        site.build(config, plans, forecast, october_store(day), afternoon(day), self.out, ROOT / "assets")
+        store = store or october_store(day, afternoon(day))
+        site.build(config, plans, forecast, store, afternoon(day), self.out, ROOT / "assets")
         return (self.out / "index.html").read_text(encoding="utf-8")
 
     def embedded_data(self, page: str) -> dict:
@@ -50,7 +53,6 @@ class BuildTest(unittest.TestCase):
         for wanted in (
             "index.html",
             "data.json",
-            "poster.html",
             "manifest.webmanifest",
             "qr.svg",
             "favicon.svg",
@@ -62,25 +64,64 @@ class BuildTest(unittest.TestCase):
             self.assertIn(wanted, names)
         # The note about what the QR code holds is for the repository, not the public.
         self.assertNotIn("qr-url.txt", names)
+        self.assertNotIn("poster.html", names)
 
     def test_no_template_marker_is_left_behind(self):
-        for config in (load_config(), load_config(channel="", repo_url="", site_name="Citizens Bark")):
-            with self.subTest(channel=config.channel):
-                self.build(config)
-                for name in ("index.html", "poster.html"):
-                    self.assertNotIn("{{", (self.out / name).read_text(encoding="utf-8"), name)
+        with_everything = load_config(
+            site_name="Citizens Bark", tip_url="https://ko-fi.com/example", about_text="Hello.", about_link="https://example.org/me"
+        )
+        for config in (load_config(), load_config(channel="", repo_url=""), with_everything):
+            with self.subTest(channel=config.channel, about=config.about_text):
+                self.assertNotIn("{{", self.build(config))
 
     def test_page_reads_sensibly_before_the_script_runs(self):
         page = self.build()
         self.assertIn("<h1>Usually booked 4 to 8 PM today</h1>", page)
-        self.assertIn("Fri 20 Nov, as of 2:45 PM", page)
+        self.assertIn('<p class="kicker">Last checked Fri 20 Nov, 2:45 PM</p>', page)
         self.assertIn("<strong>Sat 21 Nov</strong>: 10 AM to 6 PM", page)
-        self.assertIn("Last checked Fri 20 Nov, 2:45 PM.", page)
+
+    def test_last_checked_is_the_last_read_of_the_council_page_not_the_build(self):
+        # The page is built at 2:45 PM on Friday. What it calls "last checked" is the last
+        # time the council's page was actually read, however long ago that was.
+        thursday = datetime(2026, 11, 19, 15, 55, tzinfo=MELBOURNE)
+        page = self.build(store=october_store(thursday.date(), thursday))
+        self.assertIn('<p class="kicker">Last checked Thu 19 Nov, 3:55 PM</p>', page)
+        self.assertNotIn("Last checked Fri 20 Nov", page)
+        data = self.embedded_data(page)
+        self.assertEqual(data["council"]["lastReadAt"], "2026-11-19T15:55+11:00")
+        self.assertEqual(data["council"]["lastReadText"], "Thu 19 Nov, 3:55 PM")
+        self.assertEqual(data["council"]["lastRead"], "2026-11-19")
+        self.assertEqual(data["generated"], "2026-11-20T14:45+11:00")
+
+    def test_last_checked_is_given_in_the_parks_own_time(self):
+        # Saved by a machine that keeps another clock: 4:55 AM in London is 3:55 PM in Melbourne.
+        london = datetime(2026, 11, 19, 4, 55, tzinfo=ZoneInfo("Europe/London"))
+        store = october_store(date(2026, 11, 19), london)
+        data = site.page_data(load_config(), plans_from(FRIDAY), None, store, afternoon(FRIDAY))
+        self.assertEqual(data["council"]["lastReadAt"], "2026-11-19T15:55+11:00")
+        self.assertEqual(data["council"]["lastReadText"], "Thu 19 Nov, 3:55 PM")
+
+    def test_last_checked_without_a_recorded_time_or_without_any_read(self):
+        # Read before the time of a read was recorded: only the day is known.
+        page = self.build(store=october_store(FRIDAY))
+        self.assertIn('<p class="kicker">Last checked Fri 20 Nov</p>', page)
+        data = self.embedded_data(page)
+        self.assertIsNone(data["council"]["lastReadAt"])
+        self.assertEqual(data["council"]["lastReadText"], "Fri 20 Nov")
+        # Never read at all: the page does not claim a check that did not happen.
+        page = self.build(store=CouncilStore())
+        self.assertNotIn('<p class="kicker">Last checked', page)
+        self.assertIn('<p class="kicker">Fri 20 Nov</p>', page)
+        self.assertIsNone(self.embedded_data(page)["council"]["lastReadText"])
 
     def test_page_says_it_is_unofficial_and_credits_its_sources(self):
         page = self.build()
-        self.assertIn("<strong>Unofficial.</strong>", page)
-        self.assertIn("check the signs at the park", page)
+        self.assertIn(
+            "<strong>Unofficial.</strong> This page is not affiliated with the council or the clubs. "
+            "Bookings can change and matches can run late, so check the signs at the park.",
+            page,
+        )
+        self.assertNotIn("run by", page)
         self.assertIn('<a href="https://open-meteo.com/" rel="noopener">Weather data by Open-Meteo.com</a>', page)
         self.assertIn('href="https://council.example/parks/citizens-park"', page)
         self.assertIn('<a href="https://example.org/code" rel="noopener">How this page is made</a>', page)
@@ -92,9 +133,16 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(data, json.loads((self.out / "data.json").read_text(encoding="utf-8")))
         self.assertEqual(data["site"], "https://example.org/park/")
         self.assertEqual(data["zone"], "Australia/Melbourne")
-        self.assertEqual((data["dayStart"], data["lightsOff"]), (360, 1320))
+        self.assertEqual((data["dayStart"], data["dayEnd"], data["lightsOff"]), (360, 1320, 1320))
         self.assertEqual(data["generated"], "2026-11-20T14:45+11:00")
         self.assertEqual(data["council"]["latestDay"], "2026-10-31")
+        # The badge at the top of the page links to where the times come from.
+        self.assertEqual(data["council"]["url"], "https://council.example/parks/citizens-park")
+
+    def test_the_timeline_can_be_shorter_than_the_lit_hours(self):
+        config = load_config(day_start=7 * 60, day_end=21 * 60)
+        data = site.page_data(config, plans_from(FRIDAY), None, october_store(FRIDAY), afternoon(FRIDAY))
+        self.assertEqual((data["dayStart"], data["dayEnd"], data["lightsOff"]), (420, 1260, 1320))
 
     def test_data_for_each_day(self):
         forecast = weather.parse(forecast_json(FRIDAY, 8, chance=lambda day, hour: 40 if hour == 17 else 5))
@@ -104,6 +152,9 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(today["name"], "Fri 20 Nov")
         self.assertEqual(today["slots"], [[16 * 60, 20 * 60]])
         self.assertEqual(today["basis"], "usual")
+        # Why the day is not confirmed. The page shows it under the badge.
+        self.assertEqual(today["why"], "The council's page only goes up to 31 October.")
+        self.assertNotIn("note", today)
         self.assertEqual(today["rain"]["chance"], 40)
         # Hour-by-hour rain is only carried for today and tomorrow, to keep the page small.
         self.assertEqual(len(today["hours"]), 24)
@@ -126,25 +177,80 @@ class BuildTest(unittest.TestCase):
         page = self.build()
         self.assertIn('<a class="button primary" href="https://t.me/ExampleParkDogs" rel="noopener">Get the daily alert on Telegram</a>', page)
         self.assertIn("A free alert goes out on Telegram at about 3 PM each day", page)
-        self.assertIn("A free alert at about 3 PM each day on Telegram", (self.out / "poster.html").read_text(encoding="utf-8"))
 
         page = self.build(load_config(channel=""))
         self.assertNotIn("Telegram", page)
         self.assertNotIn("t.me/", page)
-        poster = (self.out / "poster.html").read_text(encoding="utf-8")
-        self.assertNotIn("Telegram", poster)
-        self.assertIn("Free, with no sign-up", poster)
+        # With no channel and no tip link there are no buttons, so no empty row is left for them.
+        self.assertNotIn("<nav", page)
 
     def test_tip_button_only_with_a_tip_link(self):
         self.assertNotIn("Leave a tip", self.build())
         page = self.build(load_config(tip_url="https://ko-fi.com/example"))
         self.assertIn('<a class="button" href="https://ko-fi.com/example" rel="noopener">Leave a tip</a>', page)
+        self.assertIn("Leave a tip", self.build(load_config(channel="", tip_url="https://ko-fi.com/example")))
 
-    def test_share_button_and_qr_code_are_always_there(self):
+    def test_sharing_is_one_block_with_the_qr_code_and_a_copy_button(self):
         page = self.build(load_config(channel=""))
-        self.assertIn('id="share"', page)
-        self.assertIn('<img src="qr.svg"', page)
-        self.assertIn('<a href="poster.html">', page)
+        block = re.search(r'<details class="card fold" id="share">(.*?)</details>', page, re.DOTALL)
+        self.assertIsNotNone(block, "the page should have its share block")
+        inside = block.group(1)
+        self.assertIn("<summary>Share this page</summary>", inside)
+        # The code first, and only then the button.
+        self.assertLess(inside.index('<img src="qr.svg"'), inside.index('<button class="button" type="button" id="copy">Copy the link</button>'))
+        # The address is there too, for a browser that will not copy it. It stays hidden until then.
+        self.assertIn('<p class="share-address" id="address" hidden>https://example.org/park/</p>', inside)
+        self.assertEqual(page.count("Share this page"), 1)
+        self.assertNotIn("poster", page.lower())
+
+    def test_about_block_follows_the_week_ahead_when_it_has_words(self):
+        self.assertNotIn('class="card about"', self.build())
+
+        config = load_config(
+            about_heading="About me",
+            about_text="Hi, I'm Sofia & I train <dogs>.",
+            about_link="https://www.instagram.com/example",
+            about_link_text="@example on Instagram",
+        )
+        page = self.build(config)
+        self.assertIn("<h2>About me</h2>", page)
+        self.assertIn("<p>Hi, I&#x27;m Sofia &amp; I train &lt;dogs&gt;.</p>", page)
+        self.assertIn('<p class="about-link"><a href="https://www.instagram.com/example" rel="noopener">@example on Instagram</a></p>', page)
+        # After the live view (today and the week ahead), before the buttons and the share block.
+        self.assertLess(page.index('<div id="app">'), page.index('class="card about"'))
+        self.assertLess(page.index('class="card about"'), page.index('<nav class="actions"'))
+        self.assertLess(page.index('<nav class="actions"'), page.index('id="share"'))
+
+        without_link = self.build(load_config(about_text="Hello."))
+        self.assertIn("<p>Hello.</p>", without_link)
+        self.assertNotIn('<p class="about-link">', without_link)
+
+    def test_only_the_pages_own_script_may_run(self):
+        page = self.build(load_config(site_name="Citizens Bark", about_text="Hello."))
+        rules = re.search(r'<meta http-equiv="Content-Security-Policy" content="([^"]*)">', page)
+        self.assertIsNotNone(rules, "the page should tell the browser what it may run")
+        allowed = {part.split(" ", 1)[0]: part.split(" ", 1)[1] for part in rules.group(1).split("; ")}
+        self.assertEqual(allowed["default-src"], "&#x27;none&#x27;")
+        # The rules come before anything they govern.
+        self.assertLess(page.index("Content-Security-Policy"), page.index("<style"))
+
+        # The one script that runs is named by its fingerprint, and the fingerprint is right.
+        scripts = re.findall(r"<script>(.*?)</script>", page, re.DOTALL)
+        self.assertEqual(len(scripts), 1)
+        fingerprint = base64.b64encode(hashlib.sha256(scripts[0].encode("utf-8")).digest()).decode("ascii")
+        self.assertEqual(allowed["script-src"], f"&#x27;sha256-{fingerprint}&#x27;")
+        self.assertNotIn("unsafe-inline", allowed["script-src"])
+        self.assertNotIn("unsafe-eval", rules.group(1))
+
+        # Nothing on the page relies on what those rules forbid.
+        self.assertIsNone(re.search(r"<[^>]+\son[a-z]+\s*=", page), "an inline event handler would be blocked")
+        self.assertNotIn("javascript:", page)
+        # Everything the page loads comes from beside it: no script, style, picture or icon from another site.
+        loaded = re.findall(r'<(?:script|img)\b[^>]*\bsrc="([^"]*)"', page)
+        loaded += [href for rel, href in re.findall(r'<link rel="([^"]*)" href="([^"]*)"', page) if rel != "canonical"]
+        self.assertTrue(loaded)
+        for address in loaded:
+            self.assertNotRegex(address, r"^(?:[a-z]+:|//)", address)
 
     def test_the_page_can_have_its_own_name(self):
         plain = self.build()
@@ -163,18 +269,6 @@ class BuildTest(unittest.TestCase):
         manifest = json.loads((self.out / "manifest.webmanifest").read_text(encoding="utf-8"))
         self.assertEqual(manifest["short_name"], "Citizens Bark")
         self.assertEqual(manifest["name"], "Citizens Bark: Citizens Park oval")
-        poster = (self.out / "poster.html").read_text(encoding="utf-8")
-        self.assertIn("Citizens Bark is an unofficial page run by a local dog owner.", poster)
-
-    def test_the_page_says_who_runs_it(self):
-        plain = self.build()
-        self.assertIn("This page is run by a local dog owner, not by the council or the clubs.", plain)
-
-        changed = self.build(load_config(run_by="a local dog trainer & <friends>"))
-        self.assertIn("This page is run by a local dog trainer &amp; &lt;friends&gt;, not by the council or the clubs.", changed)
-        self.assertNotIn("dog owner,", changed)
-        poster = (self.out / "poster.html").read_text(encoding="utf-8")
-        self.assertIn("Unofficial page run by a local dog trainer &amp; &lt;friends&gt;.", poster)
 
     def test_manifest_lets_the_page_be_saved_to_a_home_screen(self):
         self.build()
@@ -184,21 +278,21 @@ class BuildTest(unittest.TestCase):
         for icon in manifest["icons"]:
             self.assertTrue((self.out / icon["src"]).is_file(), icon["src"])
 
-    def test_poster_shows_the_address_and_the_code(self):
-        self.build()
-        poster = (self.out / "poster.html").read_text(encoding="utf-8")
-        self.assertIn('<p class="address">example.org/park</p>', poster)
-        self.assertIn('<img class="qr" src="qr.svg" alt="QR code for https://example.org/park/">', poster)
-        self.assertIn("Unofficial page run by a local dog owner.", poster)
-        self.assertIn("Ask the council before putting posters up", poster)
-
     def test_words_from_outside_cannot_break_the_page(self):
         nasty = '</script><script>alert("x")</script> & <b>bold</b>'
         plans = [
-            DayPlan(FRIDAY, (Slot(600, 660),), "council", label=nasty, note=nasty),
-            DayPlan(FRIDAY + timedelta(days=1), (), "council", label=nasty, note=nasty),
+            DayPlan(FRIDAY, (Slot(600, 660),), "council", label=nasty, note=nasty, why=nasty),
+            DayPlan(FRIDAY + timedelta(days=1), (), "council", label=nasty, note=nasty, why=nasty),
         ]
-        config = load_config(park_name='Dogs & <Cats> "Oval"', suburb="<i>Richmond</i>", site_name="<u>Bark</u>")
+        config = load_config(
+            park_name='Dogs & <Cats> "Oval"',
+            suburb="<i>Richmond</i>",
+            site_name="<u>Bark</u>",
+            about_heading="<u>Me</u>",
+            about_text=nasty,
+            about_link="https://example.org/me",
+            about_link_text="<u>Me</u>",
+        )
         page = self.build(config, plans)
         # Exactly two script blocks: the data and the page's own script.
         self.assertEqual(page.count("<script"), 2)
@@ -206,34 +300,48 @@ class BuildTest(unittest.TestCase):
         self.assertNotIn("<b>bold</b>", page)
         self.assertNotIn("<i>Richmond</i>", page)
         self.assertNotIn("<u>Bark</u>", page)
+        self.assertNotIn("<u>Me</u>", page)
         self.assertIn("Dogs &amp; &lt;Cats&gt; &quot;Oval&quot;", page)
         # The data still arrives whole.
         data = self.embedded_data(page)
         self.assertEqual(data["days"][0]["label"], nasty)
-        poster = (self.out / "poster.html").read_text(encoding="utf-8")
-        self.assertNotIn("<i>Richmond</i>", poster)
-        self.assertNotIn("<u>Bark</u>", poster)
+        self.assertEqual(data["days"][0]["why"], nasty)
 
     def test_building_twice_replaces_the_old_page(self):
         self.build(day=FRIDAY)
         page = self.build(day=FRIDAY + timedelta(days=1))
-        self.assertIn("Sat 21 Nov, as of 2:45 PM", page)
-        self.assertNotIn("Fri 20 Nov, as of", page)
+        self.assertIn("Last checked Sat 21 Nov, 2:45 PM", page)
+        self.assertNotIn("Last checked Fri 20 Nov", page)
 
     def test_missing_assets_folder_does_not_stop_the_build(self):
         site.build(load_config(), plans_from(FRIDAY), None, october_store(FRIDAY), afternoon(FRIDAY), self.out, self.out / "nowhere")
         self.assertTrue((self.out / "index.html").is_file())
 
 
+class PageScriptTest(unittest.TestCase):
+    """What the page's script and styles must keep doing. The script itself runs in a browser, not here."""
+
+    script = (site.WEB / "page.js").read_text(encoding="utf-8")
+
+    def test_older_data_never_replaces_newer_data(self):
+        # A stale data.json from a cache must not undo a newer page.
+        self.assertIn("Date.parse(fresh.generated) > Date.parse(data.generated)", self.script)
+
+    def test_the_script_uses_nothing_the_pages_rules_forbid(self):
+        for forbidden in ("eval(", "new Function", "document.write", "javascript:"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.script)
+
+
 class FallbackTest(unittest.TestCase):
     """The plain text version, shown until the page's script has run."""
 
     def title(self, plan: DayPlan) -> str:
-        html = site.fallback([plan], afternoon(plan.day))
+        html = site.fallback([plan])
         return re.search(r"<h1>(.*?)</h1>", html).group(1)
 
     def state(self, plan: DayPlan) -> str:
-        return re.search(r'data-state="(\w+)"', site.fallback([plan], afternoon(plan.day))).group(1)
+        return re.search(r'data-state="(\w+)"', site.fallback([plan])).group(1)
 
     def test_titles(self):
         booked = (Slot(16 * 60 + 15, 19 * 60 + 30),)
@@ -253,7 +361,13 @@ class FallbackTest(unittest.TestCase):
 
     def test_a_closed_day_shows_the_council_notice(self):
         plan = DayPlan(FRIDAY, (), "council", closed=True, label="Turf works until 1 October.", note="From a notice on the council's page.")
-        self.assertIn('<p class="sub">Turf works until 1 October.</p>', site.fallback([plan], afternoon(FRIDAY)))
+        self.assertIn('<p class="sub">Turf works until 1 October.</p>', site.fallback([plan]))
+
+    def test_the_line_at_the_top_says_when_the_council_page_was_last_read(self):
+        plan = DayPlan(FRIDAY, (), "council")
+        self.assertIn('<p class="kicker">Last checked Thu 19 Nov, 3:55 PM</p>', site.fallback([plan], "Thu 19 Nov, 3:55 PM"))
+        self.assertIn('<p class="kicker">Fri 20 Nov</p>', site.fallback([plan]))
+        self.assertIn("Last checked &lt;b&gt;", site.fallback([plan], "<b>"))
 
     def test_week_list_marks_unconfirmed_days(self):
         plans = [
@@ -264,7 +378,7 @@ class FallbackTest(unittest.TestCase):
             DayPlan(FRIDAY + timedelta(days=4), (), "council", closed=True),
             DayPlan(FRIDAY + timedelta(days=5), (Slot(600, 660),), "council", label="Maintenance"),
         ]
-        html = site.fallback(plans, afternoon(FRIDAY))
+        html = site.fallback(plans)
         self.assertIn("<li><strong>Sat 21 Nov</strong>: 10 AM to 6 PM</li>", html)
         self.assertIn('<li><strong>Sun 22 Nov</strong>: 11 AM to 5 PM <span class="tag">usual</span></li>', html)
         self.assertIn("<li><strong>Mon 23 Nov</strong>: No information</li>", html)

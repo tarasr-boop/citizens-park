@@ -5,7 +5,7 @@ Run this once, and again whenever ``site.url`` in config.toml changes:
     pip install segno
     python3 tools/make_qr.py
 
-It writes assets/qr.svg (for the page and the poster), assets/qr.png (handy
+It writes assets/qr.svg (for the page), assets/qr.png (handy
 for sharing in a chat) and assets/qr-url.txt (the address the code holds, so
 the tests can tell when the code is out of date). The daily job only copies
 these files; it never needs segno.
@@ -25,7 +25,7 @@ from parkbot import config as config_module  # noqa: E402
 
 
 def make(url: str, assets: Path) -> None:
-    # Level Q survives a scuffed or rain-spotted poster better than the default.
+    # Level Q survives a scuffed or rain-spotted print better than the default.
     code = segno.make(url, error="q", micro=False)
     assets.mkdir(parents=True, exist_ok=True)
     code.save(str(assets / "qr.svg"), scale=10, border=4, dark="#000000", light="#ffffff", xmldecl=False, svgclass=None, lineclass=None, omitsize=True, nl=True)

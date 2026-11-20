@@ -31,6 +31,8 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.park_name, "Citizens Park oval")
         self.assertEqual(config.park_short, "Citizens Park")
         self.assertEqual((config.day_start, config.lights_off), (6 * 60, 22 * 60))
+        # With no day_end, the page's timeline runs until the lights go off.
+        self.assertEqual(config.day_end, 22 * 60)
         self.assertEqual((config.post_from, config.post_until), (14 * 60 + 30, 19 * 60))
         self.assertEqual(config.channel, "ExampleParkDogs")
         self.assertEqual(config.channel_url, "https://t.me/ExampleParkDogs")
@@ -86,17 +88,40 @@ class ConfigTest(unittest.TestCase):
         without = self.load(GOOD.replace('name = ""\n', ""))
         self.assertEqual(without.site_name, "")
 
-    def test_who_runs_the_page_is_optional(self):
-        self.assertEqual(self.load(GOOD).run_by, "a local dog owner")
-        named = self.changed('name = ""', 'name = ""\nrun_by = " a local dog trainer "')
-        self.assertEqual(named.run_by, "a local dog trainer")
-        self.assertEqual(self.changed('name = ""', 'name = ""\nrun_by = ""').run_by, "a local dog owner")
+    def test_the_timeline_can_end_before_the_lights_go_off(self):
+        config = self.changed('day_start = "06:00"', 'day_start = "07:00"\nday_end = "21:00"')
+        self.assertEqual((config.day_start, config.day_end, config.lights_off), (7 * 60, 21 * 60, 22 * 60))
+
+    def test_the_about_block_is_optional(self):
+        plain = self.load(GOOD)
+        self.assertEqual((plain.about_text, plain.about_link, plain.about_link_text), ("", "", ""))
+
+        about = '\n[about]\ntext = " Hi, I am Sofia. "\nlink = "https://www.instagram.com/example"\nlink_text = " @example on Instagram "\n'
+        config = self.load(GOOD + about)
+        self.assertEqual(config.about_heading, "About me")
+        self.assertEqual(config.about_text, "Hi, I am Sofia.")
+        self.assertEqual(config.about_link, "https://www.instagram.com/example")
+        self.assertEqual(config.about_link_text, "@example on Instagram")
+
+        # A link with no words of its own shows its address. A heading can be chosen.
+        config = self.load(GOOD + '\n[about]\nheading = "Who runs this"\ntext = "Hello."\nlink = "https://www.instagram.com/example/"\n')
+        self.assertEqual(config.about_heading, "Who runs this")
+        self.assertEqual(config.about_link_text, "www.instagram.com/example")
+
+    def test_the_about_link_must_be_a_plain_https_address(self):
+        for written in ("instagram.com/example", "http://www.instagram.com/example", "javascript:alert(1)", 'https://x.example/"><script>'):
+            with self.subTest(written=written), self.assertRaisesRegex(ConfigError, "about.link must be an https:// address"):
+                self.load(GOOD + f"\n[about]\ntext = \"Hello.\"\nlink = '{written}'\n")
+        with self.assertRaisesRegex(ConfigError, r"about should be a section that starts with a \[about\] line"):
+            self.load('about = "Hello."\n' + GOOD)
 
     def test_times_must_make_sense(self):
         with self.assertRaisesRegex(ConfigError, "post_from must be earlier than telegram.post_until"):
             self.changed('post_from = "14:30"', 'post_from = "19:30"')
         with self.assertRaisesRegex(ConfigError, "day_start must be earlier than park.lights_off"):
             self.changed('day_start = "06:00"', 'day_start = "23:00"')
+        with self.assertRaisesRegex(ConfigError, "day_start must be earlier than park.day_end"):
+            self.changed('day_start = "06:00"', 'day_start = "09:00"\nday_end = "08:00"')
         with self.assertRaises(ConfigError):
             self.changed('post_from = "14:30"', 'post_from = "half past two"')
 
@@ -157,6 +182,16 @@ class RealFilesTest(unittest.TestCase):
         self.assertTrue(config.site_url.startswith("https://"))
         self.assertTrue(config.council_url.startswith("https://"))
         self.assertLess(config.post_from, config.post_until)
+        self.assertLess(config.day_start, config.day_end)
+
+    def test_the_job_checks_morning_afternoon_and_evening(self):
+        # At least one planned check before noon and one after it, so the page is never
+        # left with only yesterday's reading for long.
+        workflow = (ROOT / ".github" / "workflows" / "daily.yml").read_text(encoding="utf-8")
+        hours = [int(hour) for _minute, hour in re.findall(r'cron: "(\d+) (\d+) \* \* \*"\n\s+timezone: "Australia/Melbourne"', workflow)]
+        self.assertTrue(any(hour < 12 for hour in hours), "no check is planned for the morning")
+        self.assertTrue(any(12 <= hour < 17 for hour in hours), "no check is planned for the afternoon")
+        self.assertTrue(any(hour >= 17 for hour in hours), "no check is planned for the evening")
 
     def test_schedule_toml_loads_and_no_month_is_claimed_twice(self):
         seasons = load_seasons(ROOT / "schedule.toml")
@@ -198,6 +233,36 @@ class RealFilesTest(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "daily.yml").read_text(encoding="utf-8")
         self.assertRegex(workflow, r"\nconcurrency:\n  group: daily-check\n  cancel-in-progress: false\n")
         self.assertRegex(workflow, r"uses: actions/checkout@v\d+\n\s+with:\n\s+ref: \$\{\{ github\.ref \}\}\n")
+
+    def test_each_job_has_only_the_rights_it_needs(self):
+        workflow = (ROOT / ".github" / "workflows" / "daily.yml").read_text(encoding="utf-8")
+        # Nothing for the workflow as a whole, so a job that asks for nothing gets nothing.
+        self.assertRegex(workflow, r"\npermissions: \{\}\n")
+        check, publish = workflow.split("\n  publish:\n")
+        check = check.split("\njobs:\n")[1]
+
+        def rights(job: str) -> list[tuple[str, str]]:
+            """The lines straight after the job's "permissions:" line."""
+            found = []
+            for line in job.split("    permissions:\n")[1].splitlines():
+                match = re.fullmatch(r"      ([a-z-]+): (write|read)(?: +#.*)?", line)
+                if not match:
+                    break
+                found.append((match.group(1), match.group(2)))
+            return sorted(found)
+
+        self.assertEqual(rights(check), [("contents", "write"), ("issues", "write")])
+        # The job that publishes the page cannot change the repository.
+        self.assertEqual(rights(publish), [("id-token", "write"), ("pages", "write")])
+        # The bot token is handed to one step only: the one that runs the check.
+        self.assertEqual(workflow.count("secrets.TELEGRAM_BOT_TOKEN"), 1)
+        self.assertNotIn("secrets.", publish)
+        tests = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        self.assertRegex(tests, r"\npermissions:\n  contents: read\n")
+        self.assertNotIn("secrets.", tests)
+        # Neither workflow runs on a pull request with the repository's secrets and write access.
+        for text in (workflow, tests):
+            self.assertNotIn("pull_request_target", text)
 
 
 if __name__ == "__main__":

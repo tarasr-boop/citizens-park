@@ -206,6 +206,53 @@ class RunTest(unittest.TestCase):
         self.assertIn("🔴 Booked 4:15 to 7:30 PM", self.world.sent[0]["text"])
         self.assertIn("✅ From the council's schedule.", self.world.sent[0]["text"])
 
+    def page_data(self) -> dict:
+        return json.loads((Path(self._folder.name) / "site" / "data.json").read_text(encoding="utf-8"))
+
+    def test_the_page_says_when_the_council_page_was_last_read(self):
+        self.world.run("2026-11-20T13:47")
+        council = self.page_data()["council"]
+        self.assertEqual(council["lastReadAt"], "2026-11-20T13:47+11:00")
+        self.assertEqual(council["lastReadText"], "Fri 20 Nov, 1:47 PM")
+        saved = json.loads((Path(self._folder.name) / "data" / "council.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["last_read_at"], "2026-11-20T13:47+11:00")
+
+        # A later run that cannot read the council's page builds a new page, but the
+        # page goes on naming the last read that worked.
+        self.world.council_html = fetch.FetchError("the server answered 503")
+        self.world.run("2026-11-20T15:10")
+        data = self.page_data()
+        self.assertEqual(data["generated"], "2026-11-20T15:10+11:00")
+        self.assertEqual(data["council"]["lastReadAt"], "2026-11-20T13:47+11:00")
+        page = (Path(self._folder.name) / "site" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<p class="kicker">Last checked Fri 20 Nov, 1:47 PM</p>', page)
+
+        # A page that loads but cannot be understood is not a check either.
+        self.world.council_html = "<html><body><h1>Just a moment...</h1></body></html>"
+        self.world.run("2026-11-20T15:45")
+        self.assertEqual(self.page_data()["council"]["lastReadAt"], "2026-11-20T13:47+11:00")
+
+        self.world.council_html = october_html()
+        self.world.run("2026-11-21T06:17")
+        self.assertEqual(self.page_data()["council"]["lastReadAt"], "2026-11-21T06:17+11:00")
+
+    def test_words_from_a_web_page_cannot_give_github_orders_through_the_log(self):
+        # On GitHub, a log line that starts with "::" is a command. The raw table is printed
+        # on request, and a table could hold such a line.
+        self.world.environ["GITHUB_ACTIONS"] = "true"
+        self.world.council_html = october_html().replace("</table>", "<tr><td>\n::error::made up\n</td></tr></table>", 1)
+        self.assertEqual(self.world.run("2026-11-20T14:45", show_sources=True), 0)
+        lines = self.world.said().split("\n")
+        at = lines.index("::error::made up")
+        stops = [index for index, line in enumerate(lines[:at]) if line.startswith("::stop-commands::")]
+        self.assertTrue(stops, "command reading should be paused before the table is printed")
+        resume = "::" + lines[stops[-1]].removeprefix("::stop-commands::") + "::"
+        self.assertGreaterEqual(len(resume), 20)
+        # Reading is switched back on only after the table, by a line the page could not have guessed.
+        self.assertNotIn(resume, lines[stops[-1] : at])
+        self.assertIn(resume, lines[at:])
+        self.assertEqual(lines[lines.index(resume, at) + 1], "::endgroup::")
+
     def test_unreadable_council_page_counts_as_a_failure(self):
         self.world.council_html = "<html><body><h1>Just a moment...</h1></body></html>"
         self.assertEqual(self.world.run("2026-11-20T14:45"), 0)
@@ -230,6 +277,35 @@ class RunTest(unittest.TestCase):
         self.assertEqual(state.weather_error, "fetching the forecast failed unexpectedly (ZeroDivisionError: division by zero)")
         self.assertIn("Traceback", self.world.said())
         self.assertEqual(state.last_daily_post, date(2026, 11, 20))
+
+    def test_another_services_words_stay_on_one_line(self):
+        # The weather service's reason for refusing is repeated in the log, the saved
+        # state and a watchdog issue. It must not be able to start a line of its own.
+        self.world.environ["GITHUB_ACTIONS"] = "true"
+        self.world.forecast = json.dumps({"error": True, "reason": "too many\n::error::made up\n" + "x" * 900})
+        self.assertEqual(self.world.run("2026-11-20T14:45"), 0)
+        problem = self.world.state().weather_error
+        self.assertTrue(problem.startswith("the forecast service reported a problem: too many ::error::made up x"))
+        self.assertNotIn("\n", problem)
+        self.assertLessEqual(len(problem), 300)
+        self.assertFalse([line for line in self.world.said().split("\n") if line.startswith("::error::made up")])
+
+        self.world.send_error = telegram.TelegramError("Bad Request:\n::error::made up")
+        self.world.run("2026-11-21T14:45")
+        self.assertEqual(self.world.state().telegram_error, "Bad Request: ::error::made up")
+        self.assertFalse([line for line in self.world.said().split("\n") if line.startswith("::error::made up")])
+
+    def test_an_error_trace_cannot_give_github_orders_either(self):
+        self.world.environ["GITHUB_ACTIONS"] = "true"
+        self.world.council_html = RuntimeError("first line\n::error::made up")
+        self.assertEqual(self.world.run("2026-11-20T14:45"), 0)
+        lines = self.world.said().split("\n")
+        at = lines.index("::error::made up")
+        before = [line for line in lines[:at] if line.startswith("::stop-commands::")]
+        self.assertTrue(before)
+        self.assertIn("::" + before[-1].removeprefix("::stop-commands::") + "::", lines[at:])
+        # What the run itself says about the failure stays on one line.
+        self.assertIn("::warning::Council page: fetching the page failed unexpectedly (RuntimeError: first line) (1 in a row)", lines)
 
     def test_a_surprise_from_the_forecast_still_falls_back_to_the_saved_copy(self):
         self.world.forecast = self.wet_evening()

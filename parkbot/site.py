@@ -8,6 +8,8 @@ it still reads sensibly with scripts switched off.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 import shutil
@@ -34,8 +36,26 @@ def _stamp(now: datetime) -> str:
     return f"{short_date(now.date())}, {clock(now.hour * 60 + now.minute)}"
 
 
+def _read_at(config: Config, store: CouncilStore) -> datetime | None:
+    """The moment the council's page was last read, in the park's own time."""
+    return store.last_read_at.astimezone(config.zone) if store.last_read_at else None
+
+
+def checked_text(config: Config, store: CouncilStore) -> str:
+    """When the council's page was last read, for the page's "Last checked" line.
+
+    ``Fri 20 Nov, 2:41 PM``, or only the day if the time was not recorded. Empty
+    if the page has never been read.
+    """
+    read_at = _read_at(config, store)
+    if read_at:
+        return _stamp(read_at)
+    return short_date(store.last_read) if store.last_read else ""
+
+
 def page_data(config: Config, plans: list[DayPlan], forecast: Forecast | None, store: CouncilStore, now: datetime) -> dict:
     """Everything the page's script needs."""
+    read_at = _read_at(config, store)
     days = []
     for index, plan in enumerate(plans):
         rain = forecast.days.get(plan.day) if forecast else None
@@ -48,7 +68,7 @@ def page_data(config: Config, plans: list[DayPlan], forecast: Forecast | None, s
                 "basis": plan.basis,
                 "closed": plan.closed,
                 "label": plan.label,
-                "note": plan.note,
+                "why": plan.why,
                 "rain": {"chance": rain.chance, "mm": rain.mm} if rain else None,
                 "hours": [[hour.hour, hour.chance, hour.mm] for hour in hours] if hours else None,
             }
@@ -58,12 +78,19 @@ def page_data(config: Config, plans: list[DayPlan], forecast: Forecast | None, s
         "generatedText": _stamp(now),
         "zone": config.timezone_name,
         "site": config.site_url,
+        # The timeline on the page runs from dayStart to dayEnd.
         "dayStart": config.day_start,
+        "dayEnd": config.day_end,
         "lightsOff": config.lights_off,
         # Set when the weather service did not answer and an earlier forecast stands in.
         "rainFrom": (forecast.saved_at or None) if forecast else None,
         "council": {
+            "url": config.council_url,
             "lastRead": store.last_read.isoformat() if store.last_read else None,
+            # The page shows this as "Last checked": the last time the council's page was
+            # actually read, which is not always the time this page was built.
+            "lastReadAt": read_at.isoformat(timespec="minutes") if read_at else None,
+            "lastReadText": checked_text(config, store) or None,
             "pageModified": store.page_modified.isoformat() if store.page_modified else None,
             "latestDay": store.latest_day.isoformat() if store.latest_day else None,
         },
@@ -82,8 +109,11 @@ def _day_words(plan: DayPlan) -> str:
     return plan.label or "No bookings"
 
 
-def fallback(plans: list[DayPlan], now: datetime) -> str:
-    """The plain version of the page, shown until the script has run (or if it cannot)."""
+def fallback(plans: list[DayPlan], checked: str = "") -> str:
+    """The plain version of the page, shown until the script has run (or if it cannot).
+
+    ``checked`` is when the council's page was last read, such as ``Fri 20 Nov, 2:41 PM``.
+    """
     today = plans[0]
     if today.closed:
         state, title = "closed", "Oval closed today"
@@ -103,9 +133,10 @@ def fallback(plans: list[DayPlan], now: datetime) -> str:
         for plan in plans[1:8]
     )
     sub = today.label if today.closed and today.label else today.note
+    kicker = f"Last checked {checked}" if checked else short_date(today.day)
     return (
         f'    <section class="hero" data-state="{state}">\n'
-        f'      <p class="kicker">{escape(short_date(today.day))}, as of {escape(clock(now.hour * 60 + now.minute))}</p>\n'
+        f'      <p class="kicker">{escape(kicker)}</p>\n'
         f"      <h1>{escape(title)}</h1>\n"
         f'      <p class="sub">{escape(sub)}</p>\n'
         f"    </section>\n"
@@ -117,18 +148,56 @@ def fallback(plans: list[DayPlan], now: datetime) -> str:
     )
 
 
-def _actions(config: Config) -> str:
-    lines = []
-    if config.channel:
+def _about(config: Config) -> str:
+    """The "About me" block: a few words from whoever runs the page, and one link. Left out while there are no words."""
+    if not config.about_text:
+        return ""
+    lines = [
+        '  <section class="card about">',
+        f"    <h2>{escape(config.about_heading)}</h2>",
+        f"    <p>{escape(config.about_text)}</p>",
+    ]
+    if config.about_link:
         lines.append(
+            f'    <p class="about-link"><a href="{escape(config.about_link)}" rel="noopener">{escape(config.about_link_text)}</a></p>'
+        )
+    return "\n".join(lines + ["  </section>"])
+
+
+def _actions(config: Config) -> str:
+    """The buttons: the Telegram channel and the tip link. Each appears only when it is set."""
+    buttons = []
+    if config.channel:
+        buttons.append(
             f'    <a class="button primary" href="{escape(config.channel_url)}" rel="noopener">'
             f"Get the daily alert on Telegram</a>"
         )
-    row = ['      <button class="button" type="button" id="share">Share this page</button>']
     if config.tip_url:
-        row.append(f'      <a class="button" href="{escape(config.tip_url)}" rel="noopener">Leave a tip</a>')
-    lines.append('    <div class="button-row">\n' + "\n".join(row) + "\n    </div>")
-    return "\n".join(lines)
+        buttons.append(f'    <a class="button" href="{escape(config.tip_url)}" rel="noopener">Leave a tip</a>')
+    if not buttons:
+        return ""
+    return '  <nav class="actions" aria-label="Alerts and tips">\n' + "\n".join(buttons) + "\n  </nav>"
+
+
+def _allowed(script: str) -> str:
+    """The page's rules for its browser (a Content Security Policy).
+
+    Only the page's own script may run, recognised by its fingerprint. So even if
+    words from outside ever slipped past the escaping, they could not run as code.
+    """
+    fingerprint = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
+    return "; ".join(
+        [
+            "default-src 'none'",
+            f"script-src 'sha256-{fingerprint}'",
+            "style-src 'unsafe-inline'",
+            "img-src 'self'",
+            "connect-src 'self'",
+            "manifest-src 'self'",
+            "base-uri 'none'",
+            "form-action 'none'",
+        ]
+    )
 
 
 def _fill(template: str, values: dict[str, str]) -> str:
@@ -184,25 +253,28 @@ def build(
         title = f"{config.park_name}: free for dogs right now?"
     description = (
         f"Is the {config.park_name} in {config.suburb} booked for sport today? "
-        "Booked times, the week ahead and the chance of rain, for dog owners."
+        "Booked times, the week ahead and the rain forecast, for dog owners."
     )
     post_time = clock(((config.post_from + 30) // 60) * 60)  # "3 PM" for a window that opens at 2:30 PM
-    common = {
-        "title": escape(title),
-        "description": escape(description),
-        "site_url": escape(config.site_url),
-        "park_name": escape(config.park_name),
-        "park_short": escape(config.park_short),
-        "short_name": escape(config.display_name),
-        "suburb": escape(config.suburb),
-        "council_url": escape(config.council_url),
-        "run_by": escape(config.run_by),
-    }
+    template = (WEB / "index.html").read_text(encoding="utf-8")
+    # The script as it will sit in the page, between its tags, line breaks included.
+    script = (WEB / "page.js").read_text(encoding="utf-8")
+    in_page = re.search(r"<script>(\s*)\{\{js\}\}(\s*)</script>", template)
+    if in_page is None:
+        raise ValueError("index.html has no place for the page's script")
 
     page = _fill(
-        (WEB / "index.html").read_text(encoding="utf-8"),
+        template,
         {
-            **common,
+            "title": escape(title),
+            "description": escape(description),
+            "site_url": escape(config.site_url),
+            "park_name": escape(config.park_name),
+            "park_short": escape(config.park_short),
+            "short_name": escape(config.display_name),
+            "suburb": escape(config.suburb),
+            "council_url": escape(config.council_url),
+            "allowed": escape(_allowed(in_page.group(1) + script + in_page.group(2))),
             "lights_off": escape(clock(config.lights_off)),
             "brand": _brand(config),
             "alert_paragraph": (
@@ -214,34 +286,17 @@ def build(
             "repo_link": (
                 f' <a href="{escape(config.repo_url)}" rel="noopener">How this page is made</a>.' if config.repo_url else ""
             ),
-            "checked": escape(_stamp(now)),
+            "about": _about(config),
             "actions": _actions(config),
-            "fallback": fallback(plans, now),
+            "fallback": fallback(plans, checked_text(config, store)),
             "css": (WEB / "page.css").read_text(encoding="utf-8"),
             # No "<" may appear inside the data block, or words from outside could end it early.
             "data": json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c"),
-            "js": (WEB / "page.js").read_text(encoding="utf-8"),
+            "js": script,
         },
     )
     (out / "index.html").write_text(page, encoding="utf-8")
     (out / "data.json").write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-
-    poster = _fill(
-        (WEB / "poster.html").read_text(encoding="utf-8"),
-        {
-            **common,
-            "site_address": escape(config.site_url.removeprefix("https://").rstrip("/")),
-            "alert_point": escape(
-                f"A free alert at about {post_time} each day on Telegram" if config.channel else "Free, with no sign-up"
-            ),
-            "unofficial": escape(
-                f"{config.site_name} is an unofficial page run by {config.run_by}."
-                if config.site_name
-                else f"Unofficial page run by {config.run_by}."
-            ),
-        },
-    )
-    (out / "poster.html").write_text(poster, encoding="utf-8")
     (out / "manifest.webmanifest").write_text(_manifest(config) + "\n", encoding="utf-8")
     # Tells GitHub Pages to serve the files as they are.
     (out / ".nojekyll").write_text("", encoding="utf-8")

@@ -71,6 +71,23 @@ class AlertsTest(unittest.TestCase):
         self.assertIn("TELEGRAM_BOT_TOKEN", found[0].body)
         self.assertIn("`ExampleParkDogs`", found[0].body)
 
+    def test_another_services_words_are_shown_as_plain_text(self):
+        # A description may hold words sent by the weather service or Telegram. In an issue
+        # they must stay words: no link, no picture, nobody mentioned, no second line.
+        nasty = "bad `request` @someone [click](https://evil.example) ![x](https://evil.example/x.png)\n# Heading"
+        state = State(council_failures=4, council_error=nasty, weather_failures=4, weather_error=nasty, telegram_error=nasty)
+        found = alerts(state, self.store, TODAY, self.config)
+        self.assertEqual(len(found), 3)
+        shown = "`bad 'request' @someone [click](https://evil.example) ![x](https://evil.example/x.png) # Heading`"
+        for alert in found:
+            with self.subTest(alert=alert.title):
+                self.assertIn(f"- Problem: {shown}\n", alert.body)
+                self.assertNotIn("\n# Heading", alert.body)
+        # A very long description is cut, and an empty one still says something.
+        long = alerts(State(weather_failures=4, weather_error="x" * 5000), self.store, TODAY, self.config)[0].body
+        self.assertLess(len(long), 1200)
+        self.assertIn("- Problem: `unknown`", alerts(State(weather_failures=4), self.store, TODAY, self.config)[0].body)
+
     def test_several_problems_at_once(self):
         state = State(council_failures=4, weather_failures=6, telegram_error="Unauthorized")
         self.assertEqual(

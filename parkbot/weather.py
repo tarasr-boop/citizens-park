@@ -87,6 +87,8 @@ def parse(text: str) -> Forecast:
         raise WeatherError(f"the forecast is not valid JSON: {error}") from error
     if not isinstance(payload, dict) or payload.get("error"):
         reason = payload.get("reason") if isinstance(payload, dict) else None
+        # The service's own words: kept short and on one line, wherever they end up.
+        reason = " ".join(str(reason).split())[:200] if reason else ""
         raise WeatherError(f"the forecast service reported a problem: {reason or 'no reason given'}")
 
     hourly = payload.get("hourly")
