@@ -112,8 +112,8 @@ function hourOf(text, what) {
 }
 
 /**
- * The Telegram bot's settings (see bot.js), as `{ address, park, first, last,
- * evening, weekday, weekend }`, with the times as hours of the day: people
+ * The Telegram bot's settings (see bot.js), as `{ address, park, link,
+ * linkText, first, last, evening, weekday, weekend }`, with the times as hours of the day: people
  * pick an hour from `first` to `last`, a new chat starts with `weekday` and
  * `weekend`, and an alert at `evening` or later is about the next day.
  * `address` is where Telegram brings what people write to the bot, and `park`
@@ -132,12 +132,27 @@ function botFrom(env) {
   const bot = {
     address: address.href,
     park: String(env.PARK_NAME || "").trim() || "park",
+    link: "",
+    linkText: String(env.BOT_LINK_TEXT || "").trim(),
     first: hourOf(env.BOT_FIRST, "BOT_FIRST"),
     last: hourOf(env.BOT_LAST, "BOT_LAST"),
     evening: hourOf(env.BOT_EVENING, "BOT_EVENING"),
     weekday: hourOf(env.BOT_WEEKDAY, "BOT_WEEKDAY"),
     weekend: hourOf(env.BOT_WEEKEND, "BOT_WEEKEND"),
   };
+  // A button under a person's times that leads elsewhere, such as a consultation with Sofia. Left out while BOT_LINK is empty.
+  const link = String(env.BOT_LINK || "").trim();
+  if (link) {
+    let to;
+    try {
+      to = new URL(link);
+    } catch {
+      throw new Error("BOT_LINK should be an address, such as https://example.org/");
+    }
+    if (to.protocol !== "https:") throw new Error("BOT_LINK should start with https://");
+    if (!bot.linkText) throw new Error("BOT_LINK_TEXT should say what the BOT_LINK button leads to");
+    bot.link = to.href;
+  }
   if (!(bot.first <= Math.min(bot.weekday, bot.weekend) && Math.max(bot.weekday, bot.weekend) <= bot.last)) {
     throw new Error("BOT_WEEKDAY and BOT_WEEKEND should lie between BOT_FIRST and BOT_LAST");
   }

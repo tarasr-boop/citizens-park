@@ -74,6 +74,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | The times of the daily alert | `weekdays` and `weekends` under `[alerts]` in `config.toml`, the run times in `.github/workflows/daily.yml` (the post run is set for 20 minutes before the alert's time), and `ALERT_WEEKDAYS`, `ALERT_WEEKENDS` and `CHECK_TIMES` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 | The hours searched for the best window on a rainy day | `advice_from` and `advice_until` under `[telegram]` in `config.toml` |
 | The hours people can pick in the Telegram bot, and the times a new chat starts with | The `[bot]` section of `config.toml`, and the `BOT_` settings in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
+| The link button under the times in the Telegram bot (now Sofia's Instagram) | `BOT_LINK` (the address) and `BOT_LINK_TEXT` (the button's words) in `notifications/wrangler.jsonc`. Leave `BOT_LINK` empty to hide the button. |
 
 The **Tests** workflow runs after every change. If you get an email saying it failed, the edit probably has a typing slip, such as a missing quotation mark. Open the failed run to see which file it names.
 
@@ -176,7 +177,11 @@ To switch the second timer off, make `CHECK_TIMES` empty (`""`) in `notification
 
 ## The Telegram bot
 
-The bot that posts to the channel also sends alerts in a private chat, at a time each person picks. Someone opens a chat with the bot (the page's Telegram button leads there) and presses **Start**. From then on they get the alert at 4 PM on weekdays and 8 AM on weekends. Two buttons in the chat change those times: each opens a grid of hours from 4 AM to 11 PM, plus **No alert**. Two buttons at the bottom of the chat stay there: **Change times**, and **Pause notifications**, which becomes **Resume notifications** while the alerts are paused. The bot's menu has the same as commands: `/settings`, `/pause` and `/resume`.
+The bot that posts to the channel also sends alerts in a private chat, at a time each person picks. Someone opens a chat with the bot (the page's Telegram button leads there) and presses **Start**. From then on they get the alert at 4 PM on weekdays and 8 AM on weekends.
+
+The chat stays tidy. It holds one message with the person's times ("Your alerts"), with buttons under it: **Change times**, **Pause notifications** (which becomes **Resume notifications** while the alerts are paused), and **Book a consultation with Sofia**, which opens her Instagram. **Change times** opens a picker with **Weekdays** and **Weekends**, each with a grid of hours from 4 AM to 11 PM plus **No alert**. Once a time is picked, the picker goes, and a fresh "Your alerts" takes the place of the old one at the bottom of the chat. The bot also takes away what people send it (`/start`, `/pause`, and the like), and yesterday's alert when today's arrives. The bot's menu has the same as commands: `/settings`, `/pause` and `/resume`.
+
+The bot writes its own description, the words shown in an empty chat: "When is the Citizens Park oval booked, and is rain on the way? I'll send you an alert at a time you choose." If you write a different one with @BotFather, the bot leaves yours alone.
 
 The alert is the channel's post, written for its own time of day. At 8 AM it names every booking of the day, at 4 PM only what is left of it. An alert at 9 PM or later is about the next day, sent the evening before, and its heading says "tomorrow". Whether a person's weekday or weekend time counts follows the day the alert is about: a 9 PM alert on a Friday is about Saturday, so it goes to people whose weekend time is 9 PM.
 
@@ -185,7 +190,7 @@ How it works:
 - Each Daily check writes the alert for every hour people can pick, today and tomorrow, into `telegram.json` next to the page. The bot itself knows nothing about bookings or rain.
 - The bot runs on the same backend as the notifications, at <https://alerts.citizensbark.com>. Telegram brings what people write to it there. The backend sets that up by itself, with a password it makes and never shows, so that only Telegram can talk to it.
 - In the first minutes of each hour, the backend sends that hour's words to everyone who picked it, about 25 a second.
-- For each chat it keeps the chat's number, the two times, whether the alerts are paused, and the last day it sent an alert about. No name, no user name, nothing anyone wrote. Someone who blocks the bot is removed at once.
+- For each chat it keeps the chat's number, the two times, whether the alerts are paused, the last day it sent an alert about, and the numbers of the bot's own messages there, so it can take them away. No name, no user name, nothing anyone wrote. Someone who blocks the bot is removed at once.
 - It takes up to 5,000 chats.
 
 It needs the bot's token on Cloudflare. The **Alerts backend** workflow hands it over from the `TELEGRAM_BOT_TOKEN` secret, the one the channel already uses, so there is nothing to set up. If you ever change that secret, run **Alerts backend** by hand once.

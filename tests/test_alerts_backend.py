@@ -142,6 +142,8 @@ class SettingsTest(unittest.TestCase):
                 "BOT_EVENING",
                 "BOT_FIRST",
                 "BOT_LAST",
+                "BOT_LINK",
+                "BOT_LINK_TEXT",
                 "BOT_WEEKDAY",
                 "BOT_WEEKEND",
                 "CHECK_BRANCH",
