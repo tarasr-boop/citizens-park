@@ -37,6 +37,7 @@ class Config:
     site_url: str  # always ends with "/"
     tip_url: str
     repo_url: str
+    feedback_email: str  # for the page's feedback button; while empty there is no button
     about_heading: str  # the page's "About me" block; left out while about_text is empty
     about_text: str
     about_link: str
@@ -65,6 +66,14 @@ def _web_address(value: str, what: str, required: bool = False) -> str:
         return ""
     if not value.startswith("https://") or any(ch in value for ch in " \"'<>"):
         raise ConfigError(f"{what} must be an https:// address, got {value!r}")
+    return value
+
+
+def _email_address(value: str, what: str) -> str:
+    """An email address that is safe to put in a link as it is, or empty."""
+    value = value.strip()
+    if value and not re.fullmatch(r"[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+", value):
+        raise ConfigError(f"{what} should be an email address, such as hello@example.org, got {value!r}")
     return value
 
 
@@ -128,6 +137,7 @@ def load(path: str | Path = "config.toml") -> Config:
             site_url=site_url if site_url.endswith("/") else site_url + "/",
             tip_url=_web_address(str(site.get("tip_url", "")), "site.tip_url"),
             repo_url=_web_address(str(site.get("repo_url", "")), "site.repo_url"),
+            feedback_email=_email_address(str(site.get("feedback_email", "")), "site.feedback_email"),
             about_heading=str(about.get("heading", "")).strip() or "About me",
             about_text=str(about.get("text", "")).strip(),
             about_link=about_link,

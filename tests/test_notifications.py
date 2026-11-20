@@ -237,15 +237,20 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(rules["connect-src"], "'self'")
         self.assertNotIn("worker-src", rules)
 
-    def test_with_a_backend_the_button_follows_the_telegram_button(self):
+    def test_with_a_backend_the_button_comes_first_and_is_the_filled_one(self):
         page = self.build(load_config(push_url=BACKEND, tip_url="https://ko-fi.com/example"))
-        button = '<button class="button" type="button" id="notify" hidden>Get the daily alert on this device</button>'
+        button = '<button class="button primary" type="button" id="notify" hidden>Get alerts on this device</button>'
         self.assertIn(button, page)
         # Hidden until the script finds that this browser can do it, with a line under it for what happened.
-        self.assertIn('<p class="notify-note" id="notify-note" role="status" hidden></p>', page)
-        self.assertLess(page.index("Get the daily alert on Telegram"), page.index(button))
-        self.assertLess(page.index(button), page.index("Leave a tip"))
+        note = '<p class="notify-note" id="notify-note" role="status" hidden></p>'
+        self.assertIn(note, page)
+        telegram = '<a class="button" href="https://t.me/ExampleParkDogs" rel="noopener">Get alerts on Telegram</a>'
+        self.assertLess(page.index(button), page.index(note))
+        self.assertLess(page.index(note), page.index(telegram))
+        self.assertLess(page.index(telegram), page.index("Leave a tip"))
         self.assertEqual(page.count('id="notify"'), 1)
+        # Only one button is filled in.
+        self.assertEqual(page.count('class="button primary"'), 1)
 
     def test_the_button_stands_alone_when_there_is_no_telegram_channel(self):
         page = self.build(load_config(push_url=BACKEND, channel=""))
@@ -318,13 +323,13 @@ class ButtonTest(unittest.TestCase):
 
     def test_the_button_appears_where_notifications_can_work(self):
         result = self.press(agent=ANDROID, backend=GOOD, clicks=0)
-        self.assertEqual(result["states"][0], {"hidden": False, "label": "Get the daily alert on this phone", "disabled": False, "note": ""})
+        self.assertEqual(result["states"][0], {"hidden": False, "label": "Get alerts on this phone", "disabled": False, "note": ""})
         # Nothing is asked of the browser or the backend until the button is pressed.
         self.assertEqual(result["log"], {"requests": [], "registered": [], "subscribed": [], "unsubscribed": 0, "asked": 0})
 
     def test_a_computer_is_called_a_device(self):
         result = self.press(agent=DESKTOP, backend=GOOD, clicks=0)
-        self.assertEqual(result["states"][0]["label"], "Get the daily alert on this device")
+        self.assertEqual(result["states"][0]["label"], "Get alerts on this device")
 
     def test_the_button_stays_hidden_where_notifications_cannot_work(self):
         result = self.press(agent=ANDROID, able=False, backend=GOOD)
@@ -369,10 +374,22 @@ class ButtonTest(unittest.TestCase):
 
     def test_pressing_it_again_turns_them_off(self):
         result = self.press(agent=ANDROID, backend=GOOD, clicks=2)
-        self.assertEqual(result["states"][2], {"hidden": False, "label": "Get the daily alert on this phone", "disabled": False, "note": "Alerts are off for this phone."})
+        self.assertEqual(result["states"][2], {"hidden": False, "label": "Get alerts on this phone", "disabled": False, "note": "Alerts are off for this phone."})
         self.assertEqual(result["log"]["unsubscribed"], 1)
         self.assertEqual(result["log"]["requests"][-1], {"path": "/unsubscribe", "method": "POST", "type": "application/json", "body": {"endpoint": "https://push.example/new-1"}})
         self.assertIsNone(result["nowSubscribed"])
+
+    def test_only_the_offer_is_the_filled_button(self):
+        # Off, then on, then off again: the button is filled in only while it offers alerts.
+        result = self.press(agent=ANDROID, backend=GOOD, clicks=2)
+        self.assertEqual([state["label"] for state in result["states"]], ["Get alerts on this phone", "Turn off alerts on this phone", "Get alerts on this phone"])
+        self.assertEqual(result["filled"], [True, False, True])
+        # A device that already has alerts on finds the quiet button straight away.
+        result = self.press(agent=ANDROID, backend=GOOD, permission="granted", subscribed="https://push.example/mine", clicks=0)
+        self.assertEqual(result["filled"], [False])
+        # A try that fails leaves the offer as it was.
+        result = self.press(agent=ANDROID, backend="down")
+        self.assertEqual(result["filled"], [True, True])
 
     def test_a_device_with_alerts_on_shows_the_way_to_turn_them_off(self):
         result = self.press(agent=ANDROID, backend=GOOD, permission="granted", subscribed="https://push.example/mine", clicks=0)
@@ -381,7 +398,7 @@ class ButtonTest(unittest.TestCase):
     def test_turning_off_works_even_when_the_backend_cannot_be_told(self):
         # The backend finds out by itself the next time it sends.
         result = self.press(agent=ANDROID, backend="down", permission="granted", subscribed="https://push.example/mine", stored={"alertCheck": "1795149900000"})
-        self.assertEqual(result["states"][1]["label"], "Get the daily alert on this phone")
+        self.assertEqual(result["states"][1]["label"], "Get alerts on this phone")
         self.assertEqual(result["states"][1]["note"], "Alerts are off for this phone.")
         self.assertIsNone(result["nowSubscribed"])
 
@@ -391,7 +408,7 @@ class ButtonTest(unittest.TestCase):
         self.assertIn("alerts only work from the Home Screen", result["states"][1]["note"])
         self.assertIn("“Add to Home Screen”", result["states"][1]["note"])
         self.assertEqual(result["log"]["requests"], [])
-        self.assertEqual(result["states"][1]["label"], "Get the daily alert on this phone")
+        self.assertEqual(result["states"][1]["label"], "Get alerts on this phone")
 
     def test_an_ipad_that_calls_itself_a_mac_gets_the_same_advice(self):
         agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15"
@@ -410,12 +427,12 @@ class ButtonTest(unittest.TestCase):
     def test_saying_no_to_the_browsers_question(self):
         result = self.press(agent=ANDROID, backend=GOOD, answer="denied")
         self.assertIn("Notifications are blocked for this page", result["states"][1]["note"])
-        self.assertEqual(result["states"][1]["label"], "Get the daily alert on this phone")
+        self.assertEqual(result["states"][1]["label"], "Get alerts on this phone")
         self.assertEqual(result["log"]["requests"], [])
 
     def test_closing_the_browsers_question_without_an_answer(self):
         result = self.press(agent=ANDROID, backend=GOOD, answer="default")
-        self.assertEqual(result["states"][1], {"hidden": False, "label": "Get the daily alert on this phone", "disabled": False, "note": ""})
+        self.assertEqual(result["states"][1], {"hidden": False, "label": "Get alerts on this phone", "disabled": False, "note": ""})
 
     def test_notifications_blocked_earlier_are_not_asked_about_again(self):
         result = self.press(agent=ANDROID, backend=GOOD, permission="denied")
@@ -425,7 +442,7 @@ class ButtonTest(unittest.TestCase):
     def test_a_backend_that_cannot_be_reached(self):
         result = self.press(agent=ANDROID, backend="down")
         self.assertEqual(result["states"][1]["note"], "The alerts service could not be reached. Check your connection and try again in a minute.")
-        self.assertEqual(result["states"][1]["label"], "Get the daily alert on this phone")
+        self.assertEqual(result["states"][1]["label"], "Get alerts on this phone")
         self.assertEqual(result["log"]["subscribed"], [])
 
     def test_an_address_the_backend_did_not_take_is_not_kept(self):
@@ -435,7 +452,7 @@ class ButtonTest(unittest.TestCase):
                 result = self.press(agent=ANDROID, backend=dict(GOOD, **{"/subscribe": answer}))
                 self.assertEqual(result["log"]["unsubscribed"], 1)
                 self.assertIsNone(result["nowSubscribed"])
-                self.assertEqual(result["states"][1]["label"], "Get the daily alert on this phone")
+                self.assertEqual(result["states"][1]["label"], "Get alerts on this phone")
                 self.assertIn("could not be reached", result["states"][1]["note"])
 
     def test_a_full_backend_says_so(self):
@@ -451,7 +468,7 @@ class ButtonTest(unittest.TestCase):
         result = self.press(agent=ANDROID, backend=GOOD, subscribeFails=True)
         self.assertEqual(result["states"][1]["note"], self.PRIVATE)
         self.assertEqual([request["path"] for request in result["log"]["requests"]], ["/key"])
-        self.assertEqual(result["states"][1]["label"], "Get the daily alert on this phone")
+        self.assertEqual(result["states"][1]["label"], "Get alerts on this phone")
         self.assertFalse(result["states"][1]["disabled"])
 
     def test_a_browser_that_will_not_start_the_script_gets_the_same_advice(self):

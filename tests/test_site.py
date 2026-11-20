@@ -175,7 +175,7 @@ class BuildTest(unittest.TestCase):
 
     def test_telegram_button_only_with_a_channel(self):
         page = self.build()
-        self.assertIn('<a class="button primary" href="https://t.me/ExampleParkDogs" rel="noopener">Get the daily alert on Telegram</a>', page)
+        self.assertIn('<a class="button" href="https://t.me/ExampleParkDogs" rel="noopener">Get alerts on Telegram</a>', page)
         self.assertIn("A free alert goes out on Telegram at about 3 PM each day", page)
 
         page = self.build(load_config(channel=""))
@@ -196,12 +196,34 @@ class BuildTest(unittest.TestCase):
         self.assertIsNotNone(block, "the page should have its share block")
         inside = block.group(1)
         self.assertIn("<summary>Share this page</summary>", inside)
-        # The code first, and only then the button.
-        self.assertLess(inside.index('<img src="qr.svg"'), inside.index('<button class="button" type="button" id="copy">Copy the link</button>'))
+        # The button first, and the code under it.
+        self.assertLess(inside.index('<button class="button" type="button" id="copy">Copy the link</button>'), inside.index('<img src="qr.svg"'))
         # The address is there too, for a browser that will not copy it. It stays hidden until then.
         self.assertIn('<p class="share-address" id="address" hidden>https://example.org/park/</p>', inside)
+        # Nothing else is said: a QR code needs no instructions.
+        self.assertEqual(re.findall(r"<p\b[^>]*>", inside), ['<p class="share-address" id="address" hidden>'])
+        self.assertNotIn("Scan", page)
         self.assertEqual(page.count("Share this page"), 1)
         self.assertNotIn("poster", page.lower())
+
+    def test_feedback_button_only_with_an_address(self):
+        self.assertNotIn("feedback", self.build())
+        self.assertNotIn("mailto:", self.build())
+
+        page = self.build(load_config(site_name="Citizens Bark", feedback_email="hello@example.org"))
+        button = '<a class="button" href="mailto:hello@example.org?subject=Citizens%20Bark%20feedback">Please share feedback</a>'
+        self.assertIn(button, page)
+        # It closes "How this works", and it is the only place the address appears.
+        how = re.search(r'<details class="card fold" id="how">(.*?)</details>', page, re.DOTALL).group(1)
+        self.assertTrue(how.rstrip().endswith(button + "\n    </div>"), how[-200:])
+        self.assertEqual(page.count("hello@example.org"), 1)
+        # Without a name of its own, the page signs the email with the park's.
+        self.assertIn("mailto:hello@example.org?subject=Citizens%20Park%20feedback", self.build(load_config(feedback_email="hello@example.org")))
+
+    def test_how_this_works_speaks_of_an_activity(self):
+        page = self.build()
+        self.assertIn("dogs must stay off it while an organised activity is on.", page)
+        self.assertNotIn("sport or training", page)
 
     def test_about_block_follows_the_week_ahead_when_it_has_words(self):
         self.assertNotIn('class="card about"', self.build())
@@ -352,7 +374,7 @@ class FallbackTest(unittest.TestCase):
             (DayPlan(FRIDAY, (), "usual"), "Usually no bookings today", "free"),
             (DayPlan(FRIDAY, (), "council", label="Maintenance"), "Maintenance listed today", "unknown"),
             (DayPlan(FRIDAY, (), "none"), "No booking information today", "unknown"),
-            (DayPlan(FRIDAY, (Slot(360, 1320),), "council", closed=True, label="Turf works."), "Oval closed today", "closed"),
+            (DayPlan(FRIDAY, (Slot(360, 1320),), "council", closed=True, label="Turf works."), "Closed today", "closed"),
         ]
         for plan, title, state in cases:
             with self.subTest(title=title):

@@ -21,7 +21,14 @@ function element(extra) {
   return Object.assign({ hidden: true, textContent: "", disabled: false, addEventListener() {} }, extra);
 }
 const button = element({
-  textContent: "Get the daily alert on this device",
+  textContent: "Get alerts on this device",
+  // The page gives the button the class "primary", which fills it in.
+  filled: true,
+  classList: {
+    toggle(name, wanted) {
+      if (name === "primary") button.filled = Boolean(wanted);
+    },
+  },
   addEventListener(type, handler) {
     listeners[type] = handler;
   },
@@ -171,14 +178,18 @@ async function settle() {
   vm.runInNewContext(fs.readFileSync(scriptPath, "utf8"), page, { filename: scriptPath });
   await settle();
   const states = [];
-  const snapshot = () => ({ hidden: button.hidden, label: button.textContent, disabled: button.disabled, note: note.hidden ? "" : note.textContent });
+  const filled = []; // for each state: whether the button was the filled one
+  const snapshot = () => {
+    filled.push(button.filled);
+    return { hidden: button.hidden, label: button.textContent, disabled: button.disabled, note: note.hidden ? "" : note.textContent };
+  };
   states.push(snapshot());
   for (let click = 0; click < (scenario.clicks === undefined ? 1 : scenario.clicks); click += 1) {
     if (listeners.click) listeners.click();
     await settle();
     states.push(snapshot());
   }
-  process.stdout.write(JSON.stringify({ states, log, stored, wired: Boolean(listeners.click), nowSubscribed: current ? current.endpoint : null }));
+  process.stdout.write(JSON.stringify({ states, filled, log, stored, wired: Boolean(listeners.click), nowSubscribed: current ? current.endpoint : null }));
 })().catch((error) => {
   process.stderr.write(String(error && error.stack ? error.stack : error));
   process.exit(1);

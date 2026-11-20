@@ -16,7 +16,7 @@ import shutil
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from . import message
 from .config import Config
@@ -134,7 +134,7 @@ def fallback(plans: list[DayPlan], checked: str = "") -> str:
     """
     today = plans[0]
     if today.closed:
-        state, title = "closed", "Oval closed today"
+        state, title = "closed", "Closed today"
     elif not today.known:
         state, title = "unknown", "No booking information today"
     elif today.slots:
@@ -183,23 +183,28 @@ def _about(config: Config) -> str:
 
 
 def _actions(config: Config) -> str:
-    """The buttons: the Telegram channel, notifications and the tip link. Each appears only when it is set."""
+    """The buttons: notifications, the Telegram channel and the tip link. Each appears only when it is set."""
     buttons = []
-    if config.channel:
-        buttons.append(
-            f'    <a class="button primary" href="{escape(config.channel_url)}" rel="noopener">'
-            f"Get the daily alert on Telegram</a>"
-        )
     if config.push_url:
         # Hidden until the page's script finds that this browser can show notifications.
         # The line under the button is where the script says what happened.
-        buttons.append('    <button class="button" type="button" id="notify" hidden>Get the daily alert on this device</button>')
+        buttons.append('    <button class="button primary" type="button" id="notify" hidden>Get alerts on this device</button>')
         buttons.append('    <p class="notify-note" id="notify-note" role="status" hidden></p>')
+    if config.channel:
+        buttons.append(f'    <a class="button" href="{escape(config.channel_url)}" rel="noopener">Get alerts on Telegram</a>')
     if config.tip_url:
         buttons.append(f'    <a class="button" href="{escape(config.tip_url)}" rel="noopener">Leave a tip</a>')
     if not buttons:
         return ""
     return '  <nav class="actions" aria-label="Alerts and tips">\n' + "\n".join(buttons) + "\n  </nav>"
+
+
+def _feedback(config: Config) -> str:
+    """A button at the end of "How this works" that opens an email to whoever runs the page. Left out while no address is set."""
+    if not config.feedback_email:
+        return ""
+    address = f"mailto:{config.feedback_email}?subject={quote(config.display_name + ' feedback')}"
+    return f'      <a class="button" href="{escape(address)}">Please share feedback</a>'
 
 
 def _origin(address: str) -> str:
@@ -317,6 +322,7 @@ def build(
             "repo_link": (
                 f' <a href="{escape(config.repo_url)}" rel="noopener">How this page is made</a>.' if config.repo_url else ""
             ),
+            "feedback": _feedback(config),
             "about": _about(config),
             "actions": _actions(config),
             "fallback": fallback(plans, checked_text(config, store)),
