@@ -24,14 +24,21 @@ user_agent = "Mozilla/5.0 (compatible; CitizensParkAlerts/1.0; community dog-wal
 # The public channel's link name: the part after "t.me/".
 # While this is empty nothing is posted, and the page leaves out its Telegram button.
 channel = "CitizensBark"
-# The daily post goes out on the first run inside this window (Melbourne time).
-# If you change these, change the run times in .github/workflows/daily.yml too.
-post_from = "14:30"
-post_until = "19:00"
 # On a rainy day the post names the best time to stay out of the rain. It looks
 # between these two times, and only at times when the oval is not booked.
 advice_from = "17:00"
 advice_until = "21:00"
+
+[alerts]
+# When the daily alert goes out, in Melbourne time: the post in the Telegram
+# channel and the notification on phones. One time for Monday to Friday and one
+# for Saturday and Sunday. The page tells people these times.
+# If you change them, change the run times in .github/workflows/daily.yml and
+# the times in notifications/wrangler.jsonc too. The tests say what to change.
+weekdays = "16:00"
+weekends = "08:00"
+# An alert that could not go out by this time is left out for the day.
+until = "19:00"
 
 [bot]
 # Custom alerts from the Telegram bot (the same bot that posts to the channel).

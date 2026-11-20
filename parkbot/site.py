@@ -71,7 +71,8 @@ def page_data(config: Config, plans: list[DayPlan], forecast: Forecast | None, s
         # even on a day when no check ran before it. For today it never looks back
         # at a time that has already passed.
         today = plan.day == now.date()
-        written_for = max(now_minute, config.post_from) if today else config.post_from
+        opens = config.alert_from(plan.day)
+        written_for = max(now_minute, opens) if today else opens
         saved_at = forecast.saved_at if forecast and today else ""
         days.append(
             {
@@ -92,8 +93,9 @@ def page_data(config: Config, plans: list[DayPlan], forecast: Forecast | None, s
         "generatedText": _stamp(now),
         "zone": config.timezone_name,
         "site": config.site_url,
-        # The daily alert goes out between these two times of day (minutes after midnight).
-        "alert": {"from": config.post_from, "until": config.post_until},
+        # When the daily alert goes out, in minutes after midnight: from Monday to
+        # Friday, on Saturday and Sunday, and the time after which it is left out.
+        "alert": {"weekdays": config.alert_weekdays, "weekends": config.alert_weekends, "until": config.alert_until},
         # The notifications backend. None while there is none, and then the page offers no notifications.
         "push": config.push_url or None,
         # The timeline on the page runs from dayStart to dayEnd.
@@ -202,6 +204,29 @@ def _actions(config: Config) -> str:
     return '  <nav class="actions" aria-label="Alerts and tips">\n' + "\n".join(buttons) + "\n  </nav>"
 
 
+def alert_times(config: Config) -> str:
+    """When the alert goes out, in words: ``4 PM on weekdays and 8 AM on weekends``, or ``4 PM`` if the two are the same.
+
+    The page's script (page.js) and the alerts backend (rules.js) say it the same way.
+    """
+    if config.alert_weekdays == config.alert_weekends:
+        return clock(config.alert_weekdays)
+    return f"{clock(config.alert_weekdays)} on weekdays and {clock(config.alert_weekends)} on weekends"
+
+
+def _alert_paragraph(config: Config) -> str:
+    """The line in "How this works" about the daily alert: when it goes out, and the ways to get it that are set up."""
+    ways = []
+    if config.push_url:
+        ways.append("as a notification from this page")
+    if config.channel:
+        link = f'<a href="{escape(config.channel_url)}" rel="noopener">{escape(config.channel)}</a>'
+        ways.append(f"in the {link} channel on Telegram")
+    if not ways:
+        return ""
+    return f"      <p>A free alert goes out once a day, at about {escape(alert_times(config))}, {' and '.join(ways)}.</p>"
+
+
 def _feedback(config: Config) -> str:
     """A button at the end of "How this works" that opens an email to whoever runs the page. Left out while no address is set."""
     if not config.feedback_email:
@@ -294,7 +319,6 @@ def build(
         f"Is the {config.park_name} in {config.suburb} booked for sport today? "
         "Booked times, the week ahead and the rain forecast, for dog owners."
     )
-    post_time = clock(((config.post_from + 30) // 60) * 60)  # "3 PM" for a window that opens at 2:30 PM
     template = (WEB / "index.html").read_text(encoding="utf-8")
     # The script as it will sit in the page, between its tags, line breaks included.
     script = (WEB / "page.js").read_text(encoding="utf-8")
@@ -316,12 +340,7 @@ def build(
             "allowed": escape(_allowed(in_page.group(1) + script + in_page.group(2), config.push_url)),
             "lights_off": escape(clock(config.lights_off)),
             "brand": _brand(config),
-            "alert_paragraph": (
-                f"      <p>A free alert goes out on Telegram at about {escape(post_time)} each day, in the "
-                f'<a href="{escape(config.channel_url)}" rel="noopener">{escape(config.channel)}</a> channel.</p>'
-                if config.channel
-                else ""
-            ),
+            "alert_paragraph": _alert_paragraph(config),
             "repo_link": (
                 f' <a href="{escape(config.repo_url)}" rel="noopener">How this page is made</a>.' if config.repo_url else ""
             ),

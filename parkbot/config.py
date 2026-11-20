@@ -5,10 +5,19 @@ from __future__ import annotations
 import re
 import tomllib
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .timeparse import parse_hhmm
+
+
+# The daily alert may go out from this many minutes before its stated time.
+# The check that sends it is asked for a little before that time (see
+# .github/workflows/daily.yml), so that the alert arrives on the hour and not
+# after it. The alerts backend has the same number: ALERT_LEAD in
+# notifications/src/rules.js.
+ALERT_LEAD = 30
 
 
 class ConfigError(Exception):
@@ -29,8 +38,9 @@ class Config:
     council_url: str
     user_agent: str
     channel: str  # Telegram channel link name, without "@"
-    post_from: int
-    post_until: int
+    alert_weekdays: int  # minutes after midnight: when the daily alert goes out from Monday to Friday
+    alert_weekends: int  # and on Saturday and Sunday
+    alert_until: int  # an alert that could not go out by this time is left out for the day
     advice_from: int  # on a rainy day the post names the best part of the evening, between these two times
     advice_until: int
     site_name: str  # the page's own name, such as "Citizens Bark"; may be empty
@@ -54,6 +64,14 @@ class Config:
     @property
     def zone(self) -> ZoneInfo:
         return ZoneInfo(self.timezone_name)
+
+    def alert_at(self, day: date) -> int:
+        """The time of day people are told to expect the alert on ``day``."""
+        return self.alert_weekends if day.weekday() >= 5 else self.alert_weekdays
+
+    def alert_from(self, day: date) -> int:
+        """The earliest time of day the alert may go out on ``day``."""
+        return self.alert_at(day) - ALERT_LEAD
 
     @property
     def channel_url(self) -> str:
@@ -118,6 +136,7 @@ def load(path: str | Path = "config.toml") -> Config:
 
     try:
         park, council, telegram, site = raw["park"], raw["council"], raw["telegram"], raw["site"]
+        alerts = raw.get("alerts", {})  # optional
         about = raw.get("about", {})  # optional
         notifications = raw.get("notifications", {})  # optional
         bot = raw.get("bot", {})  # optional
@@ -125,6 +144,7 @@ def load(path: str | Path = "config.toml") -> Config:
             ("park", park),
             ("council", council),
             ("telegram", telegram),
+            ("alerts", alerts),
             ("site", site),
             ("about", about),
             ("notifications", notifications),
@@ -133,6 +153,13 @@ def load(path: str | Path = "config.toml") -> Config:
         for name, section in sections:
             if not isinstance(section, dict):
                 raise ConfigError(f"{path}: {name} should be a section that starts with a [{name}] line")
+        # Where the alert's time used to be set. Said out loud, so that an old
+        # setting is never quietly ignored.
+        for old in ("post_from", "post_until"):
+            if old in telegram:
+                raise ConfigError(
+                    f"telegram.{old} is no longer used. The alert's times are set under [alerts]: weekdays, weekends and until"
+                )
         channel = str(telegram.get("channel", "")).strip()
         for prefix in ("https://t.me/", "http://t.me/", "t.me/", "@"):
             channel = channel.removeprefix(prefix)
@@ -161,8 +188,9 @@ def load(path: str | Path = "config.toml") -> Config:
             council_url=_web_address(str(council["url"]), "council.url", required=True),
             user_agent=str(council.get("user_agent") or "CitizensParkAlerts/1.0"),
             channel=channel,
-            post_from=parse_hhmm(str(telegram.get("post_from", "14:30"))),
-            post_until=parse_hhmm(str(telegram.get("post_until", "19:00"))),
+            alert_weekdays=parse_hhmm(str(alerts.get("weekdays", "16:00"))),
+            alert_weekends=parse_hhmm(str(alerts.get("weekends", "08:00"))),
+            alert_until=parse_hhmm(str(alerts.get("until", "19:00"))),
             advice_from=parse_hhmm(str(telegram.get("advice_from", "17:00"))),
             advice_until=parse_hhmm(str(telegram.get("advice_until", "21:00"))),
             site_name=str(site.get("name", "")).strip(),
@@ -192,8 +220,11 @@ def load(path: str | Path = "config.toml") -> Config:
         raise ConfigError("park.day_start must be earlier than park.lights_off")
     if not config.day_start < config.day_end:
         raise ConfigError("park.day_start must be earlier than park.day_end")
-    if not config.post_from < config.post_until:
-        raise ConfigError("telegram.post_from must be earlier than telegram.post_until")
+    for name, at in (("weekdays", config.alert_weekdays), ("weekends", config.alert_weekends)):
+        if at < ALERT_LEAD:
+            raise ConfigError(f"alerts.{name} must be {ALERT_LEAD} minutes after midnight or later")
+        if not at < config.alert_until:
+            raise ConfigError(f"alerts.{name} must be earlier than alerts.until")
     if not config.bot_first <= min(config.bot_weekday, config.bot_weekend) <= max(config.bot_weekday, config.bot_weekend) <= config.bot_last:
         raise ConfigError("bot.weekday and bot.weekend must lie between bot.first and bot.last, and bot.first before bot.last")
     if not config.bot_first < config.bot_evening <= config.bot_last + 60:

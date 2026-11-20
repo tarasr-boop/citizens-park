@@ -8,7 +8,7 @@
 // things, a way to fetch, and a clock, so the tests can stand in for all three.
 
 import { authorization, loadSigningKeys, newSigningKeys, send, toBase64Url } from "./webpush.js";
-import { GRACE_MINUTES, Refusal, checkSubscription, isFresh, localTime, messageFor, noticeFor, tidyEndpoint, welcome } from "./rules.js";
+import { GRACE_MINUTES, Refusal, alertFrom, checkSubscription, isFresh, localTime, messageFor, noticeFor, tidyEndpoint, welcome } from "./rules.js";
 
 const encoder = new TextEncoder();
 
@@ -33,7 +33,7 @@ export const MOST_DEVICES = 5000;
 // At most this many first notifications a minute, so that nobody can use this
 // backend to pester the push services.
 const MOST_WELCOMES_A_MINUTE = 30;
-// The daily alert is about this evening. A phone that was off until late does not need it any more.
+// The daily alert is about the hours after it. A phone that was off for longer does not need it any more.
 const ALERT_TTL = 4 * 3600;
 const WELCOME_TTL = 3600;
 const MOST_HOSTS_NOTED = 10;
@@ -238,9 +238,11 @@ export class Book {
   }
 
   /**
-   * Called every few minutes through the afternoon. Starts today's alert once:
-   * as soon as the page's data shows that the afternoon's check has run, or
-   * GRACE_MINUTES after the alert time if no check has run by then.
+   * Called every few minutes through the day. Starts today's alert once: as
+   * soon as the page's data shows that the check that goes with the alert has
+   * run, or GRACE_MINUTES after the alert could first go out if no check has
+   * run by then. The alert has one time from Monday to Friday and another on
+   * Saturday and Sunday.
    */
   async tick() {
     const answer = await this.consider();
@@ -251,8 +253,9 @@ export class Book {
 
   async consider() {
     const now = this.now();
-    const { from, until, zone } = this.settings;
+    const { until, zone } = this.settings;
     const local = localTime(now, zone);
+    const from = alertFrom(this.settings, local.date);
     const nothing = (why) => reply(200, { ok: true, did: "nothing", why });
 
     const job = await this.storage.get("job");
@@ -276,7 +279,7 @@ export class Book {
       return nothing(`the page's data could not be read (${String(error && error.message).slice(0, 100)})`);
     }
     const fresh = isFresh(data, local, this.settings);
-    if (!fresh && local.minute < from + GRACE_MINUTES) return nothing("waiting for the afternoon's check");
+    if (!fresh && local.minute < from + GRACE_MINUTES) return nothing("waiting for the check before the alert");
     const notice = noticeFor(data, local, this.settings);
     if (!notice) return nothing("the page has no notice for today");
 
@@ -286,7 +289,7 @@ export class Book {
       job: { date: local.date, message, fresh, cursor: FIRST, pass: 0, queue: [], again: [], working: [], sent: 0, gone: 0, refused: 0, failed: 0, startedAt: now },
     });
     await this.storage.setAlarm(now);
-    this.log(`today's alert started (${fresh ? "after the afternoon's check" : "without a fresh check"})`);
+    this.log(`today's alert started (${fresh ? "after a fresh check" : "without a fresh check"})`);
     return reply(200, { ok: true, did: "started", fresh });
   }
 

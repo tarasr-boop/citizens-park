@@ -17,8 +17,11 @@ user_agent = "ParkbotTests/1.0"
 
 [telegram]
 channel = "ExampleParkDogs"
-post_from = "14:30"
-post_until = "19:00"
+
+[alerts]
+weekdays = "15:00"
+weekends = "08:00"
+until = "19:00"
 
 [site]
 name = ""

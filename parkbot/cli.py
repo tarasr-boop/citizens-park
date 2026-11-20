@@ -263,7 +263,7 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
         age = now - copy.fetched if copy.fetched else None
         if forecast is not None:
             # Keep this one for a later run that gets no answer. Not on every run, so
-            # that the afternoon's backup runs leave nothing new to save.
+            # that the post's backup runs leave nothing new to save.
             if age is None or age < timedelta(0) or age >= FORECAST_KEEP_EVERY:
                 ForecastCopy(now, forecast_text or "").save(data_dir / "forecast.json")
         elif age is not None and timedelta(0) <= age <= FORECAST_COPY_MAX_AGE:
@@ -304,7 +304,9 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     say("------------------------")
     say("")
 
-    in_window = config.post_from <= now_minute < config.post_until
+    # The alert has one time from Monday to Friday and another at the weekend.
+    opens = config.alert_from(today)
+    in_window = opens <= now_minute < config.alert_until
     due = options.post == "force" or (options.post == "auto" and in_window and state.last_daily_post != today)
     token = (tools.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
     if not due:
@@ -313,7 +315,7 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
         elif state.last_daily_post == today:
             reason = "today's post has already gone out"
         else:
-            reason = f"outside the posting window ({clock(config.post_from)} to {clock(config.post_until)})"
+            reason = f"outside the posting window ({clock(opens)} to {clock(config.alert_until)})"
         say(f"Telegram: no post, {reason}")
         summary.append(f"- Telegram: no post, {reason}")
     elif not config.channel:

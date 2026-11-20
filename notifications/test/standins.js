@@ -9,7 +9,8 @@ import { DatabaseSync } from "node:sqlite";
 import { settingsFrom } from "../src/rules.js";
 
 export const SITE = "https://citizensbark.example/";
-export const ENV = { SITE_URL: SITE, TIMEZONE: "Australia/Melbourne", ALERT_FROM: "14:30", ALERT_UNTIL: "19:00" };
+// The alert at 3 PM from Monday to Friday and at 8 AM at the weekend. It may go out half an hour before.
+export const ENV = { SITE_URL: SITE, TIMEZONE: "Australia/Melbourne", ALERT_WEEKDAYS: "15:00", ALERT_WEEKENDS: "08:00", ALERT_UNTIL: "19:00" };
 export const settings = settingsFrom(ENV);
 
 // The second timer's four settings, with the times of day the real check has.
@@ -230,7 +231,7 @@ export function readProof(header) {
 
 /** The page's data, as the daily check publishes it: only the parts the backend reads. */
 export function pageData({ generated, generatedText = "3:01 PM", days }) {
-  return { zone: "Australia/Melbourne", generated, generatedText, alert: { from: 870, until: 1140 }, days };
+  return { zone: "Australia/Melbourne", generated, generatedText, alert: { weekdays: 900, weekends: 480, until: 1140 }, days };
 }
 
 export function day(date, title = "Booked 5 PM to 7:30 PM", body = "Cricket training.") {

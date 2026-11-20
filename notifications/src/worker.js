@@ -3,7 +3,7 @@
 // It does five things:
 //   - takes in the address a browser makes when someone turns alerts on
 //     (and removes it again when they turn them off)
-//   - once a day, in the afternoon, sends today's notice to every address
+//   - once a day, at the alert's time, sends today's notice to every address
 //   - starts the daily check on GitHub when GitHub's own timer has not
 //   - runs the Telegram bot, which sends alerts at the times people choose
 //   - answers "how are things" with a few numbers
