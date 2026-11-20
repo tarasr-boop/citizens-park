@@ -83,7 +83,7 @@ jobs:
             echo "found=yes" >> "$GITHUB_OUTPUT"
           else
             echo "found=no" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Tested, not deployed::The secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not both set, so nothing was put on Cloudflare."
+            echo "::notice title=Tested but not deployed::The secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not both set, so nothing was put on Cloudflare."
             echo "The backend passed its tests. It was not deployed, because the secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not both set. The README says how to make them." >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -130,5 +130,5 @@ jobs:
             echo "No answer yet (try $attempt of 24). A new address can take a few minutes to start working."
             sleep 15
           done
-          echo "::error title=Deployed, but not answering yet::https://$host/status gave no answer for several minutes. Run this workflow again in a quarter of an hour."
+          echo "::error title=Deployed but not answering yet::https://$host/status gave no answer for several minutes. Run this workflow again in a quarter of an hour."
           exit 1
