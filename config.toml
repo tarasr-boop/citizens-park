@@ -45,12 +45,15 @@ url = "https://citizensbark.com/"
 tip_url = ""
 # Linked in the page footer as "How this page is made".
 repo_url = "https://github.com/tarasr-boop/citizens-park"
+# An email address for the "Please share feedback" button in "How this works".
+# Anyone can read it: on the page, and in this file. Leave it empty to hide the button.
+feedback_email = ""
 
 [about]
 # The "About me" block on the page, under the week ahead.
 # Leave text empty to hide the block.
 heading = "About me"
-text = "Hi, I'm Sofia, a dog behaviourist. I work at the Lost Dogs' Home shelter, run puppy school on the weekends and do private training."
+text = "Hi, I'm Sofia, a dog trainer. I work at the Lost Dogs' Home shelter, run puppy school on the weekends and do private training."
 # One link under the words, and the words to show for it.
 link = "https://www.instagram.com/gentle_woof"
 link_text = "@gentle_woof on Instagram"

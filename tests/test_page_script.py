@@ -121,7 +121,7 @@ class LiveViewTest(unittest.TestCase):
         html = self.draw(data, "2026-12-02T15:30")
         self.assertIn('<a class="pill" data-sure="no" href="#how">Usual pattern, not confirmed', html)
         self.assertIn('<p class="why">The council&#39;s page only goes up to 30 November.</p>', html)
-        self.assertIn("<h1>Probably free right now</h1>", html)
+        self.assertIn("<h1>Probably free until 4:15 PM</h1>", html)
 
     def test_an_address_that_is_not_https_is_never_made_a_link(self):
         data = self.friday()
@@ -129,6 +129,77 @@ class LiveViewTest(unittest.TestCase):
         html = self.draw(data, "2026-11-20T14:20")
         self.assertNotIn("javascript:", html)
         self.assertIn('<span class="pill" data-sure="yes">From the council’s schedule</span>', html)
+
+    # ---- the one line that says how things stand ----
+
+    def hero(self, html: str) -> str:
+        return html[html.index('<section class="hero"') : html.index("</section>")]
+
+    def one_day(self, plan: DayPlan, now: str) -> str:
+        """The answer at the top for a page that knows only ``plan``'s day."""
+        built = at(plan.day, 9)
+        return self.hero(self.draw(site.page_data(self.config, [plan], None, october_store(plan.day, built), built), now))
+
+    def test_the_answer_is_one_line_that_says_until_when(self):
+        data = self.friday()  # the council lists 4 to 8 PM
+        free = self.hero(self.draw(data, "2026-11-20T14:20"))
+        self.assertIn('data-state="free"', free)
+        self.assertIn("<h1>Free until 4 PM</h1>", free)
+        booked = self.hero(self.draw(data, "2026-11-20T16:51"))
+        self.assertIn('data-state="booked"', booked)
+        self.assertIn("<h1>Booked until 8 PM</h1>", booked)
+        self.assertIn("<h1>Booked until 8 PM</h1>", self.draw(data, "2026-11-20T16:00"))
+        over = self.hero(self.draw(data, "2026-11-20T20:00"))
+        self.assertIn('data-state="free"', over)
+        self.assertIn("<h1>Free until tomorrow</h1>", over)
+        # The times are in the "Today" card right below, so no second line repeats them.
+        for hero in (free, booked, over):
+            self.assertNotIn('class="sub"', hero)
+
+    def test_the_rule_is_given_only_while_the_oval_is_booked(self):
+        data = self.friday()
+        booked = self.hero(self.draw(data, "2026-11-20T16:51"))
+        self.assertIn('<p class="rule">Dogs must stay off the oval while an activity is on.</p>', booked)
+        self.assertNotIn("sport or training", booked)
+        self.assertNotIn('class="rule"', self.draw(data, "2026-11-20T14:20"))
+        self.assertNotIn('class="rule"', self.draw(data, "2026-11-20T20:00"))
+
+    def test_a_day_without_bookings_is_free_all_day(self):
+        monday = date(2026, 11, 2)  # the council lists that day and names no booking
+        hero = self.hero(self.draw(self.data(at(monday, 9)), "2026-11-02T09:05"))
+        self.assertIn('data-state="free"', hero)
+        self.assertIn("<h1>Free all day</h1>", hero)
+        self.assertNotIn('class="sub"', hero)
+
+    def test_a_day_the_council_has_not_listed_says_usually_and_probably(self):
+        # Wednesday 2 December: the usual pattern is 4:15 to 7:30 PM.
+        data = self.data(at(date(2026, 12, 2), 9))
+        self.assertIn("<h1>Probably free until 4:15 PM</h1>", self.draw(data, "2026-12-02T09:05"))
+        booked = self.hero(self.draw(data, "2026-12-02T17:00"))
+        self.assertIn("<h1>Usually booked until 7:30 PM</h1>", booked)
+        self.assertIn('class="rule"', booked)
+        self.assertIn("<h1>Probably free until tomorrow</h1>", self.draw(data, "2026-12-02T19:30"))
+        self.assertIn("<h1>Probably free all day</h1>", self.one_day(DayPlan(FRIDAY, (), "usual"), "2026-11-20T10:00"))
+
+    def test_a_booking_that_runs_to_the_end_of_the_day(self):
+        late = DayPlan(FRIDAY, (Slot(18 * 60, 24 * 60),), "council")
+        self.assertIn("<h1>Booked until midnight</h1>", self.one_day(late, "2026-11-20T19:00"))
+
+    def test_a_second_line_only_where_the_first_cannot_say_it(self):
+        closed = self.one_day(DayPlan(FRIDAY, (Slot(0, 1440),), "council", closed=True, label="Turf works until 1 December."), "2026-11-20T10:00")
+        self.assertIn('data-state="closed"', closed)
+        self.assertIn("<h1>Closed today</h1>", closed)
+        self.assertIn('<p class="sub">Council notice: Turf works until 1 December.</p>', closed)
+        self.assertIn('<p class="sub">The council has closed the oval.</p>', self.one_day(DayPlan(FRIDAY, (Slot(0, 1440),), "council", closed=True), "2026-11-20T10:00"))
+
+        listed = self.one_day(DayPlan(FRIDAY, (), "council", label="Maintenance"), "2026-11-20T10:00")
+        self.assertIn('data-state="unknown"', listed)
+        self.assertIn("<h1>Maintenance listed today</h1>", listed)
+        self.assertIn('<p class="sub">The oval may be closed. Check the signs at the park.</p>', listed)
+
+        nothing = self.one_day(DayPlan(FRIDAY, (), "none"), "2026-11-20T10:00")
+        self.assertIn("<h1>No booking information today</h1>", nothing)
+        self.assertIn('<p class="sub">Check the signs at the park.</p>', nothing)
 
     # ---- today's timeline ----
 

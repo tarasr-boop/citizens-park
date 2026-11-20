@@ -117,6 +117,15 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, r"about should be a section that starts with a \[about\] line"):
             self.load('about = "Hello."\n' + GOOD)
 
+    def test_the_feedback_address_is_optional_and_must_be_an_email_address(self):
+        self.assertEqual(self.load(GOOD).feedback_email, "")
+        config = self.changed('repo_url = "https://example.org/code"', 'repo_url = "https://example.org/code"\nfeedback_email = " hello+park@mail.example.org "')
+        self.assertEqual(config.feedback_email, "hello+park@mail.example.org")
+        # It becomes part of a link on the page, so nothing but a plain address is taken.
+        for written in ("hello", "hello@example", "mailto:hello@example.org", "hello@example.org?cc=x@example.org", 'hello@example.org"><script>', "a b@example.org", "hello@exam ple.org"):
+            with self.subTest(written=written), self.assertRaisesRegex(ConfigError, "site.feedback_email should be an email address"):
+                self.changed('repo_url = "https://example.org/code"', f"repo_url = \"https://example.org/code\"\nfeedback_email = '{written}'")
+
     def test_the_hours_for_the_best_window_can_be_set(self):
         config = self.changed('post_until = "19:00"', 'post_until = "19:00"\nadvice_from = "16:30"\nadvice_until = "20:00"')
         self.assertEqual((config.advice_from, config.advice_until), (16 * 60 + 30, 20 * 60))
