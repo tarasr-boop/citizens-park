@@ -31,7 +31,10 @@ class FetchError(Exception):
 
 
 class NoAnswer(FetchError):
-    """The server could not be reached, or said nothing in time."""
+    """The server could not be reached, said nothing in time, or was too busy to serve anyone.
+
+    Whatever went wrong, it says nothing about the request itself.
+    """
 
 
 def _decode(body: bytes, content_type: str) -> str:
@@ -125,8 +128,9 @@ class _ConnectionAt(http.client.HTTPSConnection):
 def get_at(url: str, user_agent: str, address: str, timeout: float = 25, accept: str = "*/*") -> str:
     """Return the text at ``url``, asking the server at ``address`` instead of the one the site's name leads to.
 
-    One try. Raises :class:`NoAnswer` if the server cannot be reached or says
-    nothing in time, and :class:`FetchError` for anything else that goes wrong.
+    One try. Raises :class:`NoAnswer` if the server cannot be reached, says
+    nothing in time or is too busy, and :class:`FetchError` for anything else
+    that goes wrong.
     """
     connection = None
     try:
@@ -140,6 +144,8 @@ def get_at(url: str, user_agent: str, address: str, timeout: float = 25, accept:
         path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
         connection.request("GET", path, headers={**_headers(user_agent, accept), "Connection": "close"})
         reply = connection.getresponse()
+        if reply.status == 429 or reply.status >= 500:
+            raise NoAnswer(f"the server answered {reply.status}")  # busy, or having a bad moment
         if reply.status != 200:
             raise FetchError(f"the server answered {reply.status}")
         return _text(reply.read(), reply.headers)

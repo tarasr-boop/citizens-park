@@ -65,6 +65,8 @@ class _Site(http.server.BaseHTTPRequestHandler):
             status, body, headers = 302, b"", {"Location": "/plain"}
         elif self.path == "/busy":
             status, body = 503, b"try later"
+        elif self.path == "/slow-down":
+            status, body = 429, b"too many requests"
         self.send_response(status)
         for name, value in headers.items():
             self.send_header(name, value)
@@ -173,11 +175,14 @@ class DetourOverARealConnectionTest(unittest.TestCase):
         self.assertEqual(_Site.requests, [])
 
     def test_anything_but_the_page_is_a_failure(self):
+        # A busy server says nothing about the request. A plain "no" does.
+        cases = (("/busy", 503, True), ("/slow-down", 429, True), ("/missing", 404, False), ("/moved", 302, False))
         with self.trusting_the_test_certificate():
-            for path, status in (("/busy", 503), ("/missing", 404), ("/moved", 302)):
+            for path, status, busy in cases:
                 with self.subTest(path=path):
-                    with self.assertRaisesRegex(FetchError, f"^the server answered {status}$"):
+                    with self.assertRaisesRegex(FetchError, f"^the server answered {status}$") as caught:
                         fetch.get_at(self.url(path), "x", HERE, timeout=5)
+                    self.assertEqual(isinstance(caught.exception, NoAnswer), busy)
 
     def test_a_server_that_says_nothing_is_no_answer(self):
         with self.assertRaisesRegex(NoAnswer, "timed out"):

@@ -496,7 +496,10 @@ class RoutesTest(unittest.TestCase):
         # The service's own bad moment must not fail the tests of this code.
         self.world.direct = {WEST: fetch.NoAnswer("TimeoutError: The handshake operation timed out")}
         self.assertEqual(self.routes(), 0)
-        self.assertIn(f"Straight to {WEST} (where the service's name leads right now): no answer (TimeoutError", self.world.said())
+        self.assertIn(f"Straight to {WEST} (where the service's name leads right now): no forecast this time (TimeoutError", self.world.said())
+        # The same goes for a server that is busy, as one shared with many other callers can be.
+        self.world.direct = {WEST: fetch.NoAnswer("the server answered 429")}
+        self.assertEqual(self.routes(), 0)
 
     def test_nothing_to_compare_with_when_the_usual_route_fails_too(self):
         self.world.forecast = fetch.FetchError("could not connect (The handshake operation timed out)")

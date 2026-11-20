@@ -359,7 +359,7 @@ def routes(options: argparse.Namespace, tools: Tools | None = None) -> int:
     url = weather.url(config.latitude, config.longitude, config.timezone_name, DAYS_AHEAD)
 
     def ask(fetcher: Callable[..., str], *where: str, **extra: int) -> tuple[str, str]:
-        """Whether a forecast came back: "yes", "silent" (nothing was learned) or "no", and the reason."""
+        """Whether a forecast came back, and why not: "yes", "no", or "silent" when the server was out of reach or busy."""
         try:
             weather.parse(fetcher(url, config.user_agent, *where, accept="application/json", timeout=FORECAST_TIMEOUT, **extra))
         except fetch.NoAnswer as error:
@@ -368,7 +368,7 @@ def routes(options: argparse.Namespace, tools: Tools | None = None) -> int:
             return "no", str(error)
         return "yes", ""
 
-    words = {"yes": "the forecast loaded", "silent": "no answer", "no": "it did not work"}
+    words = {"yes": "the forecast loaded", "silent": "no forecast this time", "no": "it did not work"}
     usual, why = ask(tools.fetch, tries=1)
     say("By the usual route: " + ("the forecast loaded" if usual == "yes" else f"it did not work ({why})"))
 
@@ -386,6 +386,7 @@ def routes(options: argparse.Namespace, tools: Tools | None = None) -> int:
 
     # Only one result points at this code and not at the weather service: the usual
     # route works, yet the very same server will not serve us when asked by its address.
+    # A server that is out of reach or busy ("silent") proves nothing either way.
     if usual == "yes" and "no" in here and "yes" not in here:
         problem = "The detour to the weather service is broken: the usual route works, but asking the same server by its address does not."
         say(f"::error::{problem}" if on_github else f"ERROR: {problem}")
