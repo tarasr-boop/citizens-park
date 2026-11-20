@@ -37,7 +37,7 @@ advice_until = "21:00"
 # Custom alerts from the Telegram bot (the same bot that posts to the channel).
 # The bot's link name: the part after "t.me/". While it is empty, the page's
 # Telegram button leads to the channel instead.
-name = ""
+name = "CitizensParkDogsBot"
 # Each person picks one time for weekdays and one for weekends, on the hour,
 # from "first" to "last". A new chat starts with "weekday" and "weekend".
 # An alert at "evening" or later is about the next day, sent the evening before.
