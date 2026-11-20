@@ -18,7 +18,7 @@ from html import escape
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from . import message
+from . import bot, message
 from .config import Config
 from .status import DayPlan, short_date
 from .store import CouncilStore
@@ -190,7 +190,10 @@ def _actions(config: Config) -> str:
         # The line under the button is where the script says what happened.
         buttons.append('    <button class="button primary" type="button" id="notify" hidden>Get alerts on this device</button>')
         buttons.append('    <p class="notify-note" id="notify-note" role="status" hidden></p>')
-    if config.channel:
+    if config.bot_name:
+        # A chat with the bot, where people pick their own times.
+        buttons.append(f'    <a class="button" href="{escape(config.bot_url)}" rel="noopener">Get custom alerts on Telegram</a>')
+    elif config.channel:
         buttons.append(f'    <a class="button" href="{escape(config.channel_url)}" rel="noopener">Get alerts on Telegram</a>')
     if config.tip_url:
         buttons.append(f'    <a class="button" href="{escape(config.tip_url)}" rel="noopener">Leave a tip</a>')
@@ -334,6 +337,9 @@ def build(
     )
     (out / "index.html").write_text(page, encoding="utf-8")
     (out / "data.json").write_text(json.dumps(data, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    # The words of the Telegram bot's custom alerts, for every hour people can pick (see bot.py).
+    alerts = bot.alerts(config, plans, forecast, now)
+    (out / bot.FILE).write_text(json.dumps(alerts, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     (out / "manifest.webmanifest").write_text(_manifest(config) + "\n", encoding="utf-8")
     # Tells GitHub Pages to serve the files as they are.
     (out / ".nojekyll").write_text("", encoding="utf-8")

@@ -33,6 +33,22 @@ post_until = "19:00"
 advice_from = "17:00"
 advice_until = "21:00"
 
+[bot]
+# Custom alerts from the Telegram bot (the same bot that posts to the channel).
+# The bot's link name: the part after "t.me/". While it is empty, the page's
+# Telegram button leads to the channel instead.
+name = ""
+# Each person picks one time for weekdays and one for weekends, on the hour,
+# from "first" to "last". A new chat starts with "weekday" and "weekend".
+# An alert at "evening" or later is about the next day, sent the evening before.
+# If you change these, change the BOT_ settings in notifications/wrangler.jsonc
+# too. The tests say so if they no longer agree.
+first = "04:00"
+last = "23:00"
+evening = "21:00"
+weekday = "16:00"
+weekend = "08:00"
+
 [site]
 # A name for the page itself, for example "Citizens Bark". It appears at the top
 # of the page and under the home-screen icon. Leave it empty to use the park's name.

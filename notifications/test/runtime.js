@@ -26,14 +26,17 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const scriptPath = path.resolve(process.argv[2] || path.join(here, "../src/worker.js"));
 const settingsText = await readFile(path.join(here, "../wrangler.jsonc"), "utf8");
 const compatibilityDate = /"compatibility_date":\s*"([\d-]+)"/.exec(settingsText)[1];
-const cron = /"crons":\s*\["([^"]+)"\]/.exec(settingsText)[1];
+// The first of the timer's lines, which looks every five minutes through the day.
+const cron = /"crons":\s*\["([^"]+)"/.exec(settingsText)[1];
 
 const SITE = "https://citizensbark.example/";
 const PAGE = new URL(SITE).origin;
 const BACKEND = "https://alerts.example";
 const GITHUB = "https://api.github.com/";
-// Made up for this test. On Cloudflare the real one is a secret, handed over at deploy time.
+// Made up for this test. On Cloudflare the real ones are secrets, handed over at deploy time.
 const TOKEN = "github_pat_11STANDIN0aBcDeFgHiJkLmNoPqRsTuVwXyZ";
+const BOT_TOKEN = "123456789:STANDIN-aBcDeFgHiJkLmNoPqRsTuVwXyZ01234";
+const TELEGRAM = `https://api.telegram.org/bot${BOT_TOKEN}/`;
 
 // The alert only goes out in the afternoon at the park, and this test has to
 // pass at any hour. So the park is moved, for the test, to wherever it is
@@ -56,6 +59,10 @@ const pageMade = (ago) => pageData({ generated: new Date(started - ago).toISOStr
 const outside = {
   page: pageMade(60000),
   reads: [],
+  // The words of the bot's alerts, in telegram.json next to the page, and what was asked of Telegram.
+  words: null,
+  wordReads: [],
+  telegram: [],
   pushes: [],
   answer: () => 201,
   // What was asked of GitHub. It takes every request.
@@ -63,6 +70,16 @@ const outside = {
 };
 
 async function outbound(request) {
+  if (request.url.startsWith(`${SITE}telegram.json`)) {
+    outside.wordReads.push(request.url);
+    return new Response(JSON.stringify(outside.words), { headers: { "Content-Type": "application/json" } });
+  }
+  if (request.url.startsWith("https://api.telegram.org/")) {
+    const call = { url: request.url, method: request.url.split("/").pop(), body: JSON.parse((await request.text()) || "{}") };
+    outside.telegram.push(call);
+    const results = { getMe: { id: 123456789, is_bot: true, username: "standin_park_bot" }, getWebhookInfo: { pending_update_count: 0 }, getMyDescription: { description: "" }, getMyShortDescription: { short_description: "" } };
+    return new Response(JSON.stringify({ ok: true, result: results[call.method] ?? true }), { headers: { "Content-Type": "application/json" } });
+  }
   if (request.url.startsWith(SITE)) {
     outside.reads.push(request.url);
     return new Response(JSON.stringify(outside.page), { headers: { "Content-Type": "application/json" } });
@@ -78,11 +95,11 @@ async function outbound(request) {
 }
 
 // The worker's own files, as modules. A bundle made by wrangler is one file.
-// The files in src/ are the worker and the six it imports.
+// The files in src/ are the worker and the eight it imports.
 async function modules() {
   const names =
     path.basename(path.dirname(scriptPath)) === "src"
-      ? ["worker.js", "book.js", "rules.js", "starter.js", "stats.js", "statspage.js", "webpush.js"]
+      ? ["worker.js", "book.js", "bot.js", "botwords.js", "rules.js", "starter.js", "stats.js", "statspage.js", "webpush.js"]
       : [path.basename(scriptPath)];
   const found = {};
   for (const name of names) {
@@ -115,10 +132,23 @@ function start(folder) {
             CHECK_BRANCH: text("main"),
             CHECK_TIMES: text(setTime),
             DAILY_CHECK_TOKEN: text(TOKEN),
+            PARK_NAME: text("Citizens Park oval"),
+            BACKEND_URL: text(BACKEND),
+            BOT_FIRST: text("04:00"),
+            BOT_LAST: text("23:00"),
+            BOT_EVENING: text("21:00"),
+            BOT_WEEKDAY: text("16:00"),
+            BOT_WEEKEND: text("08:00"),
+            TELEGRAM_BOT_TOKEN: text(BOT_TOKEN),
             SUBSCRIBERS: { type: "durable-object", worker: "alerts", exportName: "Subscribers" },
             STATS: { type: "durable-object", worker: "alerts", exportName: "Stats" },
+            CHATS: { type: "durable-object", worker: "alerts", exportName: "Chats" },
           },
-          exports: { Subscribers: { type: "durable-object", storage: "sqlite" }, Stats: { type: "durable-object", storage: "sqlite" } },
+          exports: {
+            Subscribers: { type: "durable-object", storage: "sqlite" },
+            Stats: { type: "durable-object", storage: "sqlite" },
+            Chats: { type: "durable-object", storage: "sqlite" },
+          },
           triggers: [{ type: "scheduled", schedule: cron }],
         },
         // Everything the worker asks of the outside world comes here instead.
@@ -161,7 +191,13 @@ try {
   await check("the backend starts, makes its signing keys and says how things are", async () => {
     const status = await ask(mf, "GET", "/status", { origin: null });
     assert.equal(status.status, 200);
-    assert.deepEqual(status.body, {
+    const { telegram, ...rest } = status.body;
+    // Asked how things are, the bot sets itself up with Telegram first.
+    assert.equal(telegram.on, true);
+    assert.equal(telegram.name, "standin_park_bot");
+    assert.equal(telegram.hook.ok, true);
+    assert.equal(telegram.chats, 0);
+    assert.deepEqual(rest, {
       ok: true,
       devices: 0,
       sending: false,
@@ -176,6 +212,33 @@ try {
     assert.equal(answer.headers.get("Access-Control-Allow-Origin"), PAGE);
     key = answer.body.key;
     assert.equal(Buffer.from(key, "base64url").length, 65);
+  });
+
+  const hourNow = Math.floor(localTime(started, zone).minute / 60);
+  const weekend = [0, 6].includes(new Date(`${today}T12:00:00Z`).getUTCDay());
+  await check("the bot listens to Telegram only with the password it gave it, and keeps a chat in its own database", async () => {
+    const hook = outside.telegram.find((one) => one.method === "setWebhook");
+    assert.equal(hook.body.url, `${BACKEND}/telegram`);
+    assert.ok(outside.telegram.every((one) => one.url.startsWith(TELEGRAM)));
+    const send = (body, secret = hook.body.secret_token) =>
+      mf.dispatchFetch(`${BACKEND}/telegram`, { method: "POST", headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": secret }, body: JSON.stringify(body) });
+    const start = { update_id: 1, message: { message_id: 1, from: { id: 5, is_bot: false }, chat: { id: 5, type: "private" }, text: "/start" } };
+    const refused = await send(start, "wrong");
+    assert.equal(refused.status, 403);
+    await refused.arrayBuffer();
+    const taken = await send(start);
+    assert.equal(taken.status, 200);
+    assert.deepEqual(await taken.json(), { ok: true });
+    const said = outside.telegram.filter((one) => one.method === "sendMessage");
+    assert.equal(said.length, 2);
+    assert.match(said[0].body.text, /Citizens Park oval/);
+    // The person picks this very hour, for today's kind of day.
+    const press = { update_id: 2, callback_query: { id: "q1", from: { id: 5 }, message: { message_id: 9, chat: { id: 5, type: "private" } }, data: `set:${weekend ? "weekend" : "weekday"}:${hourNow}` } };
+    const pressed = await send(press);
+    assert.equal(pressed.status, 200);
+    await pressed.arrayBuffer();
+    assert.match(outside.telegram.at(-1).body.text, /^✅/);
+    assert.equal((await ask(mf, "GET", "/status")).body.telegram.chats, 1);
   });
 
   await check("the second timer asks GitHub to run the check when the page shows none, and is content once the page is new", async () => {
@@ -219,6 +282,29 @@ try {
     await until("the second timer to see the new page", async () => (await ask(mf, "GET", "/status")).body.starter.check.done);
     assert.equal(outside.asks.length, 2);
     outside.reads.length = 0;
+  });
+
+  await check("at the hour the person picked, the timer's look sends the bot's alert", async () => {
+    // The look above was the bot's first in this hour, and telegram.json had no words yet.
+    assert.equal((await ask(mf, "GET", "/status")).body.telegram.look.why, `telegram.json could not be read (telegram.json is not what was expected)`);
+    outside.words = {
+      generated: new Date(started).toISOString(),
+      generatedText: "now",
+      alerts: [{ date: today, hour: hourNow, about: today, weekend, text: "🐕 <b>Citizens Park oval</b>\n\n🔴 Booked until 8 PM" }],
+    };
+    const worker = await mf.getWorker();
+    await worker.scheduled({ cron });
+    await until("the bot's alert to be sent", async () => (await ask(mf, "GET", "/status")).body.telegram.last !== null);
+    const last = outside.telegram.at(-1);
+    assert.equal(last.method, "sendMessage");
+    assert.deepEqual(last.body, { chat_id: 5, text: "🐕 <b>Citizens Park oval</b>\n\n🔴 Booked until 8 PM", parse_mode: "HTML", link_preview_options: { is_disabled: true } });
+    const status = (await ask(mf, "GET", "/status")).body.telegram;
+    assert.deepEqual([status.last.sent, status.last.gone, status.last.failed, status.last.kind], [1, 0, 0, weekend ? "weekend" : "weekday"]);
+    assert.equal(JSON.stringify(status).includes(BOT_TOKEN), false);
+    // The next look sends nothing more.
+    await worker.scheduled({ cron });
+    await until("the bot's next look", async () => (await ask(mf, "GET", "/status")).body.telegram.look.why.includes("have gone out"));
+    assert.equal(outside.telegram.filter((one) => one.method === "sendMessage").length, 3);
   });
 
   await check("a browser's question beforehand is answered", async () => {
@@ -379,6 +465,12 @@ try {
     const html = await page.text();
     assert.match(html, /today<\/span><\/td><td>2<\/td><td>1<\/td><td>1</);
     assert.match(html, /Telegram button<\/td><td>1</);
+  });
+
+  await check("the bot's chats are still there after a restart", async () => {
+    const status = (await ask(mf, "GET", "/status")).body.telegram;
+    assert.equal(status.chats, 1);
+    assert.equal(status.last.sent, 1);
   });
 
   await check("through all of that, GitHub was asked nothing more", async () => {

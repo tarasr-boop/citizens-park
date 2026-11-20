@@ -43,6 +43,13 @@ class Config:
     about_link: str
     about_link_text: str
     push_url: str  # the notifications backend, without a closing "/"; while empty the page offers no notifications
+    # The Telegram bot's custom alerts (the [bot] section). Times are minutes after midnight, each on the hour.
+    bot_name: str = ""  # the bot's link name, without "@"; while empty the page's Telegram button leads to the channel
+    bot_first: int = 4 * 60  # the earliest time people can choose
+    bot_last: int = 23 * 60  # the latest
+    bot_evening: int = 21 * 60  # an alert at this time or later is about the next day, sent the evening before
+    bot_weekday: int = 16 * 60  # the times a new chat starts with
+    bot_weekend: int = 8 * 60
 
     @property
     def zone(self) -> ZoneInfo:
@@ -51,6 +58,10 @@ class Config:
     @property
     def channel_url(self) -> str:
         return f"https://t.me/{self.channel}" if self.channel else ""
+
+    @property
+    def bot_url(self) -> str:
+        return f"https://t.me/{self.bot_name}" if self.bot_name else ""
 
     @property
     def display_name(self) -> str:
@@ -77,6 +88,25 @@ def _email_address(value: str, what: str) -> str:
     return value
 
 
+def _link_name(value: str, what: str) -> str:
+    """A Telegram link name, such as "CitizensParkBot", from the name itself or a link to it."""
+    name = value.strip()
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/", "@"):
+        name = name.removeprefix(prefix)
+    name = name.strip("/")
+    if name and not re.fullmatch(r"[A-Za-z0-9_]+", name):
+        raise ConfigError(f"{what} should be a link name, such as CitizensParkBot, got {name!r}")
+    return name
+
+
+def _on_the_hour(value: object, what: str) -> int:
+    """A time on the hour, such as "16:00", as minutes after midnight."""
+    minute = parse_hhmm(str(value))
+    if minute % 60:
+        raise ConfigError(f"{what} must be a time on the hour, such as 16:00, got {value!r}")
+    return minute
+
+
 def load(path: str | Path = "config.toml") -> Config:
     try:
         with open(path, "rb") as handle:
@@ -90,6 +120,7 @@ def load(path: str | Path = "config.toml") -> Config:
         park, council, telegram, site = raw["park"], raw["council"], raw["telegram"], raw["site"]
         about = raw.get("about", {})  # optional
         notifications = raw.get("notifications", {})  # optional
+        bot = raw.get("bot", {})  # optional
         sections = (
             ("park", park),
             ("council", council),
@@ -97,6 +128,7 @@ def load(path: str | Path = "config.toml") -> Config:
             ("site", site),
             ("about", about),
             ("notifications", notifications),
+            ("bot", bot),
         )
         for name, section in sections:
             if not isinstance(section, dict):
@@ -144,6 +176,12 @@ def load(path: str | Path = "config.toml") -> Config:
             # With no words of its own, the link shows its address without the "https://".
             about_link_text=str(about.get("link_text", "")).strip() or about_link.removeprefix("https://").rstrip("/"),
             push_url=_web_address(str(notifications.get("url", "")), "notifications.url").rstrip("/"),
+            bot_name=_link_name(str(bot.get("name", "")), "bot.name"),
+            bot_first=_on_the_hour(bot.get("first", "04:00"), "bot.first"),
+            bot_last=_on_the_hour(bot.get("last", "23:00"), "bot.last"),
+            bot_evening=_on_the_hour(bot.get("evening", "21:00"), "bot.evening"),
+            bot_weekday=_on_the_hour(bot.get("weekday", "16:00"), "bot.weekday"),
+            bot_weekend=_on_the_hour(bot.get("weekend", "08:00"), "bot.weekend"),
         )
     except KeyError as error:
         raise ConfigError(f"{path} is missing the setting {error}") from error
@@ -156,6 +194,10 @@ def load(path: str | Path = "config.toml") -> Config:
         raise ConfigError("park.day_start must be earlier than park.day_end")
     if not config.post_from < config.post_until:
         raise ConfigError("telegram.post_from must be earlier than telegram.post_until")
+    if not config.bot_first <= min(config.bot_weekday, config.bot_weekend) <= max(config.bot_weekday, config.bot_weekend) <= config.bot_last:
+        raise ConfigError("bot.weekday and bot.weekend must lie between bot.first and bot.last, and bot.first before bot.last")
+    if not config.bot_first < config.bot_evening <= config.bot_last + 60:
+        raise ConfigError("bot.evening must be later than bot.first, and no later than an hour after bot.last")
     if not config.advice_from < config.advice_until:
         raise ConfigError("telegram.advice_from must be earlier than telegram.advice_until")
     try:

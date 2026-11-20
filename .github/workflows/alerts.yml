@@ -13,6 +13,11 @@ name: Alerts backend
 # A third secret, DAILY_CHECK_TOKEN, is optional. With it the backend also
 # starts the daily check when GitHub's own timer has not ("the second timer").
 # After adding or changing it, start this workflow by hand once.
+#
+# The Telegram bot's token, TELEGRAM_BOT_TOKEN, is the one the daily check
+# posts to the channel with. This workflow hands it to the backend too, which
+# then runs the bot's custom alerts. After changing it, start this workflow by
+# hand once.
 
 on:
   push:
@@ -83,6 +88,7 @@ jobs:
         env:
           BOTH_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
           TIMER_SET: ${{ secrets.DAILY_CHECK_TOKEN != '' }}
+          BOT_SET: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}
         run: |
           if [ "$BOTH_SET" != "true" ]; then
             echo "found=no" >> "$GITHUB_OUTPUT"
@@ -96,6 +102,12 @@ jobs:
           else
             echo "timer=no" >> "$GITHUB_OUTPUT"
             echo "::notice title=Second timer is off::The secret DAILY_CHECK_TOKEN is not set, so the backend does not start the daily check when GitHub's own timer misses it. The README says how to make the token."
+          fi
+          if [ "$BOT_SET" = "true" ]; then
+            echo "bot=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "bot=no" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Telegram bot is off::The secret TELEGRAM_BOT_TOKEN is not set, so the backend does not run the bot's custom alerts."
           fi
 
       - name: Get Node
@@ -132,12 +144,25 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
         run: printf '%s' "$DAILY_CHECK_TOKEN" | npx --no-install wrangler secret put DAILY_CHECK_TOKEN
 
+      # The same for the Telegram bot's token, which the backend needs to run
+      # the bot's custom alerts. Straight from GitHub's secret into the deploy
+      # tool, with nothing written to a file or to this log on the way.
+      - name: Hand the bot its token
+        if: steps.secrets.outputs.found == 'yes' && steps.secrets.outputs.bot == 'yes'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          WRANGLER_SEND_METRICS: "false"
+        run: printf '%s' "$TELEGRAM_BOT_TOKEN" | npx --no-install wrangler secret put TELEGRAM_BOT_TOKEN
+
       # The address comes from wrangler.jsonc. The first time, Cloudflare needs
       # a few minutes to set it up, so this asks patiently.
       - name: Ask the backend how things are
         if: steps.secrets.outputs.found == 'yes'
         env:
           TIMER: ${{ steps.secrets.outputs.timer }}
+          BOT: ${{ steps.secrets.outputs.bot }}
         run: |
           host="$(sed -n 's/.*"pattern": *"\([a-z0-9.-]*\)".*/\1/p' wrangler.jsonc | head -n 1)"
           if [ -z "$host" ]; then
@@ -152,22 +177,23 @@ jobs:
           for attempt in $(seq 1 24); do
             if answer="$(curl --silent --show-error --fail --max-time 10 "https://$host/status")"; then
               answered=yes
-              # With its token handed over, the backend must say that its second timer is on.
-              if [ "$TIMER" != "yes" ] || printf '%s' "$answer" | grep -q '"starter":{"on":true'; then
+              # With their tokens handed over, the backend must say that its second timer and its bot are on.
+              if { [ "$TIMER" != "yes" ] || printf '%s' "$answer" | grep -q '"starter":{"on":true'; } &&
+                { [ "$BOT" != "yes" ] || printf '%s' "$answer" | grep -q '"telegram":{"on":true'; }; then
                 echo "The backend answers at https://$host/status:"
                 # Shown in this log only. It is never written anywhere that formats text.
                 printf '%s\n' "$answer" | head -c 2000 | tr -d '\r' | sed 's/^/  /'
                 echo "The alerts backend is live at https://$host" >> "$GITHUB_STEP_SUMMARY"
                 exit 0
               fi
-              echo "The backend answers, but its second timer is not on yet (try $attempt of 24)."
+              echo "The backend answers, but its second timer or its bot is not on yet (try $attempt of 24)."
             else
               echo "No answer yet (try $attempt of 24). A new address can take a few minutes to start working."
             fi
             sleep 15
           done
           if [ "$answered" = "yes" ]; then
-            echo "::error title=Second timer did not switch on::The token was handed to Cloudflare, but https://$host/status still says that the second timer is off."
+            echo "::error title=Second timer or bot did not switch on::The tokens were handed to Cloudflare, but https://$host/status still says that the second timer or the bot is off."
           else
             echo "::error title=Deployed but not answering yet::https://$host/status gave no answer for several minutes. Run this workflow again in a quarter of an hour."
           fi

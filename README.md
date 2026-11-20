@@ -7,6 +7,7 @@ The oval is a dog off-lead area, but dogs must stay off it while organised sport
 - **A Telegram channel.** One post at about 3 PM Melbourne time, plus a quiet "week ahead" post on Sundays.
 - **A web page.** Today's booked times hour by hour, the week ahead, rain by the hour in millimetres, and a QR code to share it: <https://citizensbark.com/>
 - **A notification on a phone.** The same alert at about 3 PM, for people who do not use Telegram. The button for it is on the web page.
+- **Custom alerts from the Telegram bot.** The same alert in a private chat, at a time each person picks: one for weekdays and one for weekends. See [The Telegram bot](#the-telegram-bot).
 
 It is unofficial. It is not affiliated with the council or the sports clubs.
 
@@ -72,6 +73,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | The usual weekly pattern | `schedule.toml`. It is only used on days the council's page does not cover. |
 | The time of the daily post | `post_from` in `config.toml`, the run times in `.github/workflows/daily.yml`, and `ALERT_FROM` and `CHECK_TIMES` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 | The hours searched for the best window on a rainy day | `advice_from` and `advice_until` under `[telegram]` in `config.toml` |
+| The hours people can pick in the Telegram bot, and the times a new chat starts with | The `[bot]` section of `config.toml`, and the `BOT_` settings in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 
 The **Tests** workflow runs after every change. If you get an email saying it failed, the edit probably has a typing slip, such as a missing quotation mark. Open the failed run to see which file it names.
 
@@ -172,6 +174,31 @@ To switch the second timer off, make `CHECK_TIMES` empty (`""`) in `notification
 
 `CHECK_TIMES` holds the run times of `.github/workflows/daily.yml`. If you change one, change the other. The tests fail until they agree.
 
+## The Telegram bot
+
+The bot that posts to the channel also sends alerts in a private chat, at a time each person picks. Someone opens a chat with the bot (the page's Telegram button leads there) and presses **Start**. From then on they get the alert at 4 PM on weekdays and 8 AM on weekends. Two buttons in the chat change those times: each opens a grid of hours from 4 AM to 11 PM, plus **No alert**. Two buttons at the bottom of the chat stay there: **Change times**, and **Pause notifications**, which becomes **Resume notifications** while the alerts are paused. The bot's menu has the same as commands: `/settings`, `/pause` and `/resume`.
+
+The alert is the channel's post, written for its own time of day. At 8 AM it names every booking of the day, at 4 PM only what is left of it. An alert at 9 PM or later is about the next day, sent the evening before, and its heading says "tomorrow". Whether a person's weekday or weekend time counts follows the day the alert is about: a 9 PM alert on a Friday is about Saturday, so it goes to people whose weekend time is 9 PM.
+
+How it works:
+
+- Each Daily check writes the alert for every hour people can pick, today and tomorrow, into `telegram.json` next to the page. The bot itself knows nothing about bookings or rain.
+- The bot runs on the same backend as the notifications, at <https://alerts.citizensbark.com>. Telegram brings what people write to it there. The backend sets that up by itself, with a password it makes and never shows, so that only Telegram can talk to it.
+- In the first minutes of each hour, the backend sends that hour's words to everyone who picked it, about 25 a second.
+- For each chat it keeps the chat's number, the two times, whether the alerts are paused, and the last day it sent an alert about. No name, no user name, nothing anyone wrote. Someone who blocks the bot is removed at once.
+- It takes up to 5,000 chats.
+
+It needs the bot's token on Cloudflare. The **Alerts backend** workflow hands it over from the `TELEGRAM_BOT_TOKEN` secret, the one the channel already uses, so there is nothing to set up. If you ever change that secret, run **Alerts backend** by hand once.
+
+To see how the bot is doing, open <https://alerts.citizensbark.com> and read `telegram`:
+
+- `on` is `true` once the token has been handed over, and `name` is the bot's link name.
+- `hook` says whether Telegram took the address for messages (`ok`), how many messages are waiting (`pending`), and Telegram's last complaint about delivering them (`error`).
+- `chats` is how many people have the bot, and `paused` how many of them paused it.
+- `look` is what the bot last did, and why. `last` is how the last hour's alerts went: `sent`, `gone` (people who blocked the bot) and `failed`.
+
+The channel keeps going as before, for people who follow it.
+
 ## Stats
 
 <https://alerts.citizensbark.com/stats> shows how many times the page was opened, from how many different devices, and which buttons and links were pressed, for each day of a month and for every month since counting began. The arrows at the top go to earlier months. Every day is kept for good.
@@ -219,6 +246,7 @@ parkbot/
   status.py     decides what to say about each day, and how sure it is
   weather.py    reads the Open-Meteo forecast and sums up the rain
   message.py    the words of the Telegram posts
+  bot.py        the words of the Telegram bot's alerts, for every hour (telegram.json)
   telegram.py   sends a post through the Bot API
   site.py       builds the web page
   web/          the page's template, styles and script
@@ -231,6 +259,8 @@ notifications/  the backend that sends notifications to phones (JavaScript, runs
   src/starter.js   the second timer, which starts the Daily check when GitHub's own timer has not
   src/stats.js     the counter behind the stats page: visits, devices and presses, kept by the day
   src/statspage.js the stats page itself
+  src/bot.js       the Telegram bot: its chats, their times, and the sending at each hour
+  src/botwords.js  what the bot says in a chat, and its buttons
   src/worker.js    connects them to Cloudflare: requests, the timer, the storage
   test/            its tests
   wrangler.jsonc   its settings on Cloudflare

@@ -28,25 +28,27 @@ def _text(value: str) -> str:
     return escape(value, quote=False)
 
 
-def _booking_lines(plan: DayPlan, now_minute: int) -> list[str]:
+def _booking_lines(plan: DayPlan, now_minute: int, day: str = "today") -> list[str]:
     """What is booked for the rest of ``plan``'s day. The free times are not listed: they follow from the booked ones.
 
-    Plain text, like the three functions after this one: ``daily`` escapes it for Telegram.
+    ``day`` is how the words name that day: "today", or "tomorrow" in an alert
+    sent the evening before. Plain text, like the three functions after this
+    one: ``daily`` escapes it for Telegram.
     """
     if plan.closed:
-        lines = ["⛔ The oval is closed today."]
+        lines = [f"⛔ The oval is closed {day}."]
         if plan.label:
             lines.append(f"Council notice: {plan.label}")
         return lines
     if not plan.known:
-        return ["❔ No booking information for today. Check the signs at the park."]
+        return [f"❔ No booking information for {day}. Check the signs at the park."]
 
     sure = plan.confirmed
     if not plan.slots:
         if plan.label:
-            return [f"⚠️ Listed for today: {plan.label}. The oval may be closed."]
+            return [f"⚠️ Listed for {day}: {plan.label}. The oval may be closed."]
         if sure:
-            return ["🟢 No bookings today."]
+            return [f"🟢 No bookings {day}."]
         return [f"🟢 Usually no bookings on {plan.day:%A}s."]
 
     remaining = [slot for slot in plan.slots if slot.end > now_minute]
@@ -62,8 +64,8 @@ def _booking_lines(plan: DayPlan, now_minute: int) -> list[str]:
     return [f"🔴 Booked {booked}" if sure else f"🟠 Usually booked {booked}"]
 
 
-def _rain_lines(plan: DayPlan, hours: list[HourRain] | None, now_minute: int, saved_at: str = "") -> list[str]:
-    look = outlook(hours, now_minute)
+def _rain_lines(plan: DayPlan, hours: list[HourRain] | None, now_minute: int, saved_at: str = "", ahead: bool = False) -> list[str]:
+    look = outlook(hours, now_minute, tomorrow=ahead)
     lines = [f"{_RAIN_ICONS[look.level]} {look.text}"]
     if hours and saved_at:
         lines[0] += f" Forecast from {saved_at}."
@@ -111,18 +113,33 @@ def _caution_line(plan: DayPlan) -> str:
     return f"⚠️ {plan.note}"
 
 
-def _news(plan: DayPlan, forecast: Forecast | None, now_minute: int, config: Config, saved_at: str) -> tuple[list[str], list[str]]:
-    """The day's news in two parts: what is booked, then the rain and any warning. Plain text."""
+def _news(
+    plan: DayPlan, forecast: Forecast | None, now_minute: int, config: Config, saved_at: str, ahead: bool = False
+) -> tuple[list[str], list[str]]:
+    """The day's news in two parts: what is booked, then the rain and any warning. Plain text.
+
+    With ``ahead`` it is written the evening before, about the whole of
+    ``plan``'s day: every booking, and the rain from the start of the day.
+    """
+    if ahead:
+        now_minute = config.day_start
     hours = forecast.hours.get(plan.day) if forecast else None
-    rest = _rain_lines(plan, hours, now_minute, saved_at)
+    rest = _rain_lines(plan, hours, now_minute, saved_at, ahead)
     rest += [line for line in (_window_line(plan, hours, now_minute, config), _caution_line(plan)) if line]
-    return _booking_lines(plan, now_minute), rest
+    booked = _booking_lines(plan, 0, "tomorrow") if ahead else _booking_lines(plan, now_minute)
+    return booked, rest
 
 
-def daily(plan: DayPlan, forecast: Forecast | None, now: datetime, config: Config) -> str:
-    """The daily post for ``plan``'s day, written at ``now``."""
-    booked, rest = _news(plan, forecast, now.hour * 60 + now.minute, config, forecast.saved_at if forecast else "")
-    lines = [f"🐕 <b>{_text(config.park_name)}</b>", ""]
+def daily(plan: DayPlan, forecast: Forecast | None, now: datetime, config: Config, ahead: bool = False) -> str:
+    """The daily post for ``plan``'s day, written at ``now``.
+
+    With ``ahead`` it is written the evening before ``plan``'s day, for the
+    Telegram bot's late alerts: the heading says "tomorrow", and the words
+    cover the whole day.
+    """
+    booked, rest = _news(plan, forecast, now.hour * 60 + now.minute, config, forecast.saved_at if forecast else "", ahead)
+    heading = f"{config.park_name}, tomorrow" if ahead else config.park_name
+    lines = [f"🐕 <b>{_text(heading)}</b>", ""]
     lines += [_text(line) for line in booked]
     lines.append("")
     lines += [_text(line) for line in rest]

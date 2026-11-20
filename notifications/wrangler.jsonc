@@ -35,27 +35,46 @@
     "CHECK_REPOSITORY": "tarasr-boop/citizens-park",
     "CHECK_WORKFLOW": "daily.yml",
     "CHECK_BRANCH": "main",
-    "CHECK_TIMES": "06:17 11:47 13:47 14:40 15:10 15:45 17:47 19:47"
+    "CHECK_TIMES": "06:17 11:47 13:47 14:40 15:10 15:45 17:47 19:47",
+    // The Telegram bot: its name for the park, and where Telegram brings what
+    // people write to it (this backend's own address). People pick an hour
+    // from BOT_FIRST to BOT_LAST, once for weekdays and once for weekends; a
+    // new chat starts with BOT_WEEKDAY and BOT_WEEKEND; an alert at
+    // BOT_EVENING or later is about the next day. The [bot] section of
+    // config.toml says the same. The bot stays off until the secret
+    // TELEGRAM_BOT_TOKEN has been handed over (see the README).
+    "PARK_NAME": "Citizens Park oval",
+    "BACKEND_URL": "https://alerts.citizensbark.com",
+    "BOT_FIRST": "04:00",
+    "BOT_LAST": "23:00",
+    "BOT_EVENING": "21:00",
+    "BOT_WEEKDAY": "16:00",
+    "BOT_WEEKEND": "08:00"
   },
 
-  // The timer: every five minutes, except from noon to 7 PM in UTC. In
-  // Melbourne that leaves out 11 PM to 6 AM during daylight saving time and
-  // 10 PM to 5 AM in winter. Either way it covers the alert's two times and
-  // every time in CHECK_TIMES with the hour and a quarter after it.
-  // Cloudflare's timers only know UTC.
-  "triggers": { "crons": ["*/5 0-11,19-23 * * *"] },
+  // The timer. The first line is every five minutes, except from noon to 7 PM
+  // in UTC. In Melbourne that leaves out 11 PM to 6 AM during daylight saving
+  // time and 10 PM to 5 AM in winter. Either way it covers the alert's two
+  // times and every time in CHECK_TIMES with the hour and a quarter after it.
+  // The second line adds the first half hour of the bot's early and late
+  // hours that the first leaves out, so that each hour from BOT_FIRST to
+  // BOT_LAST gets its look in summer and in winter. Cloudflare's timers only
+  // know UTC.
+  "triggers": { "crons": ["*/5 0-11,19-23 * * *", "0-25/5 12,13,17,18 * * *"] },
 
-  // The book of devices, and the counter behind the stats page: two objects,
-  // each with its own small database.
+  // The book of devices, the counter behind the stats page, and the Telegram
+  // bot's chats: three objects, each with its own small database.
   "durable_objects": {
     "bindings": [
       { "name": "SUBSCRIBERS", "class_name": "Subscribers" },
-      { "name": "STATS", "class_name": "Stats" }
+      { "name": "STATS", "class_name": "Stats" },
+      { "name": "CHATS", "class_name": "Chats" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Subscribers"] },
-    { "tag": "v2", "new_sqlite_classes": ["Stats"] }
+    { "tag": "v2", "new_sqlite_classes": ["Stats"] },
+    { "tag": "v3", "new_sqlite_classes": ["Chats"] }
   ],
 
   // Keep what the backend writes to its log, to look at in Cloudflare's dashboard.
