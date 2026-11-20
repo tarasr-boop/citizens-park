@@ -68,7 +68,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | The hours on the page's timeline | `day_start` and `day_end` under `[park]` in `config.toml` |
 | The tip button | `tip_url` in `config.toml`. Paste your Ko-fi link. Leave it empty to hide the button. |
 | The usual weekly pattern | `schedule.toml`. It is only used on days the council's page does not cover. |
-| The time of the daily post | `post_from` in `config.toml`, and the run times in `.github/workflows/daily.yml` |
+| The time of the daily post | `post_from` in `config.toml`, the run times in `.github/workflows/daily.yml`, and `ALERT_FROM` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 | The hours searched for the best window on a rainy day | `advice_from` and `advice_until` under `[telegram]` in `config.toml` |
 
 The **Tests** workflow runs after every change. If you get an email saying it failed, the edit probably has a typing slip, such as a missing quotation mark. Open the failed run to see which file it names.
@@ -107,6 +107,41 @@ GitHub switches off scheduled jobs in a public repository after 60 days with no 
 
 **The bot token is a password.** Never put it in a file here or in a chat. If it leaks, send `/revoke` to @BotFather, then save the new token in the `TELEGRAM_BOT_TOKEN` secret.
 
+## Notifications on a phone
+
+The page can also send the daily alert straight to a phone or a computer, as a notification, for people who do not use Telegram. Someone opens the page, presses **Get the daily alert on this phone** and allows notifications. On an iPhone or iPad the page has to be added to the Home Screen first, and the page says so when the button is pressed.
+
+This part needs one thing the rest does not: a small program that is always there, to keep the list of devices and to send the alert. It is in the `notifications/` folder and runs on Cloudflare's free plan, at <https://alerts.citizensbark.com>. Opening that address shows a few numbers: how many devices there are, and how the last alert went.
+
+How it works:
+
+- A browser gives each device an address for notifications, and the page hands that address to the backend. Nothing else is kept: no name, no email address, no location.
+- Every five minutes through the afternoon, the backend looks at the page's `data.json`. As soon as it shows that the afternoon's check has run, the backend sends that day's words to every device. If no check has run by 3:15 PM, it sends what the page has for the day, and says so if that is from an earlier day.
+- A new device gets one notification straight away, to show that it works.
+- A device that turns alerts off is removed at once. An address that has stopped working is removed the next time an alert goes out.
+- The words travel encrypted, so only the device can read them. The backend makes its own signing keys the first time it starts and never shows them, so there is no password for a person to keep.
+
+### Switching it on
+
+The backend is put on Cloudflare by the **Alerts backend** workflow. It needs two secrets, and until both exist it only runs the tests.
+
+1. In Cloudflare, open [Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages). Under **Account Details**, copy the **Account ID**.
+2. Open [Account API tokens](https://dash.cloudflare.com/?to=/:account/api-tokens) and press **Create Token**. Under **Permission policies**, open the **Custom** dropdown and choose **Edit Cloudflare Workers**. Give the token a name. For the resources it may reach, choose your account and the zone `citizensbark.com`. Create the token and copy it. Cloudflare shows it only once.
+3. In this repository, open **Settings**, **Secrets and variables**, **Actions**, and save two repository secrets: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
+4. Open **Actions**, choose **Alerts backend**, then press **Run workflow**. The run ends by asking the backend how things are. The first time, Cloudflare needs a few minutes to set up the address.
+5. Put the backend's address in `config.toml`, as `url` under `[notifications]`. The button appears on the page a minute or two later. While `url` is empty, the page has no button.
+
+**The Cloudflare token is a password.** Never put it in a file here or in a chat. If it leaks, delete it on the Account API tokens page and make a new one.
+
+### When notifications go wrong
+
+- **Nobody got today's alert.** Open <https://alerts.citizensbark.com>. `timer` shows what the backend last did and why, and `last` shows how the last alert went. "waiting for the afternoon's check" means the Daily check has not run since 2:30 PM. The alert still goes out at 3:15 PM.
+- **One phone gets nothing.** On that phone, open the page, turn the alerts off and on again. A first notification should arrive within a few seconds. On an iPhone, the page must be opened from the Home Screen icon.
+- **The button is missing.** The browser cannot show notifications, or `url` under `[notifications]` is empty.
+- **`unknownServices` is not empty.** A browser uses a notification service that the backend does not know yet. Add its name to the list in `notifications/src/rules.js` if it belongs to a real browser.
+
+Limits: the backend takes up to 5,000 devices, and sends to them forty at a time, which the free plan carries comfortably.
+
 ## Setting it up from scratch
 
 1. Make the repository public. In **Settings**, **Pages**, set the source to **GitHub Actions**.
@@ -131,8 +166,9 @@ The QR code holds the page's address. If you rename the repository or move the p
    ```
 
 3. Commit the new files in `assets/`.
+4. Change `SITE_URL` in `notifications/wrangler.jsonc` to the same address, so that the notifications backend goes on listening to the page.
 
-The tests fail while the QR code and the address do not match, so a forgotten QR code cannot go unnoticed. A QR code that was already printed keeps the old address.
+The tests fail while the QR code or the backend's settings do not match the address, so neither can be forgotten. A QR code that was already printed keeps the old address.
 
 ## For developers
 
@@ -150,6 +186,13 @@ parkbot/
   web/          the page's template, styles and script
   watchdog.py   opens and closes the [watchdog] issues
   store.py      what is remembered between runs (the data/ folder)
+notifications/  the backend that sends notifications to phones (JavaScript, runs on Cloudflare)
+  src/webpush.js   encrypts and sends one notification, the way the web standards describe
+  src/rules.js     the small decisions: the time at the park, which addresses are taken, the words
+  src/book.js      the book of devices, and the daily sending
+  src/worker.js    connects the book to Cloudflare: requests, the timer, the storage
+  test/            its tests
+  wrangler.jsonc   its settings on Cloudflare
 config.toml     settings
 schedule.toml   the usual weekly pattern
 data/           what the job remembers between runs (the job writes it)
@@ -183,6 +226,19 @@ python3 -m parkbot routes
 It asks each known server for the forecast and prints how it went. The **Tests** workflow runs it after every change.
 
 Python 3.11 or newer is needed. The job itself installs nothing.
+
+The notifications backend has its own tests, which need Node 22.12 or newer:
+
+```
+cd notifications
+npm ci
+npm test
+npm run runtime
+```
+
+`npm test` runs the backend with stand-ins for Cloudflare, the notification services and the page. A stand-in phone decrypts every notification, to check that the words arrive. `npm run runtime` bundles the code the way a deploy does and runs it in `workerd`, the program that runs it on Cloudflare's servers. Both run in the **Tests** workflow after every change.
+
+The tools are pinned to exact versions in `notifications/package.json`. To move to a newer `wrangler`, change its version there, set `miniflare` to the version that `wrangler` asks for, and run `npm install` in that folder. The code in `notifications/src/` uses no package at all.
 
 ## Sources and credit
 
