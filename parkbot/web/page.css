@@ -104,7 +104,8 @@ ol, ul { padding: 0; list-style: none; }
 .kicker { font-size: 0.92rem; font-weight: 600; color: var(--muted); }
 .hero h1 {
   margin: 0.2rem 0 0.35rem;
-  font-size: clamp(2rem, 9.5vw, 2.9rem);
+  /* Sized so that a line such as "Booked until 7:30 PM" fits across a phone. */
+  font-size: clamp(1.45rem, 7.6vw, 2.3rem);
   line-height: 1.05;
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -359,10 +360,11 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 }
 .fold-body { padding: 0 1.2rem 1.2rem; }
 .fold-body p + p { margin-top: 0.7rem; }
+.fold-body .button { margin-top: 1rem; }
 .share-body { text-align: center; }
-.share-body img { width: min(14rem, 70%); height: auto; padding: 0.6rem; border-radius: 12px; background: #fff; }
+.share-body .button { margin-top: 0; }
+.share-body img { display: block; width: min(14rem, 70%); height: auto; margin: 1rem auto 0; padding: 0.6rem; border-radius: 12px; background: #fff; }
 .share-body p { margin-top: 0.6rem; font-size: 0.95rem; }
-.share-body .button { margin-top: 0.9rem; }
 .share-address { overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
 
 .foot { margin: 1.4rem 0.25rem 0; font-size: 0.86rem; color: var(--muted); }

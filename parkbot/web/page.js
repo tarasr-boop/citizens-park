@@ -118,13 +118,16 @@
   }
 
   // ---- The answer at the top ----
+  //
+  // One line that says how things stand and until when. A second line only
+  // where there is something the first cannot say.
 
   function answer(day, minute) {
     var sure = day.basis === "council";
     if (day.closed) {
       return {
         state: "closed",
-        title: "Oval closed today",
+        title: "Closed today",
         sub: day.label ? "Council notice: " + day.label : "The council has closed the oval."
       };
     }
@@ -142,33 +145,17 @@
     if (current) {
       return {
         state: "booked",
-        title: sure ? "Booked right now" : "Usually booked now",
-        sub: (sure ? "Until " : "Usually until ") + clock(current[1]) + (day.label ? " (" + day.label + ")." : "."),
-        rule: "Dogs must stay off the oval while sport or training is on."
+        title: (sure ? "Booked until " : "Usually booked until ") + clock(current[1]),
+        rule: "Dogs must stay off the oval while an activity is on."
       };
     }
     if (!day.slots.length && day.label) {
       return { state: "unknown", title: day.label + " listed today", sub: "The oval may be closed. Check the signs at the park." };
     }
-    if (next) {
-      return {
-        state: "free",
-        title: sure ? "Free for dogs right now" : "Probably free right now",
-        sub: (sure ? "Until " : "Usually until ") + clock(next[0]) + ", then booked to " + clock(next[1]) + "."
-      };
-    }
-    if (day.slots.length) {
-      return {
-        state: "free",
-        title: sure ? "Free for the rest of today" : "Probably free for the rest of today",
-        sub: sure ? "Today's bookings have finished." : "The usual booking time has passed."
-      };
-    }
-    return {
-      state: "free",
-      title: sure ? "Free for dogs all day" : "Probably free all day",
-      sub: sure ? "No bookings today." : "There is usually no booking on this day."
-    };
+    if (next) return { state: "free", title: (sure ? "Free until " : "Probably free until ") + clock(next[0]) };
+    // Today's bookings are over.
+    if (day.slots.length) return { state: "free", title: sure ? "Free until tomorrow" : "Probably free until tomorrow" };
+    return { state: "free", title: sure ? "Free all day" : "Probably free all day" };
   }
 
   // Where today's answer comes from, as a link to that source: the council's
@@ -200,7 +187,7 @@
       '<section class="hero" data-state="' + found.state + '">' +
       '<p class="kicker">' + esc(checkedText(now) || day.name) + "</p>" +
       "<h1>" + esc(found.title) + "</h1>" +
-      '<p class="sub">' + esc(found.sub) + "</p>" +
+      (found.sub ? '<p class="sub">' + esc(found.sub) + "</p>" : "") +
       (found.rule ? '<p class="rule">' + esc(found.rule) + "</p>" : "") +
       pillHtml(day) +
       (day.why ? '<p class="why">' + esc(day.why) + "</p>" : "") +
@@ -584,7 +571,9 @@
 
       function show(isOn) {
         on = isOn;
-        notify.textContent = (isOn ? "Turn off alerts on this " : "Get the daily alert on this ") + device;
+        notify.textContent = (isOn ? "Turn off alerts on this " : "Get alerts on this ") + device;
+        // Only the offer is the filled button. Turning alerts off should not be the loudest thing on the page.
+        if (notify.classList) notify.classList.toggle("primary", !isOn);
       }
 
       function setBusy(isBusy) {

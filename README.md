@@ -68,6 +68,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | The "About me" block | `text`, `link` and `link_text` under `[about]` in `config.toml`. Leave `text` empty to hide the block. |
 | The hours on the page's timeline | `day_start` and `day_end` under `[park]` in `config.toml` |
 | The tip button | `tip_url` in `config.toml`. Paste your Ko-fi link. Leave it empty to hide the button. |
+| The feedback button in "How this works" | `feedback_email` under `[site]` in `config.toml`. It opens an email to that address, which anyone can then read on the page. Leave it empty to hide the button. |
 | The usual weekly pattern | `schedule.toml`. It is only used on days the council's page does not cover. |
 | The time of the daily post | `post_from` in `config.toml`, the run times in `.github/workflows/daily.yml`, and `ALERT_FROM` and `CHECK_TIMES` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 | The hours searched for the best window on a rainy day | `advice_from` and `advice_until` under `[telegram]` in `config.toml` |
@@ -110,7 +111,7 @@ GitHub switches off scheduled jobs in a public repository after 60 days with no 
 
 ## Notifications on a phone
 
-The page can also send the daily alert straight to a phone or a computer, as a notification, for people who do not use Telegram. Someone opens the page, presses **Get the daily alert on this phone** and allows notifications. On an iPhone or iPad the page has to be added to the Home Screen first, and the page says so when the button is pressed.
+The page can also send the daily alert straight to a phone or a computer, as a notification, for people who do not use Telegram. Someone opens the page, presses **Get alerts on this phone** and allows notifications. On an iPhone or iPad the page has to be added to the Home Screen first, and the page says so when the button is pressed.
 
 This part needs one thing the rest does not: a small program that is always there, to keep the list of devices and to send the alert. It is in the `notifications/` folder and runs on Cloudflare's free plan, at <https://alerts.citizensbark.com>. Opening that address shows a few numbers: how many devices there are, and how the last alert went.
 
