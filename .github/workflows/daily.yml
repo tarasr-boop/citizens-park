@@ -59,11 +59,14 @@ jobs:
     name: Check, post and build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      page: ${{ steps.check.outputs.page }}
     steps:
       - name: Get the code
         uses: actions/checkout@v7
 
       - name: Run the check
+        id: check
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -95,15 +98,16 @@ jobs:
           exit 1
 
       - name: Package the page
-        if: ${{ !cancelled() && hashFiles('site/index.html') != '' }}
+        if: ${{ !cancelled() && steps.check.outputs.page == 'ready' }}
         uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
+  # Runs whenever a page was built, even if a later step of the check failed.
   publish:
     name: Publish the page
     needs: check
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.check.outputs.page == 'ready' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:

@@ -46,6 +46,9 @@ class DayRain:
 class Forecast:
     hours: dict[date, list[HourRain]] = field(default_factory=dict)
     days: dict[date, DayRain] = field(default_factory=dict)
+    # Set when this is an earlier forecast standing in for one that would not load:
+    # the words to show people, such as "11:50 AM" or "9 PM yesterday".
+    saved_at: str = ""
 
 
 @dataclass(frozen=True)

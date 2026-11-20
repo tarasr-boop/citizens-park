@@ -260,6 +260,7 @@
     return (
       '<div class="rain">' +
       (look ? '<p class="rain-text">' + esc(look.text) + "</p>" : "") +
+      (data.rainFrom ? '<p class="rain-caption">Forecast from ' + esc(data.rainFrom) + ".</p>" : "") +
       '<div class="rain-bars" role="img" aria-label="Chance of rain for each hour, highest ' + top + ' percent">' + bars + "</div>" +
       '<p class="rain-caption">Chance of rain by the hour, ' + clock(firstHour * 60) + " to " + clock((lastHour + 1) * 60) + ". A full-height bar is 100%.</p>" +
       "</div>"

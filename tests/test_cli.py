@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -201,6 +203,85 @@ class RunTest(unittest.TestCase):
         self.world.run("2026-11-21T14:45")
         self.assertEqual(self.world.state().weather_failures, 2)
 
+    def wet_evening(self) -> str:
+        """A forecast for 20 November with rain between 5 and 8 PM."""
+        return forecast_json(
+            date(2026, 11, 20),
+            8,
+            chance=lambda day, hour: 80 if 17 <= hour <= 19 else 5,
+            mm=lambda day, hour: 1.0 if 17 <= hour <= 19 else 0.0,
+        )
+
+    def forecast_copy(self) -> Path:
+        return Path(self._folder.name) / "data" / "forecast.json"
+
+    def test_a_forecast_that_will_not_load_falls_back_to_the_last_one(self):
+        self.world.forecast = self.wet_evening()
+        self.world.run("2026-11-20T11:50")  # a good read at lunchtime
+        self.world.forecast = fetch.FetchError("could not connect (The handshake operation timed out)")
+        self.assertEqual(self.world.run("2026-11-20T14:45"), 0)
+        text = self.world.sent[0]["text"]
+        self.assertIn("🌧 Rain likely between 5 PM and 8 PM (up to 80%, about 3 mm). Forecast from 11:50 AM.", text)
+        self.assertIn("using the copy saved at 11:50 AM", self.world.said())
+        # The failure is still counted, so the watchdog hears about it if it goes on.
+        self.assertEqual(self.world.state().weather_failures, 1)
+        data = json.loads((Path(self._folder.name) / "site" / "data.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["rainFrom"], "11:50 AM")
+        self.assertEqual(data["days"][0]["rain"]["chance"], 80)
+
+    def test_a_fresh_forecast_carries_no_such_note(self):
+        self.world.forecast = self.wet_evening()
+        self.world.run("2026-11-20T14:45")
+        self.assertNotIn("Forecast from", self.world.sent[0]["text"])
+        data = json.loads((Path(self._folder.name) / "site" / "data.json").read_text(encoding="utf-8"))
+        self.assertIsNone(data["rainFrom"])
+
+    def test_a_copy_from_last_night_says_so(self):
+        self.world.forecast = forecast_json(date(2026, 11, 20), 8, chance=lambda day, hour: 90, mm=lambda day, hour: 0.5)
+        self.world.run("2026-11-20T21:30")
+        self.world.forecast = fetch.FetchError("timed out")
+        self.world.run("2026-11-21T06:20", post="force")
+        self.assertIn("Forecast from 9:30 PM yesterday.", self.world.sent[0]["text"])
+        self.assertIn("Rain likely", self.world.sent[0]["text"])
+
+    def test_a_forecast_copy_older_than_half_a_day_is_not_used(self):
+        self.world.forecast = self.wet_evening()
+        self.world.run("2026-11-20T06:20")
+        self.world.forecast = fetch.FetchError("timed out")
+        self.world.run("2026-11-20T18:21", post="force")  # twelve hours and one minute later
+        self.assertIn("No rain forecast available.", self.world.sent[0]["text"])
+        self.assertNotIn("Forecast from", self.world.sent[0]["text"])
+
+    def test_the_forecast_copy_is_replaced_only_every_couple_of_hours(self):
+        self.world.run("2026-11-20T11:50")
+        first = self.forecast_copy().read_text(encoding="utf-8")
+        self.assertIn('"fetched": "2026-11-20T11:50+11:00"', first)
+        self.world.run("2026-11-20T12:30")  # too soon: nothing new to save
+        self.assertEqual(self.forecast_copy().read_text(encoding="utf-8"), first)
+        self.world.run("2026-11-20T14:45")
+        self.assertIn('"fetched": "2026-11-20T14:45+11:00"', self.forecast_copy().read_text(encoding="utf-8"))
+        self.world.run("2026-11-20T15:15")
+        self.world.run("2026-11-20T15:50")
+        self.assertIn('"fetched": "2026-11-20T14:45+11:00"', self.forecast_copy().read_text(encoding="utf-8"))
+
+    def test_a_failed_forecast_never_replaces_the_copy(self):
+        self.world.run("2026-11-20T06:20")
+        first = self.forecast_copy().read_text(encoding="utf-8")
+        self.world.forecast = "{broken"
+        self.world.run("2026-11-20T11:50")
+        self.assertEqual(self.forecast_copy().read_text(encoding="utf-8"), first)
+        self.assertIn("using the copy saved at 6:20 AM", self.world.said())
+
+    def test_a_damaged_forecast_copy_is_ignored(self):
+        for damaged in ("{not json", '{"fetched": "soon", "reply": "{}"}', '{"fetched": "2026-11-20T11:50+11:00", "reply": "{broken"}'):
+            with self.subTest(damaged=damaged):
+                self.forecast_copy().parent.mkdir(parents=True, exist_ok=True)
+                self.forecast_copy().write_text(damaged, encoding="utf-8")
+                self.world.forecast = fetch.FetchError("timed out")
+                self.world.sent.clear()
+                self.assertEqual(self.world.run("2026-11-20T14:45", post="force"), 0)
+                self.assertIn("No rain forecast available.", self.world.sent[0]["text"])
+
     def test_tracks_how_long_the_council_page_has_lagged(self):
         self.world.run("2026-11-20T14:45")
         self.assertEqual(self.world.state().uncovered_since, date(2026, 11, 20))
@@ -234,6 +315,7 @@ class RunTest(unittest.TestCase):
         state = self.world.state()
         self.assertEqual((state.council_failures, state.weather_failures), (0, 0))
         self.assertIn("not checked (offline)", self.world.said())
+        self.assertFalse((Path(self._folder.name) / "data" / "forecast.json").exists())
 
     def test_bad_config_stops_the_run(self):
         bad = Path(self._folder.name) / "config.toml"
@@ -243,8 +325,10 @@ class RunTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    def test_command_line_wiring(self):
-        with tempfile.TemporaryDirectory() as folder:
+    def test_the_command_builds_the_page_from_the_real_settings(self):
+        # The same command the scheduled job runs, with the repository's own
+        # config.toml and schedule.toml, but offline and without posting.
+        with tempfile.TemporaryDirectory() as folder, contextlib.redirect_stdout(io.StringIO()) as printed:
             code = cli.main(
                 [
                     "run", "--post", "never", "--offline", "--now", "2026-11-20T14:45",
@@ -252,7 +336,8 @@ class MainTest(unittest.TestCase):
                     "--assets", str(ROOT / "assets"), "--data", f"{folder}/data", "--site", f"{folder}/site",
                 ]  # fmt: skip
             )
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 0, printed.getvalue())
+            self.assertIn("----- today's post -----", printed.getvalue())
             self.assertTrue(Path(folder, "site", "index.html").exists())
             self.assertTrue(Path(folder, "site", "qr.svg").exists())
 

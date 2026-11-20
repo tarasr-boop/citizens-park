@@ -62,9 +62,11 @@ def _booking_lines(plan: DayPlan, now_minute: int, lights_off: int) -> list[str]
     return lines
 
 
-def _rain_lines(plan: DayPlan, hours: list[HourRain] | None, now_minute: int) -> list[str]:
+def _rain_lines(plan: DayPlan, hours: list[HourRain] | None, now_minute: int, saved_at: str = "") -> list[str]:
     look = outlook(hours, now_minute)
     lines = [f"{_RAIN_ICONS[look.level]} {look.text}"]
+    if hours and saved_at:
+        lines[0] += f" Forecast from {_text(saved_at)}."
     if not hours or plan.closed:
         return lines
 
@@ -98,7 +100,7 @@ def daily(plan: DayPlan, forecast: Forecast | None, now: datetime, config: Confi
     lines = [f"🐕 <b>{_text(config.park_name)} · {short_date(plan.day)}</b>", ""]
     lines += _booking_lines(plan, now_minute, config.lights_off)
     lines.append("")
-    lines += _rain_lines(plan, hours, now_minute)
+    lines += _rain_lines(plan, hours, now_minute, forecast.saved_at if forecast else "")
     source = _source_line(plan)
     if source:
         lines.append(source)

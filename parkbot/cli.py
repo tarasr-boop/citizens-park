@@ -3,7 +3,7 @@
 One run does everything, in this order:
 
 1. read the council's page (keeping the last good copy if that fails)
-2. get the rain forecast
+2. get the rain forecast (falling back to the last one that loaded)
 3. work out today and the week ahead
 4. build the public page
 5. post to Telegram, if a channel is set, it is time and today's post has not gone out yet
@@ -20,18 +20,24 @@ import os
 import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import council, fetch, message, site, telegram, watchdog, weather
 from .config import ConfigError, load as load_config
 from .pattern import ScheduleError, load_seasons
 from .status import long_date, plan_days, short_date
-from .store import CouncilStore, State
+from .store import CouncilStore, ForecastCopy, State
 from .timeparse import clock
 
 # Today plus the seven days after it: enough for the page and the Sunday week-ahead post.
 DAYS_AHEAD = 8
+
+# The last forecast that loaded is kept in data/forecast.json. If the weather service
+# does not answer, a copy up to this old stands in, and the post says when it is from.
+FORECAST_COPY_MAX_AGE = timedelta(hours=12)
+# A fresh forecast replaces the copy only this often, to keep the saved data quiet.
+FORECAST_KEEP_EVERY = timedelta(hours=2)
 
 
 @dataclass
@@ -51,6 +57,12 @@ def _local_time(text: str, zone) -> datetime:
     except ValueError as error:
         raise SystemExit(f"--now should look like 2026-11-20T14:45, got {text!r}") from error
     return moment.replace(tzinfo=zone) if moment.tzinfo is None else moment.astimezone(zone)
+
+
+def _unexpected(error: BaseException) -> str:
+    """A short, safe description of an error nobody planned for."""
+    words = str(error).strip().splitlines()[0][:200] if str(error).strip() else ""
+    return f"{type(error).__name__}: {words}" if words else type(error).__name__
 
 
 def _append(path: str | None, text: str) -> None:
@@ -106,10 +118,13 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
                 say("::endgroup::" if on_github else "--- end ---")
         try:
             page = council.parse(html, today, zone)
+            store.update(page, today)
         except council.CouncilPageError as error:
             council_problem = f"the page loaded, but its booking table could not be read: {error}"
+        except Exception as error:  # noqa: BLE001 - a surprise in the page must not stop today's post
+            say(traceback.format_exc())
+            council_problem = f"the page loaded, but reading it failed unexpectedly ({_unexpected(error)})"
         else:
-            store.update(page, today)
             for warning in page.warnings:
                 warn(f"Council page: {warning}")
 
@@ -134,14 +149,16 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     forecast: weather.Forecast | None = None
     weather_problem = ""
     forecast_text: str | None = None
+    live = not options.weather_file and not options.offline
     if options.weather_file:
         forecast_text = Path(options.weather_file).read_text(encoding="utf-8", errors="replace")
-    elif not options.offline:
+    elif live:
         try:
             forecast_text = tools.fetch(
                 weather.url(config.latitude, config.longitude, config.timezone_name, DAYS_AHEAD),
                 config.user_agent,
                 accept="application/json",
+                timeout=15,
             )
         except fetch.FetchError as error:
             weather_problem = f"the forecast could not be fetched: {error}"
@@ -152,6 +169,9 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
             forecast = weather.parse(forecast_text)
         except weather.WeatherError as error:
             weather_problem = str(error)
+        except Exception as error:  # noqa: BLE001 - the post goes out without rain rather than not at all
+            say(traceback.format_exc())
+            weather_problem = f"reading the forecast failed unexpectedly ({_unexpected(error)})"
 
     if forecast_text is None and not weather_problem:
         say("Rain forecast: not checked (offline)")
@@ -166,6 +186,25 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
         state.weather_error = ""
         say("Rain forecast: read")
         summary.append("- Rain forecast: read")
+
+    if live:
+        copy = ForecastCopy.load(data_dir / "forecast.json")
+        age = now - copy.fetched if copy.fetched else None
+        if forecast is not None:
+            # Keep this one for a later run that gets no answer. Not on every run, so
+            # that the afternoon's backup runs leave nothing new to save.
+            if age is None or age < timedelta(0) or age >= FORECAST_KEEP_EVERY:
+                ForecastCopy(now, forecast_text or "").save(data_dir / "forecast.json")
+        elif age is not None and timedelta(0) <= age <= FORECAST_COPY_MAX_AGE:
+            try:
+                forecast = weather.parse(copy.reply)
+            except Exception:  # noqa: BLE001 - a bad copy is the same as no copy
+                forecast = None
+            else:
+                taken = copy.fetched.astimezone(zone)
+                forecast.saved_at = clock(taken.hour * 60 + taken.minute) + ("" if taken.date() == today else " yesterday")
+                say(f"Rain forecast: using the copy saved at {forecast.saved_at}")
+                summary.append(f"- Rain forecast: using the copy saved at {forecast.saved_at}")
 
     # ---- 3. Today and the week ahead ----
     plans = plan_days(today, DAYS_AHEAD, store, seasons, config.day_start, config.lights_off)
@@ -218,10 +257,14 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     else:
         try:
             tools.send(token, config.channel, text)
-        except telegram.TelegramError as error:
-            state.telegram_error = str(error)
-            problems.append(f"The Telegram post failed: {error}")
-            summary.append(f"- Telegram: **failed**, {error}")
+        except Exception as error:  # noqa: BLE001 - everything after this must still happen
+            # Only a TelegramError's own words are safe to repeat. state.json is public,
+            # so anything else is reduced to its type, and the token is blanked regardless.
+            reason = str(error) if isinstance(error, telegram.TelegramError) else f"unexpected {type(error).__name__}"
+            reason = reason.replace(token, "[token]")
+            state.telegram_error = reason
+            problems.append(f"The Telegram post failed: {reason}")
+            summary.append(f"- Telegram: **failed**, {reason}")
         else:
             state.last_daily_post = today
             state.telegram_error = ""
@@ -234,9 +277,11 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     if token and config.channel and weekly_due and options.post != "never":
         try:
             tools.send(token, config.channel, message.weekly(plans[1:], forecast, config), silent=True)
-        except telegram.TelegramError as error:
-            problems.append(f"The week-ahead post failed: {error}")
-            summary.append(f"- Week-ahead post: **failed**, {error}")
+        except Exception as error:  # noqa: BLE001
+            reason = str(error) if isinstance(error, telegram.TelegramError) else f"unexpected {type(error).__name__}"
+            reason = reason.replace(token, "[token]")
+            problems.append(f"The week-ahead post failed: {reason}")
+            summary.append(f"- Week-ahead post: **failed**, {reason}")
         else:
             state.last_weekly_post = today
             say("Telegram: week-ahead post sent")

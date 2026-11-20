@@ -43,7 +43,8 @@ jobs:
       - name: Show what was read
         if: ${{ !cancelled() }}
         run: |
-          echo "----- council.json -----"
-          cat "$RUNNER_TEMP/data/council.json" || true
+          echo "----- council.json (start) -----"
+          head -c 1500 "$RUNNER_TEMP/data/council.json" || true
+          echo
           echo "----- data.json (start) -----"
-          head -c 3000 "$RUNNER_TEMP/site/data.json" || true
+          head -c 1500 "$RUNNER_TEMP/site/data.json" || true

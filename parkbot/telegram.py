@@ -7,10 +7,15 @@ file, a log line or an error message.
 
 from __future__ import annotations
 
+import http.client
 import json
+import re
 import time
 import urllib.error
 import urllib.request
+
+# What a bot token looks like: the bot's number, a colon, then letters, digits, "_" and "-".
+_TOKEN_SHAPE = re.compile(r"\d+:[A-Za-z0-9_-]+")
 
 
 class TelegramError(Exception):
@@ -33,6 +38,12 @@ def send(token: str, channel: str, text: str, silent: bool = False, timeout: flo
     """Send ``text`` (Telegram HTML) to ``@channel``. Returns the new message's id."""
     if not token:
         raise TelegramError("no bot token: add the TELEGRAM_BOT_TOKEN secret")
+    if not _TOKEN_SHAPE.fullmatch(token):
+        # Checked here so that a mangled token can never end up inside an error about a bad address.
+        raise TelegramError(
+            "the TELEGRAM_BOT_TOKEN secret does not look like a bot token (digits, a colon, then letters and digits): "
+            "copy it again from @BotFather"
+        )
     if not channel:
         raise TelegramError("no channel: set telegram.channel in config.toml")
 
@@ -58,6 +69,8 @@ def send(token: str, channel: str, text: str, silent: bool = False, timeout: flo
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 reply = json.loads(response.read().decode("utf-8"))
+            if not isinstance(reply, dict):
+                raise ValueError("the reply is not a JSON object")
             if reply.get("ok"):
                 return int(reply["result"]["message_id"])
             raise TelegramError(_explain(str(reply.get("description") or "Telegram said no")))
@@ -66,9 +79,12 @@ def send(token: str, channel: str, text: str, silent: bool = False, timeout: flo
                 reply = json.loads(error.read().decode("utf-8"))
             except (ValueError, OSError):
                 reply = {}
+            if not isinstance(reply, dict):
+                reply = {}
             description = str(reply.get("description") or f"HTTP {error.code}")
             if error.code == 429:
-                retry_after = (reply.get("parameters") or {}).get("retry_after")
+                parameters = reply.get("parameters")
+                retry_after = parameters.get("retry_after") if isinstance(parameters, dict) else None
                 wait = min(float(retry_after), 30.0) if isinstance(retry_after, (int, float)) else wait
                 problem = description
             elif error.code >= 500:
@@ -76,12 +92,16 @@ def send(token: str, channel: str, text: str, silent: bool = False, timeout: flo
             else:
                 raise TelegramError(_explain(description)) from None
         except urllib.error.URLError as error:
+            # The connection was never made, so nothing was sent and trying again is safe.
             # Never include the request address here: it holds the token.
             problem = f"could not reach Telegram ({type(error.reason).__name__})"
         except TimeoutError:
             # The message may or may not have gone out. Do not send it again now,
             # or the channel could get it twice; the next scheduled run decides.
             raise TelegramError("Telegram did not answer in time") from None
+        except (OSError, http.client.HTTPException) as error:
+            # The line dropped part-way through. Same doubt as above, so same caution.
+            raise TelegramError(f"the connection to Telegram broke part-way ({type(error).__name__})") from None
         except (ValueError, KeyError, TypeError):
             raise TelegramError("Telegram sent a reply that could not be understood") from None
         if attempt < tries:

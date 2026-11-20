@@ -177,3 +177,33 @@ class State:
                 "uncovered_since": iso(self.uncovered_since),
             },
         )
+
+
+@dataclass
+class ForecastCopy:
+    """The last forecast that arrived, kept for a run when the weather service does not answer."""
+
+    fetched: datetime | None = None  # local time, with its time zone
+    reply: str = ""  # the weather service's reply, exactly as it came
+
+    @classmethod
+    def load(cls, path: str | Path) -> "ForecastCopy":
+        raw = _read_json(Path(path))
+        try:
+            fetched = datetime.fromisoformat(str(raw.get("fetched")))
+        except ValueError:
+            return cls()
+        reply = raw.get("reply")
+        if fetched.tzinfo is None or not isinstance(reply, str) or not reply:
+            return cls()
+        return cls(fetched, reply)
+
+    def save(self, path: str | Path) -> None:
+        _write_json(
+            Path(path),
+            {
+                "about": "The last rain forecast that loaded, as Open-Meteo sent it. Written by the daily job; do not edit.",
+                "fetched": self.fetched.isoformat(timespec="minutes") if self.fetched else None,
+                "reply": self.reply,
+            },
+        )

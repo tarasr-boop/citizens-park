@@ -60,6 +60,8 @@ def page_data(config: Config, plans: list[DayPlan], forecast: Forecast | None, s
         "site": config.site_url,
         "dayStart": config.day_start,
         "lightsOff": config.lights_off,
+        # Set when the weather service did not answer and an earlier forecast stands in.
+        "rainFrom": (forecast.saved_at or None) if forecast else None,
         "council": {
             "lastRead": store.last_read.isoformat() if store.last_read else None,
             "pageModified": store.page_modified.isoformat() if store.page_modified else None,
