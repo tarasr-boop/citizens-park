@@ -215,8 +215,8 @@ def build(
             "actions": _actions(config),
             "fallback": fallback(plans, now),
             "css": (WEB / "page.css").read_text(encoding="utf-8"),
-            # "</" must not appear inside a script block.
-            "data": json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/"),
+            # No "<" may appear inside the data block, or words from outside could end it early.
+            "data": json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c"),
             "js": (WEB / "page.js").read_text(encoding="utf-8"),
         },
     )

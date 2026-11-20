@@ -45,6 +45,21 @@ _DAY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A month named straight after the day number, as the council writes the days that
+# belong to the month before or after: "27 (October)". Without brackets it only
+# counts when nothing but a time follows, so "1 May be closed" keeps its words.
+_CELL_MONTH_RE = re.compile(
+    rf"^\s*(?:[(\[]\s*({_MONTH_NAMES})\.?\s*[)\]]|({_MONTH_NAMES})\b\.?(?=\s*(?:$|\d|[,:;\-–—])))[\s,:;\-–—]*",
+    re.IGNORECASE,
+)
+
+# Words that mean "nothing is booked", which is good news rather than a label to show.
+_NO_BOOKING_RE = re.compile(
+    r"^\W*(?:no\s+(?:bookings?|booking\s+today|training|sessions?|hire|events?|sport)|not\s+booked|nothing\s+booked|"
+    r"none|nil|unbooked)\W*$",
+    re.IGNORECASE,
+)
+
 _BLOCK_TAGS = {
     "address", "article", "aside", "blockquote", "caption", "dd", "div", "dl", "dt",
     "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
@@ -284,6 +299,7 @@ class _DayCell:
     weekday: int
     row: int
     rest: str
+    month: int | None = None  # set when the cell names its own month: "27 (October)"
 
 
 def _day_cells(table: _Table) -> list[_DayCell]:
@@ -304,8 +320,15 @@ def _day_cells(table: _Table) -> list[_DayCell]:
             if not match:
                 continue
             day = int(match.group(1))
-            if 1 <= day <= 31:
-                cells.append(_DayCell(day, columns[index], row_number, text[match.end() :].strip()))
+            if not 1 <= day <= 31:
+                continue
+            rest = text[match.end() :]
+            month = None
+            named = _CELL_MONTH_RE.match(rest)
+            if named:
+                month = MONTHS[(named.group(1) or named.group(2)).lower()]
+                rest = rest[named.end() :]
+            cells.append(_DayCell(day, columns[index], row_number, rest.strip(), month))
     return cells
 
 
@@ -332,7 +355,12 @@ def _assign_dates(cells: list[_DayCell], year: int, month: int) -> tuple[list[tu
     last_day = 0
     wrapped = False
     for i, cell in enumerate(cells):
-        if first_one is not None and i < first_one and cell.day >= 20 and cell.row == first_row:
+        if cell.month is not None:
+            # The cell says which month it belongs to, so there is nothing to work out.
+            choices = [choice for choice in (before, (year, month), after) if choice[1] == cell.month]
+            if choices == [after]:
+                wrapped = True
+        elif first_one is not None and i < first_one and cell.day >= 20 and cell.row == first_row:
             choices = [before, (year, month)]
         elif wrapped or (last_day and cell.day < last_day):
             wrapped = True
@@ -577,6 +605,8 @@ def parse(html: str, today: date, zone: tzinfo | None = None) -> CouncilPage:
         page.months.append((year, month))
         for found, cell in dated:
             slots, label = find_slots(cell.rest)
+            if _NO_BOOKING_RE.match(label):
+                label = ""  # "No Bookings": an empty day, said out loud
             previous = page.days.get(found)
             if previous:  # the same day listed twice: keep everything
                 slots = sorted(set(previous.slots) | set(slots))

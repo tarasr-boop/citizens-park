@@ -64,7 +64,97 @@ class OctoberPageTest(unittest.TestCase):
         self.assertIn("turf improvement works", closure.text)
 
 
+class NovemberLivePageTest(unittest.TestCase):
+    """The booking table exactly as the council's page had it on 20 November 2026."""
+
+    def setUp(self):
+        html = (FIXTURES / "council_november_2026.html").read_text(encoding="utf-8")
+        self.page = parse(html, TODAY)
+
+    def test_reads_the_month_without_complaint(self):
+        self.assertEqual(self.page.months, [(2026, 11)])
+        self.assertEqual(self.page.warnings, [])
+
+    def test_covers_november_and_the_october_days_in_its_first_row(self):
+        self.assertEqual(len(self.page.days), 35)
+        self.assertEqual(min(self.page.days), date(2026, 10, 27))
+        self.assertEqual(max(self.page.days), date(2026, 11, 30))
+
+    def test_a_day_marked_with_another_month_keeps_its_times_and_no_label(self):
+        entry = self.page.days[date(2026, 10, 27)]  # written as "27 (October)"
+        self.assertEqual([slot.to_text() for slot in entry.slots], ["16:15-19:30"])
+        self.assertEqual(entry.label, "")
+        self.assertEqual(slots(self.page, date(2026, 10, 31)), ["10:00-18:00"])
+
+    def test_no_bookings_is_an_empty_day_not_a_label(self):
+        entry = self.page.days[date(2026, 11, 2)]
+        self.assertEqual((entry.slots, entry.label), ((), ""))
+
+    def test_reads_the_weekly_pattern(self):
+        self.assertEqual(slots(self.page, date(2026, 11, 1)), ["11:00-17:00"])  # Sunday
+        self.assertEqual(slots(self.page, date(2026, 11, 9)), ["16:00-17:00"])  # Monday
+        self.assertEqual(slots(self.page, date(2026, 11, 19)), ["17:15-19:30"])  # Thursday
+        self.assertEqual(slots(self.page, date(2026, 11, 20)), ["16:00-20:00"])  # Friday
+        self.assertEqual(slots(self.page, date(2026, 11, 21)), ["10:00-18:00"])  # Saturday
+
+    def test_a_one_off_change_is_kept(self):
+        # One Tuesday runs an hour later than the others.
+        self.assertEqual(slots(self.page, date(2026, 11, 17)), ["16:15-20:30"])
+        self.assertEqual(slots(self.page, date(2026, 11, 24)), ["16:15-19:30"])
+
+    def test_no_closure_notice(self):
+        self.assertEqual(self.page.closures, [])
+
+
 class MarkupVariationsTest(unittest.TestCase):
+    def test_a_cell_can_name_its_own_month(self):
+        rows = [
+            ["30 (November) 4pm-5pm", "1 4:15pm-7:30pm", "2", "3", "4", "5", "6"],
+            ["7", "8", "9", "10", "11", "12", "13"],
+            ["14", "15", "16", "17", "18", "19", "20"],
+            ["21", "22", "23", "24", "25", "26", "27"],
+            ["28", "29", "30", "31", "1 (January) 9am-10am", "2 Jan", "3 [Jan] 11am-5pm"],
+        ]
+        page = parse(grid(rows, "<h2>December 2026</h2>"), TODAY)
+        self.assertEqual(page.months, [(2026, 12)])
+        self.assertEqual(page.warnings, [])
+        self.assertEqual(slots(page, date(2026, 11, 30)), ["16:00-17:00"])
+        self.assertEqual(page.days[date(2026, 11, 30)].label, "")
+        self.assertEqual(slots(page, date(2026, 12, 1)), ["16:15-19:30"])
+        self.assertEqual(slots(page, date(2027, 1, 1)), ["09:00-10:00"])
+        self.assertEqual(page.days[date(2027, 1, 2)], page.days[date(2026, 12, 2)])  # both empty, no label
+        self.assertEqual(slots(page, date(2027, 1, 3)), ["11:00-17:00"])
+        self.assertEqual(len(page.days), 35)
+
+    def test_a_cell_month_that_contradicts_the_calendar_is_skipped(self):
+        rows = [
+            ["", "", "", "1", "2", "3", "4"],
+            ["5", "6", "7", "8 (March) 4pm-5pm", "9", "10", "11"],
+            ["12", "13", "14", "15", "16", "17", "18"],
+        ]
+        page = parse(grid(rows, "<h2>October 2026</h2>"), TODAY)
+        self.assertNotIn(date(2026, 10, 8), page.days)
+        self.assertNotIn(date(2026, 3, 8), page.days)
+        self.assertTrue(any("did not fit the calendar" in warning for warning in page.warnings))
+        self.assertEqual(len(page.days), 17)
+
+    def test_a_word_that_only_looks_like_a_month_stays_a_label(self):
+        rows = [["", "", "", "", "1 May be closed", "2", "3"], ["4", "5", "6", "7", "8", "9", "10"]]
+        page = parse(grid(rows, "<h2>May 2026</h2>"), TODAY)
+        self.assertEqual(page.days[date(2026, 5, 1)].label, "May be closed")
+
+    def test_ways_of_saying_nothing_is_booked(self):
+        rows = [
+            ["", "", "", "1 No bookings", "2 no booking", "3 None", "4 Not booked"],
+            ["5 No access", "6 Maintenance", "7 No training", "8", "9", "10", "11"],
+        ]
+        page = parse(grid(rows, "<h2>October 2026</h2>"), TODAY)
+        for day in (1, 2, 3, 4, 7):
+            self.assertEqual(page.days[date(2026, 10, day)].label, "", day)
+        # These are not good news for a dog owner, so the words are kept.
+        self.assertEqual(page.days[date(2026, 10, 5)].label, "No access")
+        self.assertEqual(page.days[date(2026, 10, 6)].label, "Maintenance")
+
     def test_day_number_in_bold_with_line_break(self):
         html = grid(
             [
