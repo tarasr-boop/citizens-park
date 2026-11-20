@@ -16,7 +16,9 @@ import shutil
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from urllib.parse import urlsplit
 
+from . import message
 from .config import Config
 from .status import DayPlan, short_date
 from .store import CouncilStore
@@ -29,6 +31,9 @@ WEB = Path(__file__).parent / "web"
 _HOURLY_DAYS = 2
 # Files in assets/ that are for the repository, not for the public page.
 _PRIVATE_ASSETS = {"qr-url.txt"}
+# The script that shows a notification on a phone. It is a file of its own
+# because a browser keeps it running in the background, apart from the page.
+_WORKER = "sw.js"
 
 
 def _stamp(now: datetime) -> str:
@@ -56,10 +61,18 @@ def checked_text(config: Config, store: CouncilStore) -> str:
 def page_data(config: Config, plans: list[DayPlan], forecast: Forecast | None, store: CouncilStore, now: datetime) -> dict:
     """Everything the page's script needs."""
     read_at = _read_at(config, store)
+    now_minute = now.hour * 60 + now.minute
     days = []
     for index, plan in enumerate(plans):
         rain = forecast.days.get(plan.day) if forecast else None
         hours = forecast.hours.get(plan.day) if forecast and index < _HOURLY_DAYS else None
+        # The notification for this day, in words for the time the alert goes out.
+        # Every coming day has one, so that the alert has something true to say
+        # even on a day when no check ran before it. For today it never looks back
+        # at a time that has already passed.
+        today = plan.day == now.date()
+        written_for = max(now_minute, config.post_from) if today else config.post_from
+        saved_at = forecast.saved_at if forecast and today else ""
         days.append(
             {
                 "date": plan.day.isoformat(),
@@ -71,6 +84,7 @@ def page_data(config: Config, plans: list[DayPlan], forecast: Forecast | None, s
                 "why": plan.why,
                 "rain": {"chance": rain.chance, "mm": rain.mm} if rain else None,
                 "hours": [[hour.hour, hour.chance, hour.mm] for hour in hours] if hours else None,
+                "notice": message.notice(plan, forecast, written_for, config, saved_at),
             }
         )
     return {
@@ -78,6 +92,10 @@ def page_data(config: Config, plans: list[DayPlan], forecast: Forecast | None, s
         "generatedText": _stamp(now),
         "zone": config.timezone_name,
         "site": config.site_url,
+        # The daily alert goes out between these two times of day (minutes after midnight).
+        "alert": {"from": config.post_from, "until": config.post_until},
+        # The notifications backend. None while there is none, and then the page offers no notifications.
+        "push": config.push_url or None,
         # The timeline on the page runs from dayStart to dayEnd.
         "dayStart": config.day_start,
         "dayEnd": config.day_end,
@@ -165,13 +183,18 @@ def _about(config: Config) -> str:
 
 
 def _actions(config: Config) -> str:
-    """The buttons: the Telegram channel and the tip link. Each appears only when it is set."""
+    """The buttons: the Telegram channel, notifications and the tip link. Each appears only when it is set."""
     buttons = []
     if config.channel:
         buttons.append(
             f'    <a class="button primary" href="{escape(config.channel_url)}" rel="noopener">'
             f"Get the daily alert on Telegram</a>"
         )
+    if config.push_url:
+        # Hidden until the page's script finds that this browser can show notifications.
+        # The line under the button is where the script says what happened.
+        buttons.append('    <button class="button" type="button" id="notify" hidden>Get the daily alert on this device</button>')
+        buttons.append('    <p class="notify-note" id="notify-note" role="status" hidden></p>')
     if config.tip_url:
         buttons.append(f'    <a class="button" href="{escape(config.tip_url)}" rel="noopener">Leave a tip</a>')
     if not buttons:
@@ -179,25 +202,33 @@ def _actions(config: Config) -> str:
     return '  <nav class="actions" aria-label="Alerts and tips">\n' + "\n".join(buttons) + "\n  </nav>"
 
 
-def _allowed(script: str) -> str:
+def _origin(address: str) -> str:
+    """``https://alerts.example.org/anything`` gives ``https://alerts.example.org``."""
+    parts = urlsplit(address)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _allowed(script: str, push_url: str = "") -> str:
     """The page's rules for its browser (a Content Security Policy).
 
     Only the page's own script may run, recognised by its fingerprint. So even if
     words from outside ever slipped past the escaping, they could not run as code.
+
+    With notifications switched on, the page may also talk to their backend and
+    start the small script beside it that shows a notification. Nothing else.
     """
     fingerprint = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
-    return "; ".join(
-        [
-            "default-src 'none'",
-            f"script-src 'sha256-{fingerprint}'",
-            "style-src 'unsafe-inline'",
-            "img-src 'self'",
-            "connect-src 'self'",
-            "manifest-src 'self'",
-            "base-uri 'none'",
-            "form-action 'none'",
-        ]
-    )
+    rules = [
+        "default-src 'none'",
+        f"script-src 'sha256-{fingerprint}'",
+        "style-src 'unsafe-inline'",
+        "img-src 'self'",
+        "connect-src 'self'" + (f" {_origin(push_url)}" if push_url else ""),
+        "manifest-src 'self'",
+    ]
+    if push_url:
+        rules.append("worker-src 'self'")
+    return "; ".join(rules + ["base-uri 'none'", "form-action 'none'"])
 
 
 def _fill(template: str, values: dict[str, str]) -> str:
@@ -274,7 +305,7 @@ def build(
             "short_name": escape(config.display_name),
             "suburb": escape(config.suburb),
             "council_url": escape(config.council_url),
-            "allowed": escape(_allowed(in_page.group(1) + script + in_page.group(2))),
+            "allowed": escape(_allowed(in_page.group(1) + script + in_page.group(2), config.push_url)),
             "lights_off": escape(clock(config.lights_off)),
             "brand": _brand(config),
             "alert_paragraph": (
@@ -300,6 +331,11 @@ def build(
     (out / "manifest.webmanifest").write_text(_manifest(config) + "\n", encoding="utf-8")
     # Tells GitHub Pages to serve the files as they are.
     (out / ".nojekyll").write_text("", encoding="utf-8")
+    if config.push_url:
+        shutil.copyfile(WEB / _WORKER, out / _WORKER)
+    else:
+        # Without a backend there are no notifications, and nothing is left over from a time there was one.
+        (out / _WORKER).unlink(missing_ok=True)
 
     assets = Path(assets_dir)
     if assets.is_dir():

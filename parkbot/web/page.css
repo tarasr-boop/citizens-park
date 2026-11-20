@@ -344,6 +344,10 @@ a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 }
 .button.primary { background: var(--button); color: var(--button-ink); }
 .button:active { transform: translateY(1px); }
+/* A button is laid out by the rules above, which would otherwise show it even while it is hidden. */
+.button[hidden] { display: none; }
+.button:disabled { opacity: 0.55; cursor: default; }
+.notify-note { margin: 0 0.25rem; font-size: 0.92rem; color: var(--muted); text-wrap: pretty; }
 
 /* ---- Fold-outs and footer ---- */
 
