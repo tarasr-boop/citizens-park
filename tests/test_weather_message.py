@@ -7,7 +7,6 @@ from parkbot import message, weather
 from parkbot.council import DayEntry
 from parkbot.status import plan_day, plan_days
 from parkbot.store import CouncilStore
-from parkbot.timeparse import Slot
 from parkbot.weather import HourRain, WeatherError, outlook
 
 from .helpers import forecast_json, load_config, october_store, seasons

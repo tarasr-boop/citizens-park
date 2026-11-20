@@ -201,7 +201,7 @@ class TelegramSendTest(NetworkTest):
 
 class FetchTest(NetworkTest):
     def test_returns_the_page_and_says_who_is_asking(self):
-        self.urlopen.return_value = FakeReply("<p>Citizens Park</p>".encode(), {"Content-Type": "text/html; charset=utf-8"})
+        self.urlopen.return_value = FakeReply(b"<p>Citizens Park</p>", {"Content-Type": "text/html; charset=utf-8"})
         self.assertEqual(fetch.get("https://council.example/park", "ParkbotTests/1.0", accept="text/html"), "<p>Citizens Park</p>")
         request = self.request()
         self.assertEqual(request.full_url, "https://council.example/park")

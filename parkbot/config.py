@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,12 +71,19 @@ def load(path: str | Path = "config.toml") -> Config:
 
     try:
         park, council, telegram, site = raw["park"], raw["council"], raw["telegram"], raw["site"]
+        for name, section in (("park", park), ("council", council), ("telegram", telegram), ("site", site)):
+            if not isinstance(section, dict):
+                raise ConfigError(f"{path}: {name} should be a section that starts with a [{name}] line")
         channel = str(telegram.get("channel", "")).strip()
         for prefix in ("https://t.me/", "http://t.me/", "t.me/", "@"):
-            if channel.startswith(prefix):
-                channel = channel[len(prefix) :]
+            channel = channel.removeprefix(prefix)
         channel = channel.strip("/")
-        if channel and not channel.replace("_", "").isalnum():
+        if channel.startswith(("+", "joinchat/")):
+            raise ConfigError(
+                "telegram.channel is an invite link to a private channel. Make the channel public "
+                "(Channel Type, then Public) and use its link name, such as CitizensPark"
+            )
+        if channel and not re.fullmatch(r"[A-Za-z0-9_]+", channel):
             raise ConfigError(f"telegram.channel should be the channel's link name, such as CitizensPark, got {channel!r}")
 
         site_url = _web_address(str(site["url"]), "site.url", required=True)
@@ -108,7 +116,7 @@ def load(path: str | Path = "config.toml") -> Config:
     if not config.post_from < config.post_until:
         raise ConfigError("telegram.post_from must be earlier than telegram.post_until")
     try:
-        config.zone
+        ZoneInfo(config.timezone_name)
     except Exception as error:  # an unknown time zone name
         raise ConfigError(f"park.timezone {config.timezone_name!r} is not a known time zone") from error
     return config

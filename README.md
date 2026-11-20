@@ -143,6 +143,7 @@ parkbot/
   store.py      what is remembered between runs (the data/ folder)
 config.toml     settings
 schedule.toml   the usual weekly pattern
+data/           what the job remembers between runs (the job writes it)
 assets/         icons and the QR code
 tools/          makes the icons and the QR code (needs requirements-dev.txt)
 tests/          unit tests

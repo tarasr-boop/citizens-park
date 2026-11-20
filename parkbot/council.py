@@ -1,9 +1,12 @@
 """Read the council's Citizens Park page.
 
 The page holds one table per month. Each table has a heading such as
-"October 2026", a header row with the weekdays (Monday to Sunday) and one row
+"November 2026", a header row with the weekdays (Monday to Sunday) and one row
 per calendar week. A cell holds the day of the month followed by the booked
-time, for example ``1 5:15pm-7:30pm``, or a word such as ``Maintenance``.
+time, for example ``1 11:00am-5:00pm``, or words such as ``No Bookings`` or
+``Maintenance``. Days that belong to the month before or after are written
+with their month: ``27 (October)``. A real table from the page is kept in
+``tests/fixtures/council_november_2026.html``.
 
 Nothing here trusts the page's exact markup. The reader looks for any table
 whose header row names the weekdays, then checks every day number against the

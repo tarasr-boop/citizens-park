@@ -1,12 +1,16 @@
 """What the checker remembers between runs.
 
-Two small JSON files in ``data/``, saved back to the repository by the
+Three small JSON files in ``data/``, saved back to the repository by the
 scheduled job:
 
 * ``council.json``: every day read from the council's page so far. If the
   page cannot be read on some run, the last good copy is still there.
 * ``state.json``: when the last posts went out, and how many times in a row
   each source has failed.
+* ``forecast.json``: the last rain forecast that loaded, for a run on which
+  the weather service does not answer.
+
+The repository is public, so nothing private may ever be written here.
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ class CouncilStore:
     page_modified: date | None = None  # the page's own "last updated" date
 
     @classmethod
-    def load(cls, path: str | Path) -> "CouncilStore":
+    def load(cls, path: str | Path) -> CouncilStore:
         raw = _read_json(Path(path))
         store = cls(last_read=_date(raw.get("last_read")), page_modified=_date(raw.get("page_modified")))
         for key, value in (raw.get("days") or {}).items():
@@ -139,7 +143,7 @@ class State:
     uncovered_since: date | None = None  # first day in the current run of days the council page did not cover
 
     @classmethod
-    def load(cls, path: str | Path) -> "State":
+    def load(cls, path: str | Path) -> State:
         raw = _read_json(Path(path))
 
         def count(key: str) -> int:
@@ -187,7 +191,7 @@ class ForecastCopy:
     reply: str = ""  # the weather service's reply, exactly as it came
 
     @classmethod
-    def load(cls, path: str | Path) -> "ForecastCopy":
+    def load(cls, path: str | Path) -> ForecastCopy:
         raw = _read_json(Path(path))
         try:
             fetched = datetime.fromisoformat(str(raw.get("fetched")))

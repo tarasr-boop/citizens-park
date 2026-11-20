@@ -4,7 +4,6 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from parkbot.council import CouncilPageError, find_closures, parse, table_sources
-from parkbot.timeparse import Slot
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TODAY = date(2026, 11, 20)

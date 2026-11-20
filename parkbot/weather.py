@@ -102,7 +102,7 @@ def parse(text: str) -> Forecast:
     # is the rain that fell between 15:00 and 16:00. So the value stamped 16:00
     # describes the hour that people call "3 PM".
     stamped: dict[datetime, tuple[float | None, float | None]] = {}
-    for stamp, chance, amount in zip(times, chances, amounts):
+    for stamp, chance, amount in zip(times, chances, amounts, strict=True):
         try:
             moment = datetime.fromisoformat(str(stamp))
         except ValueError as error:

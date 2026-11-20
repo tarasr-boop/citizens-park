@@ -49,8 +49,18 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config.channel_url, "")
 
     def test_a_channel_title_is_not_a_link_name(self):
-        with self.assertRaisesRegex(ConfigError, "link name"):
-            self.changed('channel = "ExampleParkDogs"', 'channel = "Citizens Park Dogs"')
+        for written in ("Citizens Park Dogs", "Собаки_парку", "t.me/s/ExampleParkDogs"):
+            with self.subTest(written=written), self.assertRaisesRegex(ConfigError, "link name"):
+                self.changed('channel = "ExampleParkDogs"', f'channel = "{written}"')
+
+    def test_an_invite_link_to_a_private_channel_is_explained(self):
+        for written in ("https://t.me/+AbCdEf-123_xyz", "t.me/joinchat/AbCdEf123"):
+            with self.subTest(written=written), self.assertRaisesRegex(ConfigError, "private channel"):
+                self.changed('channel = "ExampleParkDogs"', f'channel = "{written}"')
+
+    def test_a_section_of_the_wrong_kind_is_reported_not_crashed_on(self):
+        with self.assertRaisesRegex(ConfigError, r"telegram should be a section that starts with a \[telegram\] line"):
+            self.load("telegram = 5\n" + GOOD.replace("[telegram]", "[telegram_old]"))
 
     def test_the_page_address_gets_its_closing_slash(self):
         config = self.changed('url = "https://example.org/park/"', 'url = "https://example.org/park"')

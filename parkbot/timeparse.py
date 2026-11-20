@@ -29,7 +29,7 @@ class Slot:
         return f"{hhmm(self.start)}-{hhmm(self.end)}"
 
     @classmethod
-    def from_text(cls, text: str) -> "Slot":
+    def from_text(cls, text: str) -> Slot:
         """Read the machine form written by :meth:`to_text`."""
         match = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*", text)
         if not match:

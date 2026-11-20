@@ -1,7 +1,8 @@
 name: Probe (temporary)
 
-# A one-off check that the Pages actions named in daily.yml exist at those
-# versions. This file is removed before the pull request is ready.
+# A one-off check that the scheduled job will be allowed to save data/ and to
+# read the issue list. Nothing is pushed: both pushes below are dry runs.
+# This file is removed before the pull request is ready.
 
 on:
   push:
@@ -14,20 +15,45 @@ permissions:
 
 jobs:
   probe:
-    name: Check the Pages actions
+    name: Check saving and the issue list
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # The same access that daily.yml asks for.
+    permissions:
+      contents: write
+      issues: write
     steps:
       - name: Get the code
         uses: actions/checkout@v7
-      - name: Build the page offline
-        run: python3 -m parkbot run --post never --offline --data "$RUNNER_TEMP/data" --site site
-      - name: Package the page
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-      # Never runs here. It is only named so that GitHub fetches the action and
-      # shows whether this version exists.
-      - name: Publish (skipped)
-        if: ${{ false }}
-        uses: actions/deploy-pages@v5
+      - name: Would a push be allowed? (dry run, nothing is sent)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git push --dry-run origin HEAD:refs/heads/probe-scratch
+          git push --dry-run
+          echo "RESULT: a later step can push with the sign-in that checkout leaves behind"
+      - name: Can the watchdog read the issue list?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh issue list --state open --limit 5 --json number,title
+          echo "RESULT: the issue list can be read"
+
+  control:
+    name: The same push with read-only access (should be refused)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v7
+      # If this dry run passes too, the check above proves nothing.
+      - name: Would a push be allowed? (dry run, nothing is sent)
+        run: |
+          if git push --dry-run origin HEAD:refs/heads/probe-scratch; then
+            echo "RESULT: the dry run passed even with read-only access, so it proves nothing"
+          else
+            echo "RESULT: refused with read-only access, as expected"
+          fi
