@@ -1,5 +1,5 @@
 // Stand-ins for the tests: a place to keep things, a clock, a phone with its
-// keys, and the outside world (the notification services and the page).
+// keys, and the outside world (the notification services, the page and GitHub).
 //
 // The phone here reads a notification with Node's own cryptography, written
 // separately from the code under test, so that the two check each other.
@@ -10,6 +10,39 @@ import { settingsFrom } from "../src/rules.js";
 export const SITE = "https://citizensbark.example/";
 export const ENV = { SITE_URL: SITE, TIMEZONE: "Australia/Melbourne", ALERT_FROM: "14:30", ALERT_UNTIL: "19:00" };
 export const settings = settingsFrom(ENV);
+
+// The second timer's four settings, with the times of day the real check has.
+export const CHECK = { CHECK_REPOSITORY: "someone/park", CHECK_WORKFLOW: "daily.yml", CHECK_BRANCH: "main", CHECK_TIMES: "06:17 11:47 13:47 14:40 15:10 15:45 17:47 19:47" };
+export const GITHUB = "https://api.github.com/";
+// What GitHub puts in an answer. The backend keeps the number of an answer and none of its words.
+export const GITHUB_WORDS = "words from GitHub";
+
+/** JSON with `//` comments, which is how wrangler.jsonc is written. */
+export function readJsonc(text) {
+  let out = "";
+  let inString = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      out += char;
+      if (char === "\\") {
+        index += 1;
+        out += text[index];
+      } else if (char === '"') {
+        inString = false;
+      }
+    } else if (char === '"') {
+      inString = true;
+      out += char;
+    } else if (text.startsWith("//", index)) {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      out += "\n";
+    } else {
+      out += char;
+    }
+  }
+  return JSON.parse(out);
+}
 
 /** A moment in Melbourne's summer (UTC+11), such as at("2026-11-20", "15:00"). */
 export function at(date, time, offset = "+11:00") {
@@ -169,15 +202,25 @@ export function day(date, title = "Booked 5 PM to 7:30 PM", body = "Cricket trai
  * The outside world. `page` is what the page's data.json holds: an object, a
  * status number, "down" for no connection, or text that is not JSON. `answer`
  * decides what a notification service says to a message: a status number, or
- * "down". Every request is written down in `calls`.
+ * "down". `github` decides the same for GitHub: by default it takes every
+ * request. Every request is written down in `calls`.
  */
-export function world({ page = null, answer = () => 201, pause = 0 } = {}) {
+export function world({ page = null, answer = () => 201, pause = 0, github = (call) => (call.method === "GET" ? 200 : 204) } = {}) {
   const it = {
     page,
     answer,
+    github,
     calls: [],
     flying: 0,
     mostFlying: 0,
+    /** What was asked of GitHub, in order. */
+    get asks() {
+      return it.calls.filter((call) => call.kind === "github");
+    },
+    /** The requests to GitHub to run the check. */
+    get starts() {
+      return it.asks.filter((call) => call.method === "POST");
+    },
     /** The messages sent to notification services, in the order they went out. */
     get pushes() {
       return it.calls.filter((call) => call.kind === "push");
@@ -196,6 +239,13 @@ export function world({ page = null, answer = () => 201, pause = 0 } = {}) {
         if (typeof it.page === "number") return new Response("no", { status: it.page });
         if (typeof it.page === "string") return new Response(it.page, { status: 200 });
         return new Response(JSON.stringify(it.page), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.startsWith(GITHUB)) {
+        const call = { kind: "github", url, method: options.method || "GET", headers: options.headers || {}, body: options.body, options };
+        it.calls.push(call);
+        const said = await it.github(call);
+        if (said === "down") throw new TypeError("fetch failed");
+        return new Response(said === 204 ? null : JSON.stringify({ message: GITHUB_WORDS }), { status: said });
       }
       const call = { kind: "push", url, options, headers: options.headers || {}, body: options.body };
       it.calls.push(call);

@@ -3,8 +3,8 @@
 // The other tests stand in for Cloudflare with a few lines of JavaScript. This
 // one runs the real thing: the same program that runs Workers on Cloudflare's
 // servers, with a real Durable Object, its real storage and its real wake-up
-// calls. Only the outside world is stood in for: the page's data and the
-// notification services, where a stand-in phone reads what arrives.
+// calls. Only the outside world is stood in for: the page's data, GitHub, and
+// the notification services, where a stand-in phone reads what arrives.
 //
 // Usage: node test/runtime.js [path to the worker, default src/worker.js]
 //
@@ -31,6 +31,9 @@ const cron = /"crons":\s*\["([^"]+)"\]/.exec(settingsText)[1];
 const SITE = "https://citizensbark.example/";
 const PAGE = new URL(SITE).origin;
 const BACKEND = "https://alerts.example";
+const GITHUB = "https://api.github.com/";
+// Made up for this test. On Cloudflare the real one is a secret, handed over at deploy time.
+const TOKEN = "github_pat_11STANDIN0aBcDeFgHiJkLmNoPqRsTuVwXyZ";
 
 // The alert only goes out in the afternoon at the park, and this test has to
 // pass at any hour. So the park is moved, for the test, to wherever it is
@@ -40,12 +43,23 @@ const started = Date.now();
 const ahead = 12 - new Date(started).getUTCHours();
 const zone = ahead === 0 ? "Etc/GMT" : `Etc/GMT${ahead > 0 ? "-" : "+"}${Math.abs(ahead)}`;
 const today = localTime(started, zone).date;
+// The second timer looks after a check a quarter of an hour after its set
+// time, for an hour. So for this test the check's one set time is twenty
+// minutes ago.
+const setMinute = localTime(started, zone).minute - 20;
+const setTime = `${String(Math.floor(setMinute / 60)).padStart(2, "0")}:${String(setMinute % 60).padStart(2, "0")}`;
+
+const DAYS = [day(today, "Booked 5 PM to 7:30 PM", "Cricket training.")];
+/** The page's data, made `ago` milliseconds before this test began. */
+const pageMade = (ago) => pageData({ generated: new Date(started - ago).toISOString(), days: DAYS });
 
 const outside = {
-  page: pageData({ generated: new Date(started - 60000).toISOString(), days: [day(today, "Booked 5 PM to 7:30 PM", "Cricket training.")] }),
+  page: pageMade(60000),
   reads: [],
   pushes: [],
   answer: () => 201,
+  // What was asked of GitHub. It takes every request.
+  asks: [],
 };
 
 async function outbound(request) {
@@ -53,15 +67,20 @@ async function outbound(request) {
     outside.reads.push(request.url);
     return new Response(JSON.stringify(outside.page), { headers: { "Content-Type": "application/json" } });
   }
+  if (request.url.startsWith(GITHUB)) {
+    outside.asks.push({ url: request.url, method: request.method, headers: Object.fromEntries(request.headers), body: await request.text() });
+    if (request.method === "POST") return new Response(null, { status: 204 });
+    return new Response(JSON.stringify({ state: "active" }), { headers: { "Content-Type": "application/json" } });
+  }
   const push = { url: request.url, method: request.method, headers: Object.fromEntries(request.headers), body: new Uint8Array(await request.arrayBuffer()) };
   outside.pushes.push(push);
   return new Response(null, { status: outside.answer(push) });
 }
 
 // The worker's own files, as modules. A bundle made by wrangler is one file.
-// The files in src/ are the worker and the three it imports.
+// The files in src/ are the worker and the four it imports.
 async function modules() {
-  const names = path.basename(path.dirname(scriptPath)) === "src" ? ["worker.js", "book.js", "rules.js", "webpush.js"] : [path.basename(scriptPath)];
+  const names = path.basename(path.dirname(scriptPath)) === "src" ? ["worker.js", "book.js", "rules.js", "starter.js", "webpush.js"] : [path.basename(scriptPath)];
   const found = {};
   for (const name of names) {
     found[name] = { type: "esm", contents: await readFile(path.join(path.dirname(scriptPath), name), "utf8") };
@@ -88,6 +107,11 @@ function start(folder) {
             TIMEZONE: text(zone),
             ALERT_FROM: text("11:00"),
             ALERT_UNTIL: text("13:30"),
+            CHECK_REPOSITORY: text("someone/park"),
+            CHECK_WORKFLOW: text("daily.yml"),
+            CHECK_BRANCH: text("main"),
+            CHECK_TIMES: text(setTime),
+            DAILY_CHECK_TOKEN: text(TOKEN),
             SUBSCRIBERS: { type: "durable-object", worker: "alerts", exportName: "Subscribers" },
           },
           exports: { Subscribers: { type: "durable-object", storage: "sqlite" } },
@@ -133,13 +157,64 @@ try {
   await check("the backend starts, makes its signing keys and says how things are", async () => {
     const status = await ask(mf, "GET", "/status", { origin: null });
     assert.equal(status.status, 200);
-    assert.deepEqual(status.body, { ok: true, devices: 0, sending: false, last: null, timer: null, unknownServices: {} });
+    assert.deepEqual(status.body, {
+      ok: true,
+      devices: 0,
+      sending: false,
+      last: null,
+      timer: null,
+      unknownServices: {},
+      starter: { on: true, look: null, check: null, token: null },
+    });
     assert.equal(status.headers.get("Access-Control-Allow-Origin"), null);
     const answer = await ask(mf, "GET", "/key");
     assert.equal(answer.status, 200);
     assert.equal(answer.headers.get("Access-Control-Allow-Origin"), PAGE);
     key = answer.body.key;
     assert.equal(Buffer.from(key, "base64url").length, 65);
+  });
+
+  await check("the second timer asks GitHub to run the check when the page shows none, and is content once the page is new", async () => {
+    // The page still shows a check from three hours ago.
+    outside.page = pageMade(3 * 3600 * 1000);
+    const worker = await mf.getWorker();
+    assert.equal((await worker.scheduled({ cron })).outcome, "ok");
+    await until("the second timer to look", async () => (await ask(mf, "GET", "/status")).body.starter.look !== null);
+
+    const workflow = `${GITHUB}repos/someone/park/actions/workflows/daily.yml`;
+    assert.deepEqual(
+      outside.asks.map((one) => `${one.method} ${one.url}`),
+      [`GET ${workflow}`, `POST ${workflow}/dispatches`]
+    );
+    for (const one of outside.asks) {
+      assert.equal(one.headers.authorization, `Bearer ${TOKEN}`);
+      assert.equal(one.headers.accept, "application/vnd.github+json");
+      assert.equal(one.headers["user-agent"], "citizens-bark-alerts");
+      assert.equal(one.headers["x-github-api-version"], undefined);
+    }
+    assert.equal(outside.asks[0].body, "");
+    assert.equal(outside.asks[1].headers["content-type"], "application/json");
+    assert.deepEqual(JSON.parse(outside.asks[1].body), { ref: "main" });
+
+    const answer = await mf.dispatchFetch(`${BACKEND}/status`);
+    const said = await answer.text();
+    assert.equal(said.includes("github_pat"), false);
+    // The deploy on GitHub looks for exactly these words to know that the second timer is on.
+    assert.ok(said.includes('"starter":{"on":true'), said);
+    const status = JSON.parse(said);
+    assert.equal(status.timer.why, "no device to tell");
+    assert.equal(status.starter.on, true);
+    assert.equal(status.starter.look.did, "started");
+    assert.deepEqual(status.starter.token, { date: today, at: status.starter.token.at, answer: 200, ok: true });
+    assert.deepEqual(status.starter.check, { date: today, time: setTime, tries: 1, fails: 0, at: status.starter.check.at, answer: 204, done: false });
+    assert.equal(outside.reads.length, 1);
+
+    // The check has run and the page is new: the next look notes that, and asks nothing more of GitHub.
+    outside.page = pageMade(60000);
+    await worker.scheduled({ cron });
+    await until("the second timer to see the new page", async () => (await ask(mf, "GET", "/status")).body.starter.check.done);
+    assert.equal(outside.asks.length, 2);
+    outside.reads.length = 0;
   });
 
   await check("a browser's question beforehand is answered", async () => {
@@ -283,6 +358,11 @@ try {
     const answer = await ask(mf, "POST", "/unsubscribe", { body: { endpoint: phones[1].endpoint } });
     assert.deepEqual(answer.body, { ok: true });
     assert.equal((await ask(mf, "GET", "/status")).body.devices, 44);
+  });
+
+  await check("through all of that, GitHub was asked nothing more", async () => {
+    assert.equal(outside.asks.length, 2);
+    assert.equal((await ask(mf, "GET", "/status")).body.starter.check.tries, 1);
   });
 
   console.log(`All ${passed} checks passed in Cloudflare's runtime.`);

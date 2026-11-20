@@ -9,6 +9,10 @@ name: Alerts backend
 # secrets in this repository's settings: CLOUDFLARE_API_TOKEN and
 # CLOUDFLARE_ACCOUNT_ID. The README says how to make them. Until both are
 # there, the backend is only tested, and the run says so.
+#
+# A third secret, DAILY_CHECK_TOKEN, is optional. With it the backend also
+# starts the daily check when GitHub's own timer has not ("the second timer").
+# After adding or changing it, start this workflow by hand once.
 
 on:
   push:
@@ -73,18 +77,25 @@ jobs:
         with:
           persist-credentials: false
 
-      # Only "yes" or "no" reaches this step, never the secrets themselves.
-      - name: Look for the Cloudflare secrets
+      # Only "true" or "false" reaches this step, never the secrets themselves.
+      - name: Look for the secrets
         id: secrets
         env:
           BOTH_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+          TIMER_SET: ${{ secrets.DAILY_CHECK_TOKEN != '' }}
         run: |
-          if [ "$BOTH_SET" = "true" ]; then
-            echo "found=yes" >> "$GITHUB_OUTPUT"
-          else
+          if [ "$BOTH_SET" != "true" ]; then
             echo "found=no" >> "$GITHUB_OUTPUT"
             echo "::notice title=Tested but not deployed::The secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not both set, so nothing was put on Cloudflare."
             echo "The backend passed its tests. It was not deployed, because the secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not both set. The README says how to make them." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "found=yes" >> "$GITHUB_OUTPUT"
+          if [ "$TIMER_SET" = "true" ]; then
+            echo "timer=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "timer=no" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Second timer is off::The secret DAILY_CHECK_TOKEN is not set, so the backend does not start the daily check when GitHub's own timer misses it. The README says how to make the token."
           fi
 
       - name: Get Node
@@ -109,26 +120,55 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
         run: npx --no-install wrangler deploy
 
+      # The token for the second timer goes from GitHub's secret straight into
+      # the deploy tool, which hands it to Cloudflare to keep as a secret of
+      # the backend. It is not written to a file or to this log on the way.
+      - name: Hand the second timer its token
+        if: steps.secrets.outputs.found == 'yes' && steps.secrets.outputs.timer == 'yes'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DAILY_CHECK_TOKEN: ${{ secrets.DAILY_CHECK_TOKEN }}
+          WRANGLER_SEND_METRICS: "false"
+        run: printf '%s' "$DAILY_CHECK_TOKEN" | npx --no-install wrangler secret put DAILY_CHECK_TOKEN
+
       # The address comes from wrangler.jsonc. The first time, Cloudflare needs
       # a few minutes to set it up, so this asks patiently.
       - name: Ask the backend how things are
         if: steps.secrets.outputs.found == 'yes'
+        env:
+          TIMER: ${{ steps.secrets.outputs.timer }}
         run: |
           host="$(sed -n 's/.*"pattern": *"\([a-z0-9.-]*\)".*/\1/p' wrangler.jsonc | head -n 1)"
           if [ -z "$host" ]; then
             echo "::error::No address was found in wrangler.jsonc."
             exit 1
           fi
+          # While CHECK_TIMES is empty, the second timer is off on purpose.
+          if grep -q '"CHECK_TIMES": *""' wrangler.jsonc; then
+            TIMER=no
+          fi
+          answered=no
           for attempt in $(seq 1 24); do
             if answer="$(curl --silent --show-error --fail --max-time 10 "https://$host/status")"; then
-              echo "The backend answers at https://$host/status:"
-              # Shown in this log only. It is never written anywhere that formats text.
-              printf '%s\n' "$answer" | head -c 2000 | tr -d '\r' | sed 's/^/  /'
-              echo "The alerts backend is live at https://$host" >> "$GITHUB_STEP_SUMMARY"
-              exit 0
+              answered=yes
+              # With its token handed over, the backend must say that its second timer is on.
+              if [ "$TIMER" != "yes" ] || printf '%s' "$answer" | grep -q '"starter":{"on":true'; then
+                echo "The backend answers at https://$host/status:"
+                # Shown in this log only. It is never written anywhere that formats text.
+                printf '%s\n' "$answer" | head -c 2000 | tr -d '\r' | sed 's/^/  /'
+                echo "The alerts backend is live at https://$host" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              echo "The backend answers, but its second timer is not on yet (try $attempt of 24)."
+            else
+              echo "No answer yet (try $attempt of 24). A new address can take a few minutes to start working."
             fi
-            echo "No answer yet (try $attempt of 24). A new address can take a few minutes to start working."
             sleep 15
           done
-          echo "::error title=Deployed but not answering yet::https://$host/status gave no answer for several minutes. Run this workflow again in a quarter of an hour."
+          if [ "$answered" = "yes" ]; then
+            echo "::error title=Second timer did not switch on::The token was handed to Cloudflare, but https://$host/status still says that the second timer is off."
+          else
+            echo "::error title=Deployed but not answering yet::https://$host/status gave no answer for several minutes. Run this workflow again in a quarter of an hour."
+          fi
           exit 1
