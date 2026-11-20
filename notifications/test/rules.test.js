@@ -450,7 +450,6 @@ test("a notification is written in the shape that iPhones show by themselves", (
       tag: "daily",
       renotify: true,
       lang: "en-AU",
-      icon: `${SITE}icon-192.png`,
       badge: `${SITE}badge.png`,
     },
   });

@@ -13,9 +13,11 @@ import html
 import json
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import unittest
+import zlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -296,6 +298,25 @@ class BuildTest(unittest.TestCase):
         self.build(load_config(push_url=BACKEND))
         self.assertTrue((self.out / "badge.png").is_file())
         self.assertIn('badge: "badge.png"', (site.WEB / "sw.js").read_text(encoding="utf-8"))
+
+    def test_the_picture_with_nothing_on_it_is_published_and_is_empty(self):
+        # A notification names it on Android phones, in place of the page's icon.
+        self.build(load_config(push_url=BACKEND))
+        shower = (site.WEB / "sw.js").read_text(encoding="utf-8")
+        self.assertIn('"blank.png"', shower)
+        self.assertNotIn("icon-192.png", shower)
+        picture = (self.out / "blank.png").read_bytes()
+        self.assertEqual(picture[:8], b"\x89PNG\r\n\x1a\n")
+        # 192 by 192 dots, each with a colour and how far it lets the background through.
+        self.assertEqual(struct.unpack(">IIBB", picture[16:26]), (192, 192, 8, 6))
+        dots, at = b"", 8
+        while at < len(picture):
+            (length,) = struct.unpack(">I", picture[at : at + 4])
+            if picture[at + 4 : at + 8] == b"IDAT":
+                dots += picture[at + 8 : at + 8 + length]
+            at += 12 + length
+        # Every dot is nought: no colour, and nothing that covers what is behind it.
+        self.assertEqual(set(zlib.decompress(dots)), {0})
 
 
 ANDROID = "Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36"
@@ -596,7 +617,8 @@ class ShowTest(unittest.TestCase):
                         "body": "🌧 Rain likely.",
                         "tag": "daily",
                         "renotify": True,
-                        "icon": "icon-192.png",
+                        # An Android phone: the picture with nothing on it, so that the phone draws none of its own.
+                        "icon": "blank.png",
                         "badge": "badge.png",
                         "lang": "en-AU",
                         "data": {"url": "https://example.org/park/"},
@@ -606,6 +628,30 @@ class ShowTest(unittest.TestCase):
         )
         # The words came with the alert, so nothing had to be fetched.
         self.assertEqual(log["requests"], [])
+
+    def test_a_notification_names_no_picture_except_the_empty_one_on_android(self):
+        sent = self.alert(title="🔴 Booked 4 to 8 PM", body="🌧 Rain likely.", navigate="https://example.org/park/", tag="daily")
+        others = {
+            "a computer": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+            "a Mac": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:145.0) Gecko/20100101 Firefox/145.0",
+            "an iPhone": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1",
+            "a browser that does not say": None,
+        }
+        for name, agent in others.items():
+            with self.subTest(browser=name):
+                shown = self.run_script(event="push", payload=sent, data="down", agent=agent)["log"]["shown"]
+                self.assertEqual(len(shown), 1)
+                self.assertEqual(shown[0]["title"], "🔴 Booked 4 to 8 PM")
+                self.assertNotIn("icon", shown[0]["options"])
+                self.assertEqual(shown[0]["options"]["badge"], "badge.png")
+        phones = {
+            "Chrome": "Mozilla/5.0 (Linux; Android 16; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+            "Firefox": "Mozilla/5.0 (Android 16; Mobile; rv:145.0) Gecko/145.0 Firefox/145.0",
+        }
+        for name, agent in phones.items():
+            with self.subTest(android=name):
+                shown = self.run_script(event="push", payload=sent, data="down", agent=agent)["log"]["shown"]
+                self.assertEqual(shown[0]["options"]["icon"], "blank.png")
 
     def test_an_alert_without_words_reads_todays_notice_from_the_page(self):
         # 04:45 UTC on 20 November is 3:45 PM that day in Melbourne.

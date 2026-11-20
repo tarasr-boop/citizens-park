@@ -91,8 +91,6 @@ h2, small { font-size: inherit; }
   margin: 0.25rem 0.25rem 0.75rem;
   font-size: var(--small);
   font-weight: 650;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--muted);
 }
 .eyebrow .dot { margin: 0 0.5em; }
@@ -122,20 +120,13 @@ h2, small { font-size: inherit; }
 .hero .sub { line-height: 1.4; text-wrap: pretty; }
 .hero .rule { margin-top: 0.5rem; font-size: var(--small); color: var(--muted); }
 
-.source-row { margin-top: 0.95rem; }
-.pill {
-  display: inline-block;
-  padding: 0.28rem 0.7rem;
-  border-radius: 999px;
-  border: 1.5px solid currentColor;
-  font-size: var(--small);
-  font-weight: 650;
-  color: var(--state);
-  text-decoration: none;
-}
-.pill[data-sure="no"] { color: var(--maybe); border-style: dashed; }
-a.pill:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
-.hero .why { margin-top: 0.55rem; font-size: var(--small); color: var(--maybe); text-wrap: pretty; }
+/* Where the answer comes from: one quiet line, which is a link to that source.
+   A day that is not confirmed keeps the colour of a warning. */
+.source-row { margin-top: 0.55rem; font-size: var(--small); color: var(--muted); }
+.source-row[data-sure="no"] { color: var(--maybe); }
+/* Room above and below the words, so that a finger finds the link. */
+.source-row a { display: inline-block; padding: 0.3rem 0; }
+.hero .why { margin-top: 0.1rem; font-size: var(--small); color: var(--maybe); text-wrap: pretty; }
 
 .stale {
   margin-bottom: 0.85rem;

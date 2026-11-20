@@ -684,12 +684,15 @@ class TogetherTest(unittest.TestCase):
                 self.assertIn(f"notice.{name}", self.shower)
         self.assertIn("sent && sent.notification", self.shower)
         self.assertIn("web_push: 8030", self.rules)
-        # The two pictures a notification names are published with the page:
-        # everything in assets/ is, apart from the files the build keeps back.
-        for picture in ("icon-192.png", "badge.png"):
-            with self.subTest(picture=picture):
-                self.assertTrue(f'settings.siteUrl + "{picture}"' in self.rules, "the backend no longer names this picture")
-                self.assertTrue((ROOT / "assets" / picture).is_file(), "the picture is missing from assets/")
+        # The one picture a notification names, the small mark for the status bar,
+        # is published with the page: everything in assets/ is, apart from the
+        # files the build keeps back. The page's icon is not named any more.
+        self.assertIn('settings.siteUrl + "badge.png"', self.rules)
+        self.assertTrue((ROOT / "assets" / "badge.png").is_file(), "the picture is missing from assets/")
+        self.assertNotIn("icon", self.rules.split("export function messageFor", 1)[1].split("\n}\n", 1)[0].replace("notification", ""))
+        # The script beside the page names one more on Android phones, a picture with nothing on it.
+        self.assertIn('"blank.png"', self.shower)
+        self.assertTrue((ROOT / "assets" / "blank.png").is_file(), "the picture is missing from assets/")
 
     def test_the_backend_reads_the_data_the_page_publishes(self):
         site = (ROOT / "parkbot" / "site.py").read_text(encoding="utf-8")

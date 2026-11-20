@@ -480,5 +480,30 @@ class TextSizesTest(unittest.TestCase):
                 self.assertNotRegex(written, r"font-size|style=\\?\"[^\"]*font")
 
 
+class QuietWordsTest(unittest.TestCase):
+    """Two choices for the page: where the answer comes from is a plain underlined link, not a button, and no words are set in capitals."""
+
+    def setUp(self):
+        self.css = (site.WEB / "page.css").read_text(encoding="utf-8")
+
+    def test_no_words_are_set_in_capitals(self):
+        self.assertNotIn("text-transform", self.css)
+        # The line above the answer is written the way the settings spell it.
+        self.assertNotRegex(self.css, r"\.eyebrow \{[^}]*letter-spacing")
+
+    def test_the_source_of_the_answer_is_a_plain_link(self):
+        rules = "".join(re.findall(r"^\.source-row[^{]*\{[^}]*\}", self.css, flags=re.MULTILINE))
+        self.assertIn("font-size: var(--small)", rules)
+        self.assertIn("color: var(--muted)", rules)
+        # Nothing that would make a button of it, or take the underline off the link.
+        for part in ("border", "background", "font-weight", "text-decoration", "var(--state)"):
+            with self.subTest(part=part):
+                self.assertNotIn(part, rules)
+        self.assertNotIn(".pill", self.css)
+        # Links are underlined unless a rule says otherwise, and only the buttons say so.
+        plain = re.findall(r"^([^{}\n]+)\{[^}]*text-decoration: none", self.css, flags=re.MULTILINE)
+        self.assertEqual([name.strip() for name in plain], [".button"])
+
+
 if __name__ == "__main__":
     unittest.main()
