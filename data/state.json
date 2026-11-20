@@ -6,6 +6,7 @@
  "last_weekly_post": null,
  "telegram_error": "",
  "uncovered_since": null,
- "weather_error": "",
- "weather_failures": 0
+ "weather_addresses": {},
+ "weather_error": "the forecast could not be fetched: could not connect (_ssl.c:1063: The handshake operation timed out)",
+ "weather_failures": 1
 }
