@@ -2,11 +2,13 @@
  "about": "Written by the daily job; do not edit.",
  "council_error": "",
  "council_failures": 0,
- "last_daily_post": null,
+ "last_daily_post": "2026-11-20",
  "last_weekly_post": null,
  "telegram_error": "",
  "uncovered_since": null,
- "weather_addresses": {},
- "weather_error": "the forecast could not be fetched: could not connect (_ssl.c:1063: The handshake operation timed out)",
- "weather_failures": 1
+ "weather_addresses": {
+  "167.114.211.86": "2026-11-20"
+ },
+ "weather_error": "",
+ "weather_failures": 0
 }
