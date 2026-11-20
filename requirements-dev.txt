@@ -1,0 +1,5 @@
+# The daily job needs none of these: it runs on plain Python 3.11 or newer.
+# They are only for the two helper tools and for running the tests with pytest.
+segno>=1.6      # tools/make_qr.py
+pillow>=10      # tools/make_icons.py
+pytest>=8       # optional: "python3 -m unittest discover -s tests -t ." works without it

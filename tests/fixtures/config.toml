@@ -1,0 +1,27 @@
+# Settings used only by the tests. They are kept apart from the real
+# config.toml so that changing a name or an address there never breaks a test.
+
+[park]
+name = "Citizens Park oval"
+short_name = "Citizens Park"
+suburb = "Richmond"
+latitude = -37.8146
+longitude = 144.9990
+timezone = "Australia/Melbourne"
+day_start = "06:00"
+lights_off = "22:00"
+
+[council]
+url = "https://council.example/parks/citizens-park"
+user_agent = "ParkbotTests/1.0"
+
+[telegram]
+channel = "ExampleParkDogs"
+post_from = "14:30"
+post_until = "19:00"
+
+[site]
+name = ""
+url = "https://example.org/park/"
+tip_url = ""
+repo_url = "https://example.org/code"

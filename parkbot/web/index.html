@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{title}}</title>
+<meta name="description" content="{{description}}">
+<meta name="theme-color" content="#f4f2ea" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121713" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="{{title}}">
+<meta property="og:description" content="{{description}}">
+<meta property="og:type" content="website">
+<meta property="og:url" content="{{site_url}}">
+<meta property="og:image" content="{{site_url}}icon-512.png">
+<link rel="canonical" href="{{site_url}}">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="{{short_name}}">
+<style>
+{{css}}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="top">
+{{brand}}
+    <p class="eyebrow">{{park_name}}<span class="dot" aria-hidden="true">·</span>{{suburb}}</p>
+  </header>
+
+  <div id="app">
+{{fallback}}
+  </div>
+
+  <nav class="actions" aria-label="Get the alert and share">
+{{actions}}
+  </nav>
+
+  <details class="card fold" id="qr">
+    <summary>Show the QR code</summary>
+    <div class="fold-body qr-body">
+      <img src="qr.svg" width="220" height="220" alt="QR code that opens this page" loading="lazy">
+      <p>Scan it with a phone camera to open this page. <a href="poster.html">Open a poster to print</a>.</p>
+    </div>
+  </details>
+
+  <details class="card fold">
+    <summary>How this works</summary>
+    <div class="fold-body">
+      <p>The oval at {{park_short}} is a dog off-lead area, but dogs must stay off it while organised sport or training is on. They are never allowed in the playground.</p>
+      <p>Booked times come from the <a href="{{council_url}}" rel="noopener">council's {{park_short}} page</a>. The council says the oval is open to the public outside those hours, and the lights stay on until {{lights_off}}.</p>
+      <p>The council lists one month at a time, and a new month can appear late. On a day its page does not cover yet, this page shows the usual weekly pattern instead and marks it <span class="tag">usual</span>. Treat those times as likely, not certain.</p>
+{{alert_paragraph}}
+    </div>
+  </details>
+
+  <footer class="foot">
+    <p><strong>Unofficial.</strong> This page is run by {{run_by}}, not by the council or the clubs. Bookings can change and matches can run late, so check the signs at the park.</p>
+    <p>Booking times: <a href="{{council_url}}" rel="noopener">City of Yarra</a>. <a href="https://open-meteo.com/" rel="noopener">Weather data by Open-Meteo.com</a>.{{repo_link}}</p>
+    <p id="checked" class="checked">Last checked {{checked}}.</p>
+  </footer>
+</main>
+<script id="park-data" type="application/json">{{data}}</script>
+<script>
+{{js}}
+</script>
+</body>
+</html>

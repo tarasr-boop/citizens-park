@@ -1,0 +1,8 @@
+# The built page. The daily job builds it fresh and publishes it.
+site/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.DS_Store
