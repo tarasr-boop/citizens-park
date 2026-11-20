@@ -26,8 +26,38 @@ jobs:
         uses: actions/checkout@v7
       - name: Run the tests
         run: python3 -m unittest discover -s tests -t . -v
-      - name: Check the page script
-        run: node --check parkbot/web/page.js
+      - name: Check the page's scripts
+        run: |
+          node --check parkbot/web/page.js
+          node --check parkbot/web/sw.js
+
+  # The backend that sends notifications (the notifications/ folder). Nothing
+  # here is put on Cloudflare: that is the job of the "Alerts backend" workflow.
+  alerts:
+    name: Alerts backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: notifications
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v7
+      - name: Get Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      # Exactly the versions listed in package-lock.json, and without running
+      # any of the scripts that packages bring along.
+      - name: Install the tools
+        run: npm ci --ignore-scripts
+      - name: Run the tests
+        run: npm test
+      # Bundles the code the way a deploy does, then runs that bundle in the
+      # same program that runs it on Cloudflare's servers.
+      - name: Try it in Cloudflare's own runtime
+        run: npm run runtime
 
   dry-run:
     name: Dry run with the live sources
