@@ -41,6 +41,7 @@ class Config:
     about_text: str
     about_link: str
     about_link_text: str
+    push_url: str  # the notifications backend, without a closing "/"; while empty the page offers no notifications
 
     @property
     def zone(self) -> ZoneInfo:
@@ -79,7 +80,16 @@ def load(path: str | Path = "config.toml") -> Config:
     try:
         park, council, telegram, site = raw["park"], raw["council"], raw["telegram"], raw["site"]
         about = raw.get("about", {})  # optional
-        for name, section in (("park", park), ("council", council), ("telegram", telegram), ("site", site), ("about", about)):
+        notifications = raw.get("notifications", {})  # optional
+        sections = (
+            ("park", park),
+            ("council", council),
+            ("telegram", telegram),
+            ("site", site),
+            ("about", about),
+            ("notifications", notifications),
+        )
+        for name, section in sections:
             if not isinstance(section, dict):
                 raise ConfigError(f"{path}: {name} should be a section that starts with a [{name}] line")
         channel = str(telegram.get("channel", "")).strip()
@@ -123,6 +133,7 @@ def load(path: str | Path = "config.toml") -> Config:
             about_link=about_link,
             # With no words of its own, the link shows its address without the "https://".
             about_link_text=str(about.get("link_text", "")).strip() or about_link.removeprefix("https://").rstrip("/"),
+            push_url=_web_address(str(notifications.get("url", "")), "notifications.url").rstrip("/"),
         )
     except KeyError as error:
         raise ConfigError(f"{path} is missing the setting {error}") from error

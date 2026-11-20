@@ -17,19 +17,20 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parent.parent
 GREEN = (23, 105, 58, 255)
 CREAM = (255, 253, 248, 255)
+WHITE = (255, 255, 255, 255)
 
 # The paw on a 512 by 512 canvas: (centre x, centre y, radius x, radius y, tilt in degrees).
 PAD = (256, 322, 96, 78, 0)
 TOES = [(146, 236, 38, 50, -24), (214, 158, 40, 54, -8), (298, 158, 40, 54, 8), (366, 236, 38, 50, 24)]
 
 
-def _ellipse(canvas: Image.Image, shape: tuple[int, int, int, int, int], scale: float, shift: float) -> None:
+def _ellipse(canvas: Image.Image, shape: tuple[int, int, int, int, int], scale: float, shift: float, fill=CREAM) -> None:
     cx, cy, rx, ry, tilt = shape
     size = int(max(rx, ry) * 2 * scale) + 8
     layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
     half = size / 2
-    draw.ellipse((half - rx * scale, half - ry * scale, half + rx * scale, half + ry * scale), fill=CREAM)
+    draw.ellipse((half - rx * scale, half - ry * scale, half + rx * scale, half + ry * scale), fill=fill)
     layer = layer.rotate(-tilt, resample=Image.BICUBIC)
     x = int(shift + cx * scale - half)
     y = int(shift + cy * scale - half)
@@ -49,6 +50,20 @@ def icon(size: int, rounded: bool, paw: float) -> Image.Image:
     shift = big * (1 - paw) / 2
     for shape in [PAD, *TOES]:
         _ellipse(canvas, shape, scale, shift)
+    return canvas.resize((size, size), Image.LANCZOS)
+
+
+def badge(size: int, paw: float = 1.45) -> Image.Image:
+    """The small mark an Android phone puts in its status bar for a notification.
+
+    The phone uses only the shape, so this is the paw alone, in white on nothing.
+    """
+    big = size * 4
+    canvas = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    scale = big / 512 * paw
+    shift = big * (1 - paw) / 2
+    for shape in [PAD, *TOES]:
+        _ellipse(canvas, shape, scale, shift, fill=WHITE)
     return canvas.resize((size, size), Image.LANCZOS)
 
 
@@ -74,5 +89,6 @@ if __name__ == "__main__":
     icon(512, rounded=False, paw=0.88).save(assets / "icon-maskable-512.png", optimize=True)
     # iPhones round the corners themselves and do not like transparency.
     icon(180, rounded=False, paw=1.02).convert("RGB").save(assets / "apple-touch-icon.png", optimize=True)
+    badge(96).save(assets / "badge.png", optimize=True)
     (assets / "favicon.svg").write_text(favicon_svg(), encoding="utf-8")
     print("Icons written to assets/")

@@ -1,0 +1,134 @@
+name: Alerts backend
+
+# Puts the alerts backend (the notifications/ folder) on Cloudflare. That is
+# the small program that keeps the devices that asked for the daily alert and
+# sends it to them.
+#
+# It runs when that folder changes on the main branch, and when it is started
+# by hand (Actions, "Alerts backend", "Run workflow"). To deploy, it needs two
+# secrets in this repository's settings: CLOUDFLARE_API_TOKEN and
+# CLOUDFLARE_ACCOUNT_ID. The README says how to make them. Until both are
+# there, the backend is only tested, and the run says so.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "notifications/**"
+      - ".github/workflows/alerts.yml"
+  workflow_dispatch:
+
+# No rights for the workflow as a whole. Each job below is given only the ones it needs.
+permissions: {}
+
+# One deployment at a time.
+concurrency:
+  group: alerts-backend
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: notifications
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Get Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      # Exactly the versions listed in package-lock.json, and without running
+      # any of the scripts that packages bring along.
+      - name: Install the tools
+        run: npm ci --ignore-scripts
+      - name: Run the tests
+        run: npm test
+      # Bundles the code the way a deploy does, then runs that bundle in the
+      # same program that runs it on Cloudflare's servers.
+      - name: Try it in Cloudflare's own runtime
+        run: npm run runtime
+
+  deploy:
+    name: Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: notifications
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Only "yes" or "no" reaches this step, never the secrets themselves.
+      - name: Look for the Cloudflare secrets
+        id: secrets
+        env:
+          BOTH_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+        run: |
+          if [ "$BOTH_SET" = "true" ]; then
+            echo "found=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=no" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Tested, not deployed::The secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not both set, so nothing was put on Cloudflare."
+            echo "The backend passed its tests. It was not deployed, because the secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not both set. The README says how to make them." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Get Node
+        if: steps.secrets.outputs.found == 'yes'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Only the deploy tool and what it needs, in exactly the versions listed
+      # in package-lock.json, and without running any install scripts.
+      - name: Install the deploy tool
+        if: steps.secrets.outputs.found == 'yes'
+        run: npm ci --omit=dev --ignore-scripts
+
+      # The one step that is handed the secrets.
+      - name: Deploy to Cloudflare
+        if: steps.secrets.outputs.found == 'yes'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --no-install wrangler deploy
+
+      # The address comes from wrangler.jsonc. The first time, Cloudflare needs
+      # a few minutes to set it up, so this asks patiently.
+      - name: Ask the backend how things are
+        if: steps.secrets.outputs.found == 'yes'
+        run: |
+          host="$(sed -n 's/.*"pattern": *"\([a-z0-9.-]*\)".*/\1/p' wrangler.jsonc | head -n 1)"
+          if [ -z "$host" ]; then
+            echo "::error::No address was found in wrangler.jsonc."
+            exit 1
+          fi
+          for attempt in $(seq 1 24); do
+            if answer="$(curl --silent --show-error --fail --max-time 10 "https://$host/status")"; then
+              echo "The backend answers at https://$host/status:"
+              # Shown in this log only. It is never written anywhere that formats text.
+              printf '%s\n' "$answer" | head -c 2000 | tr -d '\r' | sed 's/^/  /'
+              echo "The alerts backend is live at https://$host" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "No answer yet (try $attempt of 24). A new address can take a few minutes to start working."
+            sleep 15
+          done
+          echo "::error title=Deployed, but not answering yet::https://$host/status gave no answer for several minutes. Run this workflow again in a quarter of an hour."
+          exit 1

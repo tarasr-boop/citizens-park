@@ -1,7 +1,8 @@
-"""The words of the Telegram posts.
+"""The words of the Telegram posts, and of the notification a phone shows.
 
 Telegram's HTML mode is used for the bold heading and the link, so anything
-that comes from outside (such as a label from the council's page) is escaped.
+that comes from outside (such as a label from the council's page) is escaped
+before it goes into a post. A notification is plain text and needs none.
 """
 
 from __future__ import annotations
@@ -28,11 +29,14 @@ def _text(value: str) -> str:
 
 
 def _booking_lines(plan: DayPlan, now_minute: int) -> list[str]:
-    """What is booked for the rest of ``plan``'s day. The free times are not listed: they follow from the booked ones."""
+    """What is booked for the rest of ``plan``'s day. The free times are not listed: they follow from the booked ones.
+
+    Plain text, like the three functions after this one: ``daily`` escapes it for Telegram.
+    """
     if plan.closed:
         lines = ["⛔ The oval is closed today."]
         if plan.label:
-            lines.append(f"Council notice: {_text(plan.label)}")
+            lines.append(f"Council notice: {plan.label}")
         return lines
     if not plan.known:
         return ["❔ No booking information for today. Check the signs at the park."]
@@ -40,7 +44,7 @@ def _booking_lines(plan: DayPlan, now_minute: int) -> list[str]:
     sure = plan.confirmed
     if not plan.slots:
         if plan.label:
-            return [f"⚠️ Listed for today: {_text(plan.label)}. The oval may be closed."]
+            return [f"⚠️ Listed for today: {plan.label}. The oval may be closed."]
         if sure:
             return ["🟢 No bookings today."]
         return [f"🟢 Usually no bookings on {plan.day:%A}s."]
@@ -54,7 +58,7 @@ def _booking_lines(plan: DayPlan, now_minute: int) -> list[str]:
     periods = [f"until {clock(slot.end)}" if slot.start <= now_minute else span(slot) for slot in remaining]
     booked = ", then ".join(periods)
     if plan.label:
-        booked += f" ({_text(plan.label)})"
+        booked += f" ({plan.label})"
     return [f"🔴 Booked {booked}" if sure else f"🟠 Usually booked {booked}"]
 
 
@@ -62,7 +66,7 @@ def _rain_lines(plan: DayPlan, hours: list[HourRain] | None, now_minute: int, sa
     look = outlook(hours, now_minute)
     lines = [f"{_RAIN_ICONS[look.level]} {look.text}"]
     if hours and saved_at:
-        lines[0] += f" Forecast from {_text(saved_at)}."
+        lines[0] += f" Forecast from {saved_at}."
     if not hours or plan.closed:
         return lines
 
@@ -104,20 +108,40 @@ def _caution_line(plan: DayPlan) -> str:
     """A warning when the day's times are not fresh from the council's page. Nothing when they are."""
     if not plan.known or (plan.confirmed and not plan.stale):
         return ""
-    return f"⚠️ {_text(plan.note)}"
+    return f"⚠️ {plan.note}"
+
+
+def _news(plan: DayPlan, forecast: Forecast | None, now_minute: int, config: Config, saved_at: str) -> tuple[list[str], list[str]]:
+    """The day's news in two parts: what is booked, then the rain and any warning. Plain text."""
+    hours = forecast.hours.get(plan.day) if forecast else None
+    rest = _rain_lines(plan, hours, now_minute, saved_at)
+    rest += [line for line in (_window_line(plan, hours, now_minute, config), _caution_line(plan)) if line]
+    return _booking_lines(plan, now_minute), rest
 
 
 def daily(plan: DayPlan, forecast: Forecast | None, now: datetime, config: Config) -> str:
     """The daily post for ``plan``'s day, written at ``now``."""
-    now_minute = now.hour * 60 + now.minute
-    hours = forecast.hours.get(plan.day) if forecast else None
+    booked, rest = _news(plan, forecast, now.hour * 60 + now.minute, config, forecast.saved_at if forecast else "")
     lines = [f"🐕 <b>{_text(config.park_name)}</b>", ""]
-    lines += _booking_lines(plan, now_minute)
+    lines += [_text(line) for line in booked]
     lines.append("")
-    lines += _rain_lines(plan, hours, now_minute, forecast.saved_at if forecast else "")
-    lines += [line for line in (_window_line(plan, hours, now_minute, config), _caution_line(plan)) if line]
+    lines += [_text(line) for line in rest]
     lines += ["", f'<a href="{escape(config.site_url)}">Press here for the week ahead and rain by the hour</a>']
     return "\n".join(lines)
+
+
+def notice(plan: DayPlan, forecast: Forecast | None, now_minute: int, config: Config, saved_at: str = "") -> dict[str, str]:
+    """The same news as the daily post, as a notification for a phone: a title and a few lines under it.
+
+    ``now_minute`` is the time of day the words are written for. The page's data
+    carries a notice for each coming day, written for the time the alert goes
+    out, so that one is ready even on a day when no check ran before the alert.
+    """
+    booked, rest = _news(plan, forecast, now_minute, config, saved_at)
+    title = booked[0]
+    if title.endswith(".") and ". " not in title:
+        title = title[:-1]  # a title of one sentence reads better without its full stop
+    return {"title": title, "body": "\n".join(booked[1:] + rest)}
 
 
 def _day_words(plan: DayPlan) -> str:

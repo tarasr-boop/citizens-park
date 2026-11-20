@@ -533,4 +533,268 @@
       }
     });
   }
+
+  // ---- The daily alert as a notification on this device ----
+  //
+  // The browser gives this device an address for notifications. That address
+  // is handed to the backend named in the page's data, which sends the alert
+  // once a day. The script beside this page, sw.js, shows it when it arrives.
+  // The backend learns nothing else about the device or the person.
+
+  var notify = document.getElementById("notify");
+  var notifyNote = document.getElementById("notify-note");
+  var backend = /^https:\/\/\S+$/.test(data.push || "") ? String(data.push).replace(/\/+$/, "") : "";
+
+  if (notify && notifyNote && backend) {
+    (function () {
+      var agent = navigator.userAgent || "";
+      var apple = /iPad|iPhone|iPod/.test(agent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      var saved = navigator.standalone === true || !!(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+      var able = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+      // An iPhone or iPad allows notifications only for a page saved to its Home Screen.
+      var needsHome = !able && apple && !saved;
+      if (!able && !needsHome) return; // nothing to offer in this browser
+
+      var device = /iPhone|iPod|Android.*Mobile/.test(agent) ? "phone" : "device";
+      var alertAt = clock(Math.floor(((data.alert && data.alert.from) || 870) / 60 + 0.5) * 60);
+      var DAY = 24 * 3600 * 1000;
+      var on = false;
+      var busy = false;
+
+      var words = {
+        home:
+          "On an iPhone or iPad, alerts only work from the Home Screen. Open this page in Safari, tap the Share button, " +
+          "choose “Add to Home Screen”, then open it from there and tap this button again.",
+        blocked: "Notifications are blocked for this page. Allow them in your browser’s settings for this site, then tap the button again.",
+        dismissed: "",
+        on: "Alerts are on for this " + device + ": one a day, at about " + alertAt + ". A first notification is on its way, to show that it works.",
+        off: "Alerts are off for this " + device + ".",
+        full: "No more devices can be added at the moment. Please try again another day.",
+        // The browser itself said no. A private window is the usual reason, and a page cannot tell that it is in one.
+        refused:
+          "This browser could not set up notifications. If this is a private or incognito window, open the page in a normal one and try again.",
+        browser: "This browser could not set up notifications. Please try again later.",
+        service: "The alerts service could not be reached. Check your connection and try again in a minute."
+      };
+
+      function say(text) {
+        notifyNote.textContent = text;
+        notifyNote.hidden = !text;
+      }
+
+      function show(isOn) {
+        on = isOn;
+        notify.textContent = (isOn ? "Turn off alerts on this " : "Get the daily alert on this ") + device;
+      }
+
+      function setBusy(isBusy) {
+        busy = isBusy;
+        notify.disabled = isBusy;
+      }
+
+      // A failure with one of the reasons above, so the right words can be shown.
+      function failure(reason) {
+        var error = new Error(reason);
+        error.reason = reason;
+        return error;
+      }
+
+      // The backend's public key, as the bytes a browser wants.
+      function keyBytes(text) {
+        var padded = (text + "===".slice((text.length + 3) % 4)).replace(/-/g, "+").replace(/_/g, "/");
+        var raw = window.atob(padded);
+        var bytes = new Uint8Array(raw.length);
+        for (var index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
+        return bytes;
+      }
+
+      // Ask the backend. The answer always comes back as an object with "status".
+      function ask(path, body) {
+        var options = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {};
+        return fetch(backend + path, options).then(
+          function (response) {
+            return response.json().then(
+              function (reply) {
+                reply = reply && typeof reply === "object" ? reply : {};
+                reply.status = response.status;
+                return reply;
+              },
+              function () {
+                return { ok: false, status: response.status };
+              }
+            );
+          },
+          function () {
+            throw failure("service");
+          }
+        );
+      }
+
+      function permission() {
+        return new Promise(function (resolve) {
+          var asked;
+          try {
+            asked = Notification.requestPermission(resolve);
+          } catch (error) {
+            resolve("denied");
+            return;
+          }
+          if (asked && asked.then) {
+            asked.then(resolve, function () {
+              resolve("default");
+            });
+          }
+        });
+      }
+
+      function subscription() {
+        return navigator.serviceWorker.getRegistration().then(function (registration) {
+          return registration ? registration.pushManager.getSubscription() : null;
+        });
+      }
+
+      // Get this device an address for notifications and hand it to the backend.
+      // An address the backend calls "gone" is dropped, and a new one is tried once.
+      function join(again) {
+        return navigator.serviceWorker
+          .register("sw.js")
+          .then(
+            function () {
+              return navigator.serviceWorker.ready;
+            },
+            function () {
+              throw failure("refused");
+            }
+          )
+          .then(function (registration) {
+            return registration.pushManager.getSubscription().then(function (existing) {
+              if (existing) return existing;
+              return ask("/key").then(function (reply) {
+                if (!reply.key) throw failure("service");
+                return registration.pushManager
+                  .subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(String(reply.key)) })
+                  .catch(function () {
+                    throw failure(Notification.permission === "denied" ? "blocked" : "refused");
+                  });
+              });
+            });
+          })
+          .then(function (mine) {
+            return ask("/subscribe", { subscription: mine.toJSON() }).then(
+              function (reply) {
+                if (reply.ok) return reply;
+                // "gone": the address does not work. "host": a notification service the backend does not know.
+                var reason = reply.reason === "full" ? "full" : reply.reason === "gone" || reply.reason === "host" ? "browser" : "service";
+                return mine.unsubscribe().then(function () {
+                  if (reply.reason === "gone" && again !== false) return join(false);
+                  throw failure(reason);
+                });
+              },
+              function (error) {
+                // Not handed over, so not kept: the button must tell the truth.
+                return mine.unsubscribe().then(function () {
+                  throw error;
+                });
+              }
+            );
+          });
+      }
+
+      function turnOn() {
+        if (Notification.permission === "denied") return say(words.blocked);
+        setBusy(true);
+        say("");
+        // Asked first, while this is still the tap: some browsers only ask during one.
+        permission()
+          .then(function (answer) {
+            if (answer !== "granted") throw failure(answer === "denied" ? "blocked" : "dismissed");
+            return join();
+          })
+          .then(
+            function () {
+              show(true);
+              say(words.on);
+            },
+            function (error) {
+              show(false);
+              say(words[error && error.reason] === undefined ? words.browser : words[error.reason]);
+            }
+          )
+          .then(function () {
+            setBusy(false);
+          });
+      }
+
+      function turnOff() {
+        setBusy(true);
+        say("");
+        subscription()
+          .then(function (mine) {
+            if (!mine) return null;
+            var endpoint = mine.endpoint;
+            return mine.unsubscribe().then(function () {
+              // If this message is lost, the backend finds out by itself the next time it sends.
+              return ask("/unsubscribe", { endpoint: endpoint }).catch(function () {});
+            });
+          })
+          .then(
+            function () {
+              show(false);
+              say(words.off);
+            },
+            function () {
+              say(words.browser);
+            }
+          )
+          .then(function () {
+            setBusy(false);
+          });
+      }
+
+      // Once a day at most, a device with alerts on checks that the backend still
+      // has its address. If the address has stopped working, it quietly gets a new one.
+      function checkIn(mine) {
+        try {
+          if (Date.now() - Number(window.localStorage.getItem("alertCheck") || 0) < DAY) return;
+          window.localStorage.setItem("alertCheck", String(Date.now()));
+        } catch (error) {
+          return; // nowhere to remember the last check, so do not ask on every visit
+        }
+        ask("/subscribe", { subscription: mine.toJSON() })
+          .then(function (reply) {
+            if (reply.ok || reply.reason !== "gone") return null;
+            return mine.unsubscribe().then(function () {
+              if (Notification.permission !== "granted") return show(false);
+              return join(false).then(
+                function () {
+                  show(true);
+                },
+                function () {
+                  show(false);
+                }
+              );
+            });
+          })
+          .catch(function () {});
+      }
+
+      show(false);
+      notify.hidden = false;
+      notify.addEventListener("click", function () {
+        if (busy) return;
+        if (needsHome) return say(words.home);
+        if (on) turnOff();
+        else turnOn();
+      });
+      if (able) {
+        subscription()
+          .then(function (mine) {
+            if (!mine) return;
+            show(true);
+            checkIn(mine);
+          })
+          .catch(function () {});
+      }
+    })();
+  }
 })();

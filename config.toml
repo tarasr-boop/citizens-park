@@ -54,3 +54,9 @@ text = "Hi, I'm Sofia, a dog behaviourist. I work at the Lost Dogs' Home shelter
 # One link under the words, and the words to show for it.
 link = "https://www.instagram.com/gentle_woof"
 link_text = "@gentle_woof on Instagram"
+
+[notifications]
+# The address of the notifications backend (the small Cloudflare program in the
+# notifications/ folder): "https://alerts.citizensbark.com" once it is running.
+# While this is empty, the page leaves out its button for notifications on a phone.
+url = ""
