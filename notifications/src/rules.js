@@ -59,6 +59,7 @@ export function settingsFrom(env) {
     from: minutes(env.ALERT_FROM, "ALERT_FROM"),
     until: minutes(env.ALERT_UNTIL, "ALERT_UNTIL"),
     check: checkFrom(env),
+    bot: botFrom(env),
   };
   if (settings.from >= settings.until) throw new Error("ALERT_FROM should be earlier than ALERT_UNTIL");
   return settings;
@@ -87,6 +88,47 @@ function checkFrom(env) {
     throw new Error("CHECK_BRANCH should be a branch name such as main");
   }
   return { repository, workflow, branch, times };
+}
+
+/** A time on the hour, such as "16:00", as the hour: 16. */
+function hourOf(text, what) {
+  const minute = minutes(text, what);
+  if (minute % 60) throw new Error(`${what} should be a time on the hour, such as 16:00, got ${text}`);
+  return minute / 60;
+}
+
+/**
+ * The Telegram bot's settings (see bot.js), as `{ address, park, first, last,
+ * evening, weekday, weekend }`, with the times as hours of the day: people
+ * pick an hour from `first` to `last`, a new chat starts with `weekday` and
+ * `weekend`, and an alert at `evening` or later is about the next day.
+ * `address` is where Telegram brings what people write to the bot, and `park`
+ * the name the bot uses for the park. Null while
+ * BOT_FIRST is not set, which leaves the bot out.
+ */
+function botFrom(env) {
+  if (env.BOT_FIRST === undefined) return null;
+  let address;
+  try {
+    address = new URL("/telegram", String(env.BACKEND_URL));
+  } catch {
+    throw new Error("BACKEND_URL should be this backend's own address, such as https://alerts.example.org");
+  }
+  if (address.protocol !== "https:") throw new Error("BACKEND_URL should start with https://");
+  const bot = {
+    address: address.href,
+    park: String(env.PARK_NAME || "").trim() || "park",
+    first: hourOf(env.BOT_FIRST, "BOT_FIRST"),
+    last: hourOf(env.BOT_LAST, "BOT_LAST"),
+    evening: hourOf(env.BOT_EVENING, "BOT_EVENING"),
+    weekday: hourOf(env.BOT_WEEKDAY, "BOT_WEEKDAY"),
+    weekend: hourOf(env.BOT_WEEKEND, "BOT_WEEKEND"),
+  };
+  if (!(bot.first <= Math.min(bot.weekday, bot.weekend) && Math.max(bot.weekday, bot.weekend) <= bot.last)) {
+    throw new Error("BOT_WEEKDAY and BOT_WEEKEND should lie between BOT_FIRST and BOT_LAST");
+  }
+  if (!(bot.first < bot.evening && bot.evening <= bot.last + 1)) throw new Error("BOT_EVENING should be later than BOT_FIRST, and at most an hour after BOT_LAST");
+  return bot;
 }
 
 /** The date and the minute of the day at the park: `{ date: "2026-11-20", minute: 885 }`. */

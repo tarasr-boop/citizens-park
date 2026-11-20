@@ -7,8 +7,8 @@ import { afterEach, beforeEach, test } from "node:test";
 
 import { MOST_BYTES } from "../src/rules.js";
 import * as everything from "../src/worker.js";
-import worker, { Stats, Subscribers } from "../src/worker.js";
-import { CHECK, ENV, GITHUB, SITE, at, day, memoryStorage, newDevice, pageData, world } from "./standins.js";
+import worker, { Chats, Stats, Subscribers } from "../src/worker.js";
+import { BOT, BOT_TOKEN, CHECK, ENV, GITHUB, SITE, TELEGRAM, at, day, memorySql, memoryStorage, newDevice, pageData, world } from "./standins.js";
 
 const PAGE = "https://citizensbark.example";
 const BACKEND = "https://alerts.example";
@@ -77,7 +77,27 @@ function cloudflare(env = ENV) {
           };
         },
       },
+      CHATS: {
+        idFromName: (name) => ({ name }),
+        get(id, options) {
+          it.chatsAsked.push({ id, options });
+          return {
+            async fetch(address, init) {
+              if (!it.chatsObject) {
+                const chatsState = { storage: it.chatsStorage, ready: null, blockConcurrencyWhile: (work) => (chatsState.ready = work()) };
+                it.chatsObject = new Chats(chatsState, env);
+                await chatsState.ready;
+              }
+              return it.chatsObject.fetch(new Request(address, init));
+            },
+          };
+        },
+      },
     },
+    // The bot's chats: an object of its own, with a database of its own.
+    chatsStorage: Object.assign(memoryStorage(), { sql: memorySql() }),
+    chatsObject: null,
+    chatsAsked: [],
     // The counter behind the stats page: an object of its own, with storage of its own.
     statsStorage: memoryStorage(),
     statsObject: null,
@@ -110,7 +130,8 @@ const status = async (cf) => (await ask(cf, "GET", "/status")).json();
 
 test("the worker's file exports only what Cloudflare can call", () => {
   // Cloudflare refuses a worker whose main file exports anything else, a plain number for example.
-  assert.deepEqual(Object.keys(everything).sort(), ["Stats", "Subscribers", "default"]);
+  assert.deepEqual(Object.keys(everything).sort(), ["Chats", "Stats", "Subscribers", "default"]);
+  assert.equal(typeof everything.Chats, "function");
   assert.equal(typeof everything.Subscribers, "function");
   assert.equal(typeof everything.Stats, "function");
   assert.deepEqual(Object.keys(everything.default).sort(), ["fetch", "scheduled"]);
@@ -124,7 +145,7 @@ test("anyone may ask how things are, and gets numbers only", async () => {
     assert.equal(answer.headers.get("Content-Type"), "application/json; charset=utf-8");
     assert.equal(answer.headers.get("Cache-Control"), "no-store");
     assert.equal(answer.headers.get("X-Content-Type-Options"), "nosniff");
-    assert.deepEqual(await answer.json(), { ok: true, devices: 0, sending: false, last: null, timer: null, unknownServices: {}, starter: OFF });
+    assert.deepEqual(await answer.json(), { ok: true, devices: 0, sending: false, last: null, timer: null, unknownServices: {}, starter: OFF, telegram: { on: false } });
   }
   // One book for everyone, kept near the people it serves.
   assert.deepEqual(cf.asked[0], { id: { name: "all" }, options: { locationHint: "oc" } });
@@ -480,4 +501,76 @@ test("anyone may open the stats page, which runs no script and shows counts only
   assert.match(october, /<strong>October 2026<\/strong>/);
   const odd = await (await ask(cf, "GET", "/stats?month=%3Cb%3E", { origin: null })).text();
   assert.match(odd, /<strong>November 2026<\/strong>/);
+});
+
+// ---------------------------------------------------------------------------
+// The Telegram bot
+// ---------------------------------------------------------------------------
+
+const WITH_BOT = { ...ENV, ...BOT, TELEGRAM_BOT_TOKEN: BOT_TOKEN };
+
+function update(cf, body, secret, extra = {}) {
+  const headers = secret === undefined ? {} : { "X-Telegram-Bot-Api-Secret-Token": secret };
+  return ask(cf, "POST", "/telegram", { origin: null, body, headers: { ...headers, ...extra } });
+}
+
+test("the bot sets itself up when the status page is first asked, and shows numbers only", async () => {
+  const cf = cloudflare(WITH_BOT);
+  const said = await status(cf);
+  assert.equal(said.telegram.on, true);
+  assert.equal(said.telegram.chats, 0);
+  assert.equal(said.telegram.hook.ok, true);
+  const hook = net.calls.find((call) => call.method === "setWebhook");
+  assert.equal(hook.body.url, "https://alerts.example/telegram");
+  assert.equal(JSON.stringify(said).includes(hook.body.secret_token), false);
+  assert.equal(JSON.stringify(said).includes(BOT_TOKEN), false);
+  // The bot's chats are kept apart from the book, near the people they serve.
+  assert.deepEqual(cf.chatsAsked[0], { id: { name: "all" }, options: { locationHint: "oc" } });
+});
+
+test("Telegram, and only Telegram with the password, reaches the bot", async () => {
+  const cf = cloudflare(WITH_BOT);
+  await status(cf);
+  const secret = net.calls.find((call) => call.method === "setWebhook").body.secret_token;
+  const start = { update_id: 1, message: { message_id: 1, from: { id: 5, is_bot: false }, chat: { id: 5, type: "private" }, text: "/start" } };
+
+  // Without the password, or with a wrong one, nothing happens. Where it comes from does not matter: Telegram sends no Origin.
+  assert.equal((await update(cf, start)).status, 403);
+  assert.equal((await update(cf, start, "wrong")).status, 403);
+  assert.equal((await update(cf, start, "wrong", { Origin: PAGE })).status, 403);
+  assert.equal(cf.chatsStorage.sql.chats().length, 0);
+
+  const answer = await update(cf, start, secret);
+  assert.equal(answer.status, 200);
+  assert.deepEqual(await answer.json(), { ok: true });
+  assert.deepEqual(cf.chatsStorage.sql.chats().map((chat) => [chat.id, chat.weekday, chat.weekend]), [[5, 16, 8]]);
+  assert.equal(net.said.length, 2);
+  assert.equal((await status(cf)).telegram.chats, 1);
+
+  // Only POST, and nothing too long or that is not JSON.
+  assert.equal((await ask(cf, "GET", "/telegram", { origin: null })).status, 404);
+  assert.equal((await update(cf, "x".repeat(70000), secret)).status, 413);
+  assert.equal((await update(cf, "not json", secret)).status, 400);
+});
+
+test("the timer's look also reaches the bot, and the bot's trouble does not stop the book", async () => {
+  const cf = cloudflare(WITH_BOT);
+  now = at("2026-11-23", "16:00");
+  net.words = { generated: "2026-11-23T15:45+11:00", generatedText: "Mon 23 Nov, 3:45 PM", alerts: [{ date: "2026-11-23", hour: 16, about: "2026-11-23", weekend: false, text: "The words for 4 PM" }] };
+  await status(cf);
+  const secret = net.calls.find((call) => call.method === "setWebhook").body.secret_token;
+  await update(cf, { update_id: 1, message: { message_id: 1, from: { id: 5 }, chat: { id: 5, type: "private" }, text: "/start" } }, secret);
+  await tick(cf);
+  assert.equal((await status(cf)).telegram.look.did, "started");
+  // Cloudflare then wakes the bot's object to send.
+  await cf.chatsObject.alarm();
+  assert.deepEqual(net.said.at(-1), { chat_id: 5, text: "The words for 4 PM", parse_mode: "HTML", link_preview_options: { is_disabled: true } });
+  assert.ok(net.calls.filter((call) => call.kind === "telegram").every((call) => call.url.startsWith(`${TELEGRAM}bot${BOT_TOKEN}/`)));
+
+  cf.chatsObject.bot.tick = async () => {
+    throw new Error("the bot broke");
+  };
+  now = at("2026-11-23", "16:05");
+  await tick(cf);
+  assert.equal((await status(cf)).timer.at, now);
 });

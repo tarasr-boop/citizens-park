@@ -1,25 +1,33 @@
 // The alerts backend for the Citizens Bark page, as a Cloudflare Worker.
 //
-// It does four things:
+// It does five things:
 //   - takes in the address a browser makes when someone turns alerts on
 //     (and removes it again when they turn them off)
 //   - once a day, in the afternoon, sends today's notice to every address
 //   - starts the daily check on GitHub when GitHub's own timer has not
+//   - runs the Telegram bot, which sends alerts at the times people choose
 //   - answers "how are things" with a few numbers
 //   - counts visits to the page and presses of its buttons, for the stats page
 //
-// The real work is in book.js, starter.js, stats.js and statspage.js. This
-// file only connects them to Cloudflare: the requests that come in, the
-// timer, and the place where things are kept.
+// The real work is in book.js, starter.js, bot.js, stats.js and statspage.js.
+// This file only connects them to Cloudflare: the requests that come in, the
+// timer, and the places where things are kept.
 
 import { Book } from "./book.js";
+import { Bot } from "./bot.js";
 import { MOST_BYTES, corsHeaders, settingsFrom } from "./rules.js";
 import { Starter } from "./starter.js";
 import { Counter, MOST_HIT_BYTES } from "./stats.js";
 import { statsPage } from "./statspage.js";
 
 // Cloudflare reads everything this file exports as something it can call: the
-// worker below and the classes for the book and the counter. So nothing else is exported here.
+// worker below and the classes for the book, the counter and the bot's chats.
+// So nothing else is exported here.
+
+// What Telegram brings is larger than what a browser hands over, but not by much.
+const MOST_UPDATE_BYTES = 65536;
+// The header in which Telegram sends the password the bot gave it.
+const SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token";
 
 function json(status, body, extra = {}) {
   return new Response(JSON.stringify(body), {
@@ -185,9 +193,80 @@ async function stats(request, env, settings, origin, cors) {
   }
 }
 
+/**
+ * The Telegram bot's list of chats. Kept apart from the book, with its own
+ * small database and its own wake-up calls, so that the two never wait for
+ * each other.
+ */
+export class Chats {
+  constructor(state, env) {
+    this.bot = new Bot({
+      sql: state.storage.sql,
+      storage: state.storage,
+      fetch: (address, options) => fetch(address, options),
+      now: () => Date.now(),
+      settings: settingsFrom(env),
+      log: (line) => console.log(line),
+      token: env.TELEGRAM_BOT_TOKEN,
+    });
+    state.blockConcurrencyWhile(async () => this.bot.open());
+  }
+
+  async fetch(request) {
+    const path = new URL(request.url).pathname;
+    let answer;
+    if (path === "/status") answer = { status: 200, body: await this.bot.status() };
+    else if (path === "/tick") answer = { status: 200, body: await this.bot.tick() };
+    else if (path === "/telegram") {
+      let given;
+      try {
+        given = JSON.parse(await request.text());
+      } catch {
+        return json(400, { ok: false, reason: "bad" });
+      }
+      answer = await this.bot.update(given, request.headers.get(SECRET_HEADER) || "");
+    } else answer = { status: 404, body: { ok: false, reason: "unknown" } };
+    return json(answer.status, answer.body);
+  }
+
+  async alarm() {
+    await this.bot.alarm();
+  }
+}
+
 function book(env) {
   // One book for everyone, kept in Oceania, near the people it serves.
   return env.SUBSCRIBERS.get(env.SUBSCRIBERS.idFromName("all"), { locationHint: "oc" });
+}
+
+function chats(env) {
+  return env.CHATS.get(env.CHATS.idFromName("all"), { locationHint: "oc" });
+}
+
+/** What the bot says about itself on the status page, or null if it cannot be reached. */
+async function botStatus(env) {
+  try {
+    const answer = await chats(env).fetch("https://chats/status");
+    return answer.ok ? await answer.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Telegram brings something people wrote to the bot. Only Telegram knows the password that comes with it. */
+async function telegramUpdate(request, env) {
+  const secret = request.headers.get(SECRET_HEADER) || "";
+  if (!secret) return json(403, { ok: false, reason: "secret" });
+  const body = await textUpTo(request, MOST_UPDATE_BYTES).catch(() => null);
+  if (body === null) return json(413, { ok: false, reason: "bad" });
+  try {
+    const answer = await chats(env).fetch("https://chats/telegram", { method: "POST", body, headers: { [SECRET_HEADER]: secret } });
+    return json(answer.status, await answer.json());
+  } catch (error) {
+    // Telegram brings it again a little later.
+    console.log(`the bot did not answer: ${String(error && error.message).slice(0, 200)}`);
+    return json(503, { ok: false, reason: "later" });
+  }
 }
 
 // What the outside may ask for, and where in the book it leads. The timer's
@@ -202,6 +281,8 @@ export default {
     } catch (error) {
       return json(500, { ok: false, reason: "settings", detail: String(error.message) });
     }
+    // Telegram's own requests come from its servers, not from the page.
+    if (request.method === "POST" && new URL(request.url).pathname === "/telegram") return telegramUpdate(request, env);
     const origin = request.headers.get("Origin");
     const cors = corsHeaders(origin, settings);
     // A browser asks first whether the page may talk to this backend.
@@ -221,7 +302,10 @@ export default {
     }
     try {
       const answer = await book(env).fetch(`https://book${path}`, { method: request.method, body });
-      return json(answer.status, await answer.json(), cors);
+      const said = await answer.json();
+      // The status page also shows how the bot is doing.
+      if (path === "/status" && env.CHATS) said.telegram = await botStatus(env);
+      return json(answer.status, said, cors);
     } catch (error) {
       // The book could not be reached or stumbled. The page asks again later.
       console.log(`the book did not answer: ${String(error && error.message).slice(0, 200)}`);
@@ -230,15 +314,18 @@ export default {
   },
 
   // Runs every five minutes through the day (see "crons" in wrangler.jsonc).
+  // The book and the bot each take their own look, and trouble with one does
+  // not stop the other.
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(
-      book(env)
-        .fetch("https://book/tick", { method: "POST" })
+    const look = (what, place, address) =>
+      place
+        .fetch(address, { method: "POST" })
         .then((answer) => answer.text())
         .then(
-          (text) => console.log(`tick: ${text}`),
-          (error) => console.log(`tick failed: ${String(error && error.message).slice(0, 200)}`)
-        )
-    );
+          (text) => console.log(`${what}: ${text}`),
+          (error) => console.log(`${what} failed: ${String(error && error.message).slice(0, 200)}`)
+        );
+    ctx.waitUntil(look("tick", book(env), "https://book/tick"));
+    if (env.CHATS) ctx.waitUntil(look("bot", chats(env), "https://chats/tick"));
   },
 };

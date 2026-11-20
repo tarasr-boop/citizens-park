@@ -5,6 +5,7 @@
 // separately from the code under test, so that the two check each other.
 
 import crypto from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { settingsFrom } from "../src/rules.js";
 
 export const SITE = "https://citizensbark.example/";
@@ -14,6 +15,20 @@ export const settings = settingsFrom(ENV);
 // The second timer's four settings, with the times of day the real check has.
 export const CHECK = { CHECK_REPOSITORY: "someone/park", CHECK_WORKFLOW: "daily.yml", CHECK_BRANCH: "main", CHECK_TIMES: "06:17 11:47 13:47 14:40 15:10 15:45 17:47 19:47" };
 export const GITHUB = "https://api.github.com/";
+export const TELEGRAM = "https://api.telegram.org/";
+// The Telegram bot's settings, as wrangler.jsonc has them.
+export const BOT = {
+  PARK_NAME: "Citizens Park oval",
+  BACKEND_URL: "https://alerts.example",
+  BOT_FIRST: "04:00",
+  BOT_LAST: "23:00",
+  BOT_EVENING: "21:00",
+  BOT_WEEKDAY: "16:00",
+  BOT_WEEKEND: "08:00",
+};
+// Made up for the tests: the shape of a bot token, and the name Telegram gives the bot.
+export const BOT_TOKEN = "123456789:STANDIN-aBcDeFgHiJkLmNoPqRsTuVwXyZ01234";
+export const BOT_NAME = "standin_park_bot";
 // What GitHub puts in an answer. The backend keeps the number of an answer and none of its words.
 export const GITHUB_WORDS = "words from GitHub";
 
@@ -61,6 +76,30 @@ export function clock(start) {
     },
   };
   return it;
+}
+
+/**
+ * A Durable Object's SQLite database, for the tests: the real SQLite that
+ * comes with Node, behind the one call the bot uses, `exec`.
+ */
+export function memorySql() {
+  const db = new DatabaseSync(":memory:");
+  return {
+    db,
+    exec(query, ...values) {
+      const statement = db.prepare(query);
+      if (/^\s*SELECT/i.test(query)) {
+        const rows = statement.all(...values).map((row) => ({ ...row }));
+        return { toArray: () => rows, rowsWritten: 0 };
+      }
+      const { changes } = statement.run(...values);
+      return { toArray: () => [], rowsWritten: Number(changes) };
+    },
+    /** Every chat, as plain objects in the order of their numbers. */
+    chats() {
+      return db.prepare("SELECT * FROM chats ORDER BY id").all().map((row) => ({ ...row }));
+    },
+  };
 }
 
 /**
@@ -205,11 +244,13 @@ export function day(date, title = "Booked 5 PM to 7:30 PM", body = "Cricket trai
  * "down". `github` decides the same for GitHub: by default it takes every
  * request. Every request is written down in `calls`.
  */
-export function world({ page = null, answer = () => 201, pause = 0, github = (call) => (call.method === "GET" ? 200 : 204) } = {}) {
+export function world({ page = null, words = null, answer = () => 201, pause = 0, github = (call) => (call.method === "GET" ? 200 : 204), telegram = () => null } = {}) {
   const it = {
     page,
+    words,
     answer,
     github,
+    telegram,
     calls: [],
     flying: 0,
     mostFlying: 0,
@@ -228,11 +269,45 @@ export function world({ page = null, answer = () => 201, pause = 0, github = (ca
     get reads() {
       return it.calls.filter((call) => call.kind === "page");
     },
+    /** What was asked of Telegram, in order, as `{ method, body }`. */
+    get bot() {
+      return it.calls.filter((call) => call.kind === "telegram");
+    },
+    /** The messages the bot sent, as `{ chat_id, text, ... }`. */
+    get said() {
+      return it.bot.filter((call) => call.method === "sendMessage").map((call) => call.body);
+    },
     pushesTo(device) {
       return it.pushes.filter((call) => call.url === device.endpoint);
     },
     async fetch(address, options = {}) {
       const url = String(address);
+      if (url.startsWith(`${SITE}telegram.json`)) {
+        it.calls.push({ kind: "words", url, options });
+        if (it.words === "down") throw new TypeError("fetch failed");
+        if (typeof it.words === "number") return new Response("no", { status: it.words });
+        return new Response(JSON.stringify(it.words), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.startsWith(TELEGRAM)) {
+        const found = /^https:\/\/api\.telegram\.org\/bot([^/]+)\/(\w+)$/.exec(url);
+        const call = { kind: "telegram", url, token: found && found[1], method: found && found[2], body: JSON.parse(options.body || "{}"), options };
+        it.calls.push(call);
+        // The test may decide the answer, as `{ status, result, description, retry_after }`, "down", or null for the usual.
+        const said = await it.telegram(call);
+        if (said === "down") throw new TypeError("fetch failed");
+        const usual = {
+          getMe: { id: 123456789, is_bot: true, username: BOT_NAME },
+          getWebhookInfo: { url: "https://alerts.example/telegram", pending_update_count: 0 },
+          getMyDescription: { description: "" },
+          getMyShortDescription: { short_description: "" },
+          sendMessage: { message_id: it.bot.length },
+        };
+        const status = (said && said.status) || 200;
+        const body = status === 200
+          ? { ok: true, result: said && "result" in said ? said.result : (usual[call.method] ?? true) }
+          : { ok: false, error_code: status, description: (said && said.description) || "Bad Request", ...(said && said.retry_after ? { parameters: { retry_after: said.retry_after } } : {}) };
+        return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      }
       if (url.startsWith(SITE)) {
         it.calls.push({ kind: "page", url, options });
         if (it.page === "down") throw new TypeError("fetch failed");

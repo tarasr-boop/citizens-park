@@ -121,9 +121,35 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(told["TIMEZONE"], self.config.timezone_name, hint)
         self.assertEqual(told["ALERT_FROM"], hhmm(self.config.post_from), hint)
         self.assertEqual(told["ALERT_UNTIL"], hhmm(self.config.post_until), hint)
+        # The Telegram bot's hours, and its name for the park.
+        self.assertEqual(told["BOT_FIRST"], hhmm(self.config.bot_first), hint)
+        self.assertEqual(told["BOT_LAST"], hhmm(self.config.bot_last), hint)
+        self.assertEqual(told["BOT_EVENING"], hhmm(self.config.bot_evening), hint)
+        self.assertEqual(told["BOT_WEEKDAY"], hhmm(self.config.bot_weekday), hint)
+        self.assertEqual(told["BOT_WEEKEND"], hhmm(self.config.bot_weekend), hint)
+        self.assertEqual(told["PARK_NAME"], self.config.park_name, hint)
+        # Telegram is told to bring messages to the backend's own address, the one the page uses.
+        self.assertEqual(told["BACKEND_URL"], self.config.push_url, hint)
+        self.assertEqual(told["BACKEND_URL"], "https://" + self.settings["routes"][0]["pattern"])
         self.assertEqual(
             sorted(told),
-            ["ALERT_FROM", "ALERT_UNTIL", "CHECK_BRANCH", "CHECK_REPOSITORY", "CHECK_TIMES", "CHECK_WORKFLOW", "SITE_URL", "TIMEZONE"],
+            [
+                "ALERT_FROM",
+                "ALERT_UNTIL",
+                "BACKEND_URL",
+                "BOT_EVENING",
+                "BOT_FIRST",
+                "BOT_LAST",
+                "BOT_WEEKDAY",
+                "BOT_WEEKEND",
+                "CHECK_BRANCH",
+                "CHECK_REPOSITORY",
+                "CHECK_TIMES",
+                "CHECK_WORKFLOW",
+                "PARK_NAME",
+                "SITE_URL",
+                "TIMEZONE",
+            ],
         )
 
     def test_the_timer_covers_the_alert_window_in_summer_and_in_winter(self):
@@ -149,30 +175,56 @@ class SettingsTest(unittest.TestCase):
                 gaps = [later - earlier for earlier, later in zip(looks, looks[1:])]
                 self.assertLessEqual(max(gaps), 5)
 
+    def test_the_timer_looks_early_in_every_hour_the_bot_sends_in_summer_and_in_winter(self):
+        fires = set().union(*(utc_minutes(cron) for cron in self.settings["triggers"]["crons"]))
+        zone = ZoneInfo(self.config.timezone_name)
+        for day in (date(2027, 1, 15), date(2027, 7, 15), date(2026, 10, 4), date(2027, 4, 4)):
+            for hour in range(self.config.bot_first // 60, self.config.bot_last // 60 + 1):
+                with self.subTest(day=day.isoformat(), hour=hour):
+                    looks = []
+                    for minute in range(0, 30):
+                        moment = datetime.combine(day, time(hour, minute), tzinfo=zone).astimezone(ZoneInfo("UTC"))
+                        if moment.hour * 60 + moment.minute in fires:
+                            looks.append(minute)
+                    # Within five minutes of the hour, and more than once, in case one look is lost.
+                    self.assertTrue(looks, "the timer never looks in the first half hour")
+                    self.assertLessEqual(looks[0], 5)
+                    self.assertGreaterEqual(len(looks), 3)
+
     def test_the_timer_rests_at_night(self):
         # A look every five minutes around the clock would be 288 a day. Nothing
-        # needs looking after at night, in summer or in winter.
+        # needs looking after between 1 and 3 AM, in summer or in winter.
         fires = set().union(*(utc_minutes(cron) for cron in self.settings["triggers"]["crons"]))
-        self.assertLessEqual(len(fires), 17 * 12)
+        self.assertLessEqual(len(fires), 17 * 12 + 4 * 6)
         zone = ZoneInfo(self.config.timezone_name)
         for day in (date(2027, 1, 15), date(2027, 7, 15)):
-            for minute in [*range(23 * 60, 24 * 60), *range(0, 5 * 60)]:
+            for minute in range(1 * 60, 3 * 60):
                 moment = datetime.combine(day, time(minute // 60, minute % 60), tzinfo=zone).astimezone(ZoneInfo("UTC"))
                 self.assertNotIn(moment.hour * 60 + moment.minute, fires, f"{day} {hhmm(minute)}")
 
     def test_the_book_and_the_counter_are_set_up_the_way_the_free_plan_needs(self):
         self.assertEqual(
             self.settings["durable_objects"],
-            {"bindings": [{"name": "SUBSCRIBERS", "class_name": "Subscribers"}, {"name": "STATS", "class_name": "Stats"}]},
+            {
+                "bindings": [
+                    {"name": "SUBSCRIBERS", "class_name": "Subscribers"},
+                    {"name": "STATS", "class_name": "Stats"},
+                    {"name": "CHATS", "class_name": "Chats"},
+                ]
+            },
         )
         # On the free plan a Durable Object must keep its things in SQLite. A
         # migration that has been deployed is never changed: a new class gets a new one.
         self.assertEqual(
             self.settings["migrations"],
-            [{"tag": "v1", "new_sqlite_classes": ["Subscribers"]}, {"tag": "v2", "new_sqlite_classes": ["Stats"]}],
+            [
+                {"tag": "v1", "new_sqlite_classes": ["Subscribers"]},
+                {"tag": "v2", "new_sqlite_classes": ["Stats"]},
+                {"tag": "v3", "new_sqlite_classes": ["Chats"]},
+            ],
         )
         worker = (BACKEND / self.settings["main"]).read_text(encoding="utf-8")
-        for name, binding in (("Subscribers", "SUBSCRIBERS"), ("Stats", "STATS")):
+        for name, binding in (("Subscribers", "SUBSCRIBERS"), ("Stats", "STATS"), ("Chats", "CHATS")):
             self.assertIn(f"export class {name}", worker)
             self.assertIn(f"env.{binding}", worker)
 
@@ -424,14 +476,15 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(secrets_named(self.header), [])
         self.assertEqual(secrets_named(self.test_job), [])
         with_secrets = [step for step in self.steps(self.deploy_job) if secrets_named(step)]
-        self.assertEqual(len(with_secrets), 3)
-        look, deploy, hand_over = with_secrets
+        self.assertEqual(len(with_secrets), 4)
+        look, deploy, hand_over, hand_bot = with_secrets
         both = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
         # The first only learns which secrets exist: "true" or "false" is all it is handed.
         self.assertIn("BOTH_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}", look)
         self.assertIn("TIMER_SET: ${{ secrets.DAILY_CHECK_TOKEN != '' }}", look)
-        self.assertEqual(secrets_named(look), [*both, "DAILY_CHECK_TOKEN"])
-        self.assertEqual(len(re.findall(r"\$\{\{ secrets\.", look)), 2)
+        self.assertIn("BOT_SET: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}", look)
+        self.assertEqual(secrets_named(look), [*both, "DAILY_CHECK_TOKEN", "TELEGRAM_BOT_TOKEN"])
+        self.assertEqual(len(re.findall(r"\$\{\{ secrets\.", look)), 3)
         # The second is the deploy itself, and it runs nothing but the pinned deploy tool.
         self.assertIn("CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}", deploy)
         self.assertIn("CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}", deploy)
@@ -440,6 +493,9 @@ class WorkflowTest(unittest.TestCase):
         # The third hands the second timer its token, with the same tool and nothing else.
         self.assertEqual(secrets_named(hand_over), [*both, "DAILY_CHECK_TOKEN"])
         self.assertTrue(hand_over.startswith("      - name: Hand the second timer its token\n"))
+        # The fourth hands the bot its token, the same way.
+        self.assertEqual(secrets_named(hand_bot), [*both, "TELEGRAM_BOT_TOKEN"])
+        self.assertTrue(hand_bot.startswith("      - name: Hand the bot its token\n"))
         # No other workflow is handed any of them.
         for other in sorted(WORKFLOWS.glob("*.yml")):
             if other.name != "alerts.yml":
@@ -463,11 +519,36 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(self.text.count("${{ secrets.DAILY_CHECK_TOKEN }}"), 1)
         self.assertEqual(self.text.count('"$DAILY_CHECK_TOKEN"'), 1)
 
+    def test_the_bots_token_goes_straight_into_the_deploy_tool(self):
+        hand_over = [step for step in self.steps(self.deploy_job) if step.startswith("      - name: Hand the bot its token\n")][0]
+        self.assertIn("\n        if: steps.secrets.outputs.found == 'yes' && steps.secrets.outputs.bot == 'yes'\n", hand_over)
+        names = [re.match(r"      - name: (.*)", step).group(1) for step in self.steps(self.deploy_job)]
+        self.assertEqual(names.index("Hand the bot its token"), names.index("Hand the second timer its token") + 1)
+        runs = re.findall(r"\n        run: (.*)\n", hand_over)
+        self.assertEqual(runs, ["""printf '%s' "$TELEGRAM_BOT_TOKEN" | npx --no-install wrangler secret put TELEGRAM_BOT_TOKEN"""])
+        self.assertNotIn("run: |", hand_over)
+        worker = (BACKEND / "src" / "worker.js").read_text(encoding="utf-8")
+        self.assertEqual(worker.count("TELEGRAM_BOT_TOKEN"), 1)
+        self.assertIn("token: env.TELEGRAM_BOT_TOKEN", worker)
+        self.assertEqual(self.text.count("${{ secrets.TELEGRAM_BOT_TOKEN }}"), 1)
+        self.assertEqual(self.text.count('"$TELEGRAM_BOT_TOKEN"'), 1)
+        # The bot sends the token to Telegram's API and nowhere else.
+        bot = (BACKEND / "src" / "bot.js").read_text(encoding="utf-8")
+        self.assertIn('const TELEGRAM = "https://api.telegram.org";', bot)
+        self.assertEqual(bot.count("${this.token}"), 1)
+        self.assertIn("await this.fetch(`${TELEGRAM}/bot${this.token}/${method}`, {", bot)
+        self.assertEqual(bot.count("this.fetch("), 2)  # Telegram, and the page's telegram.json
+        self.assertIn('redirect: "manual"', bot)
+
     def test_the_run_checks_that_the_second_timer_switched_on(self):
         ask = [step for step in self.steps(self.deploy_job) if step.startswith("      - name: Ask the backend how things are")][0]
         self.assertIn("TIMER: ${{ steps.secrets.outputs.timer }}", ask)
         # What it looks for is what the backend really says.
         self.assertIn("""grep -q '"starter":{"on":true'""", ask)
+        # And that the bot did, when it was handed its token.
+        self.assertIn("BOT: ${{ steps.secrets.outputs.bot }}", ask)
+        self.assertIn("""grep -q '"telegram":{"on":true'""", ask)
+        self.assertRegex((BACKEND / "src" / "bot.js").read_text(encoding="utf-8"), r"return \{\n      on: true,\n")
         worker = (BACKEND / "src" / "worker.js").read_text(encoding="utf-8")
         self.assertIn("{ ...answer.body, starter: await this.starter.status() }", worker)
         starter = (BACKEND / "src" / "starter.js").read_text(encoding="utf-8")
@@ -485,12 +566,13 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(names[:2], ["Get the code", "Look for the secrets"])
         for step in steps[2:]:
             with self.subTest(step=step.splitlines()[0].strip()):
-                self.assertRegex(step, r"\n        if: steps\.secrets\.outputs\.found == 'yes'( && steps\.secrets\.outputs\.timer == 'yes')?\n")
+                self.assertRegex(step, r"\n        if: steps\.secrets\.outputs\.found == 'yes'( && steps\.secrets\.outputs\.(timer|bot) == 'yes')?\n")
         # Without the Cloudflare secrets the step that looks for them says nothing about the second timer.
         look = steps[1]
         self.assertLess(look.index('echo "found=no"'), look.index("exit 0"))
         self.assertLess(look.index("exit 0"), look.index('echo "found=yes"'))
         self.assertLess(look.index('echo "found=yes"'), look.index('echo "timer=yes"'))
+        self.assertLess(look.index('echo "found=yes"'), look.index('echo "bot=yes"'))
 
     def test_tools_are_installed_as_the_lockfile_says_and_run_no_scripts(self):
         self.assertIn("run: npm ci --ignore-scripts\n", self.test_job)
@@ -559,7 +641,8 @@ class TogetherTest(unittest.TestCase):
 
     def test_the_page_knows_every_reason_the_backend_gives(self):
         given = set(re.findall(r'reason: "([a-z]+)"', self.worker + self.book)) | set(re.findall(r'new Refusal\(\d+, "([a-z]+)"', self.rules))
-        self.assertEqual(given, {"bad", "full", "gone", "host", "later", "origin", "settings", "unknown"})
+        # "secret" is only ever said to Telegram, which brings messages to the bot. The page never hears it.
+        self.assertEqual(given, {"bad", "full", "gone", "host", "later", "origin", "secret", "settings", "unknown"})
         # These three get words of their own on the page. Every other one means "try again later".
         for reason in ("full", "gone", "host"):
             self.assertIn(f'reply.reason === "{reason}"', self.page)

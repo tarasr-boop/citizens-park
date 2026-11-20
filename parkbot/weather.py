@@ -180,8 +180,11 @@ def total_mm(hours: list[HourRain], first_hour: int = 0, last_hour: int = 23) ->
     return sum(hour.mm or 0.0 for hour in hours if first_hour <= hour.hour <= last_hour)
 
 
-def outlook(hours: list[HourRain] | None, now_minute: int, last_hour: int = LAST_HOUR) -> Outlook:
-    """Rain from now until the evening, as one sentence."""
+def outlook(hours: list[HourRain] | None, now_minute: int, last_hour: int = LAST_HOUR, tomorrow: bool = False) -> Outlook:
+    """Rain from now until the evening, as one sentence.
+
+    With ``tomorrow`` the sentence is about tomorrow, written the evening before.
+    """
     now_hour = now_minute // 60
     ahead = [hour for hour in (hours or []) if now_hour <= hour.hour <= last_hour and hour.chance is not None]
     if not ahead:
@@ -193,7 +196,7 @@ def outlook(hours: list[HourRain] | None, now_minute: int, last_hour: int = LAST
     amount = amount_text(mm)
 
     if chance < SLIGHT:
-        return Outlook("dry", "No rain expected for the rest of today.", chance, mm)
+        return Outlook("dry", "No rain expected tomorrow." if tomorrow else "No rain expected for the rest of today.", chance, mm)
     if chance < LIKELY:
         return Outlook("slight", f"Slight chance of rain ({chance}% around {clock(peak.hour * 60)}).", chance, mm)
 
@@ -209,7 +212,7 @@ def outlook(hours: list[HourRain] | None, now_minute: int, last_hour: int = LAST
     starts_now = first <= now_hour
     runs_out = last >= ahead[-1].hour
     if starts_now and runs_out:
-        when = "for the rest of today"
+        when = "all day" if tomorrow else "for the rest of today"
     elif starts_now:
         when = f"until about {clock((last + 1) * 60)}"
     elif runs_out:
