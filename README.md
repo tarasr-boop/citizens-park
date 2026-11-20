@@ -54,7 +54,7 @@ It is built to keep going when something fails:
 
 - If the council's page cannot be read, it uses the last good copy, and then the usual weekly pattern, and says so.
 - If the weather service's usual server does not answer, it asks the service's other server straight away. If that fails too, it tries again for a few minutes. Then it uses the last forecast that did load (up to 12 hours old) and says when it is from.
-- GitHub often starts scheduled jobs late, and sometimes not at all. So there are several runs each afternoon, of which only the first posts, and a [second timer](#the-second-timer) on Cloudflare starts a run that GitHub has missed.
+- GitHub often starts scheduled jobs late, sometimes by many hours. So there are several runs each afternoon, of which only the first posts, and a [second timer](#the-second-timer) on Cloudflare starts a run that GitHub has missed.
 - If a source keeps failing, it opens an issue in this repository, and GitHub emails you. See [When something goes wrong](#when-something-goes-wrong).
 
 ## Everyday changes
@@ -145,7 +145,9 @@ Limits: the backend takes up to 5,000 devices, and sends to them forty at a time
 
 ## The second timer
 
-GitHub's own timer starts the Daily check late on some days and, in a new repository, sometimes not at all. So the backend on Cloudflare keeps a second timer for it. A quarter of an hour after each of the check's set times, it looks at the page. If the page still shows an older check, it asks GitHub to run the check now, the same way the **Run workflow** button does. If the page is no newer ten minutes later, it asks again, up to three times for each set time. A run too many does no harm, because the check posts once a day.
+GitHub's own timer starts the Daily check late. In this repository's first days it was eight to nine hours late, which is too late for the post. So the backend on Cloudflare keeps a second timer for it. A quarter of an hour after each of the check's set times, it looks at the page. If the page still shows an older check, it asks GitHub to run the check now, the same way the **Run workflow** button does. If the page is no newer ten minutes later, it asks again, up to three times for each set time. A run too many does no harm, because the check posts once a day.
+
+If you see Daily check runs in the middle of the night, those are GitHub's own timer running late. They do no harm either: nothing is posted outside the posting window.
 
 It needs the backend to be on Cloudflare (see [Switching it on](#switching-it-on)) and one more secret: a token from GitHub that lets the backend start this repository's workflows.
 
