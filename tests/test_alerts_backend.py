@@ -166,6 +166,9 @@ class SettingsTest(unittest.TestCase):
         self.assertRegex(route["pattern"], r"^[a-z0-9-]+(\.[a-z0-9-]+)+$")
         page_host = urlsplit(self.config.site_url).hostname
         self.assertTrue(route["pattern"].endswith("." + page_host), f"{route['pattern']} is not under {page_host}")
+        # A deploy from GitHub takes the name over without asking, so it must
+        # not be a name the page itself answers to.
+        self.assertNotIn(route["pattern"], (page_host, "www." + page_host))
         # An address at workers.dev would show the name of the Cloudflare account.
         self.assertIs(self.settings["workers_dev"], False)
         self.assertIs(self.settings["preview_urls"], False)

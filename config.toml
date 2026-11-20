@@ -57,6 +57,6 @@ link_text = "@gentle_woof on Instagram"
 
 [notifications]
 # The address of the notifications backend (the small Cloudflare program in the
-# notifications/ folder): "https://alerts.citizensbark.com" once it is running.
-# While this is empty, the page leaves out its button for notifications on a phone.
-url = ""
+# notifications/ folder). Make it empty ("") to take the button for
+# notifications off the page.
+url = "https://alerts.citizensbark.com"
