@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Poster: {{title}}</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+  @page { size: A4; margin: 14mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #e9e7de;
+    color: #1c2a1e;
+    font: 18px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .tools { max-width: 180mm; margin: 0 auto; padding: 16px 16px 0; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .tools button, .tools a {
+    padding: 10px 16px; border-radius: 12px; border: 1.5px solid #1c2a1e; background: #1c2a1e; color: #fffdf8;
+    font: inherit; font-weight: 700; text-decoration: none; cursor: pointer;
+  }
+  .tools a { background: transparent; color: #1c2a1e; }
+  .tools p { margin: 0; flex-basis: 100%; font-size: 15px; color: #4f5a51; }
+  .sheet {
+    max-width: 180mm;
+    margin: 16px auto 32px;
+    padding: 14mm 12mm 12mm;
+    background: #fffdf8;
+    border-radius: 6mm;
+    text-align: center;
+  }
+  .eyebrow { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #17693a; }
+  h1 { margin: 5mm 0 4mm; font-size: 15mm; line-height: 1.02; letter-spacing: -0.02em; font-weight: 800; text-wrap: balance; }
+  .lead { margin: 0 auto; max-width: 130mm; font-size: 6.2mm; line-height: 1.35; }
+  .qr { display: block; width: 88mm; height: 88mm; margin: 9mm auto 5mm; }
+  .scan { margin: 0; font-size: 6.4mm; font-weight: 800; }
+  .address { margin: 2mm 0 0; font-size: 4.6mm; word-break: break-all; }
+  .points { margin: 9mm auto 0; padding: 0; max-width: 140mm; list-style: none; text-align: left; font-size: 5mm; }
+  .points li { padding: 2.6mm 0 2.6mm 9mm; border-top: 0.3mm solid #dedbce; position: relative; }
+  .points li::before { content: ""; position: absolute; left: 1mm; top: 4.9mm; width: 3.4mm; height: 3.4mm; border-radius: 50%; background: #17693a; }
+  .small { margin: 8mm 0 0; font-size: 3.6mm; color: #4f5a51; }
+  @media print {
+    body { background: #fff; }
+    .tools { display: none; }
+    .sheet { max-width: none; margin: 0; padding: 0; border-radius: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="tools">
+  <button type="button" onclick="window.print()">Print this poster</button>
+  <a href="./">Back to the page</a>
+  <p>Ask the council before putting posters up inside the park.</p>
+</div>
+<div class="sheet">
+  <p class="eyebrow">{{park_name}} · {{suburb}}</p>
+  <h1>Is the oval free for dogs right now?</h1>
+  <p class="lead">Sport and training bookings close the oval to dogs. Check before you walk over.</p>
+  <img class="qr" src="qr.svg" alt="QR code for {{site_url}}">
+  <p class="scan">Scan with your phone camera</p>
+  <p class="address">{{site_address}}</p>
+  <ul class="points">
+    <li>Today's booked times and the week ahead</li>
+    <li>Chance of rain, hour by hour</li>
+    <li>{{alert_point}}</li>
+  </ul>
+  <p class="small">{{unofficial}} Bookings can change, so check the signs at the park.</p>
+</div>
+</body>
+</html>

@@ -1,0 +1,42 @@
+# The usual weekly pattern.
+#
+# The council's page is the real source, but it is often weeks late. On a day
+# the page does not cover, the alerts fall back to this pattern and say so
+# ("Usual pattern only").
+#
+# The checker also learns the pattern by itself from the newest month the
+# council has published, as long as that month is in the same season. This
+# file is the backstop for when it has nothing to learn from, for example at
+# the start of a new season.
+#
+# Times use the 24-hour clock. A weekday that is missing has no usual booking.
+# Mark a season "rough = true" when its times are a guess.
+
+[[season]]
+name = "cricket season"
+months = [10, 11, 12, 1, 2, 3]
+source = "the council's October 2026 schedule"
+
+[season.week]
+mon = ["16:00-17:00"]
+tue = ["16:15-19:30"]
+wed = ["16:15-19:30"]
+thu = ["17:15-19:30"]
+fri = ["16:00-20:00"]
+sat = ["10:00-18:00"]
+sun = ["11:00-17:00"]
+
+[[season]]
+name = "football season"
+months = [4, 5, 6, 7, 8, 9]
+# The council had not published a winter month when this was written. These
+# times come from the junior football club's 2026 training times, and the
+# Sunday match hours are a guess. Replace them once the council shows April.
+source = "the junior football club's 2026 training times"
+rough = true
+
+[season.week]
+tue = ["16:00-19:00"]
+wed = ["17:30-19:00"]
+thu = ["16:00-19:00"]
+sun = ["09:00-17:00"]

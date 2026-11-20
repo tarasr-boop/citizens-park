@@ -1,0 +1,42 @@
+# Settings for the Citizens Park alerts.
+# Edit this file on GitHub (pencil icon), then press "Commit changes".
+# The page rebuilds by itself a minute or two later.
+
+[park]
+name = "Citizens Park oval"
+short_name = "Citizens Park"
+suburb = "Richmond"
+latitude = -37.8146
+longitude = 144.9990
+timezone = "Australia/Melbourne"
+# The day shown on the page runs from first light to lights-off.
+# The council keeps the oval lights on until 10 PM.
+day_start = "06:00"
+lights_off = "22:00"
+
+[council]
+url = "https://www.yarracity.vic.gov.au/things-to-do/parks-reserves-and-playgrounds/citizens-park"
+# How the checker introduces itself to the council's website.
+user_agent = "Mozilla/5.0 (compatible; CitizensParkAlerts/1.0; community dog-walker notice)"
+
+[telegram]
+# The public channel's link name: the part after "t.me/".
+# While this is empty nothing is posted, and the page leaves out its Telegram button.
+channel = ""
+# The daily post goes out on the first run inside this window (Melbourne time).
+# If you change these, change the run times in .github/workflows/daily.yml too.
+post_from = "14:30"
+post_until = "19:00"
+
+[site]
+# A name for the page itself, for example "Citizens Bark". It appears at the top
+# of the page and under the home-screen icon. Leave it empty to use the park's name.
+name = ""
+# The public address of the page. The QR code points here, so if this ever
+# changes, the QR code must be made again (see the README).
+url = "https://tarasr-boop.github.io/citizens-park/"
+# Paste your Ko-fi link here to show a tip button, for example "https://ko-fi.com/yourname".
+# Leave it empty to hide the button.
+tip_url = ""
+# Linked in the page footer as "How this page is made".
+repo_url = "https://github.com/tarasr-boop/citizens-park"

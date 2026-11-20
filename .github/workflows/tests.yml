@@ -1,0 +1,49 @@
+name: Tests
+
+# Runs on every change to the code. Nothing here posts to Telegram or
+# publishes the page.
+
+on:
+  push:
+    paths-ignore:
+      - "data/**"
+      - "**.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v7
+      - name: Run the tests
+        run: python3 -m unittest discover -s tests -t . -v
+      - name: Check the page script
+        run: node --check parkbot/web/page.js
+
+  dry-run:
+    name: Dry run with the live sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v7
+      # Reads the real council page and forecast and builds the page in a
+      # scratch folder. It posts nothing and saves nothing.
+      - name: Read the live sources
+        run: python3 -m parkbot run --post never --show-sources --data "$RUNNER_TEMP/data" --site "$RUNNER_TEMP/site"
+      - name: Show what was read
+        if: ${{ !cancelled() }}
+        run: |
+          echo "----- council.json -----"
+          cat "$RUNNER_TEMP/data/council.json" || true
+          echo "----- data.json (start) -----"
+          head -c 3000 "$RUNNER_TEMP/site/data.json" || true

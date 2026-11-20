@@ -1,0 +1,179 @@
+"""What the checker remembers between runs.
+
+Two small JSON files in ``data/``, saved back to the repository by the
+scheduled job:
+
+* ``council.json``: every day read from the council's page so far. If the
+  page cannot be read on some run, the last good copy is still there.
+* ``state.json``: when the last posts went out, and how many times in a row
+  each source has failed.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+from .council import Closure, CouncilPage, DayEntry
+from .timeparse import Slot
+
+# Days older than this are dropped from council.json to keep it small.
+_KEEP_DAYS = 400
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
+    if path.exists() and path.read_text(encoding="utf-8") == text:
+        return  # leave the file alone so the job has nothing to commit
+    path.write_text(text, encoding="utf-8")
+
+
+def _date(value: object) -> date | None:
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+@dataclass
+class CouncilStore:
+    """Every day the council's page has shown us."""
+
+    days: dict[date, DayEntry] = field(default_factory=dict)
+    closures: list[Closure] = field(default_factory=list)
+    last_read: date | None = None  # the last day the page was read successfully
+    page_modified: date | None = None  # the page's own "last updated" date
+
+    @classmethod
+    def load(cls, path: str | Path) -> "CouncilStore":
+        raw = _read_json(Path(path))
+        store = cls(last_read=_date(raw.get("last_read")), page_modified=_date(raw.get("page_modified")))
+        for key, value in (raw.get("days") or {}).items():
+            day = _date(key)
+            if day is None or not isinstance(value, dict):
+                continue
+            try:
+                slots = tuple(Slot.from_text(text) for text in value.get("slots", []))
+            except (ValueError, TypeError):
+                continue
+            store.days[day] = DayEntry(slots, str(value.get("label", "")))
+        for value in raw.get("closures") or []:
+            try:
+                store.closures.append(
+                    Closure(
+                        datetime.fromisoformat(value["start"]),
+                        datetime.fromisoformat(value["end"]),
+                        str(value.get("text", "")),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return store
+
+    def save(self, path: str | Path) -> None:
+        days = {}
+        for day in sorted(self.days):
+            entry = self.days[day]
+            item: dict[str, object] = {}
+            if entry.slots:
+                item["slots"] = [slot.to_text() for slot in entry.slots]
+            if entry.label:
+                item["label"] = entry.label
+            days[day.isoformat()] = item
+        _write_json(
+            Path(path),
+            {
+                "about": "Bookings read from the council's Citizens Park page. Written by the daily job; do not edit.",
+                "last_read": self.last_read.isoformat() if self.last_read else None,
+                "page_modified": self.page_modified.isoformat() if self.page_modified else None,
+                "closures": [
+                    {"start": closure.start.isoformat(), "end": closure.end.isoformat(), "text": closure.text}
+                    for closure in self.closures
+                ],
+                "days": days,
+            },
+        )
+
+    def update(self, page: CouncilPage, today: date) -> None:
+        """Take in a fresh read of the page."""
+        if page.days:
+            first, last = min(page.days), max(page.days)
+            # Whatever the page now shows for its date range replaces what we held,
+            # so a booking the council removed disappears here too.
+            self.days = {day: entry for day, entry in self.days.items() if not first <= day <= last}
+            self.days.update(page.days)
+        cutoff = today - timedelta(days=_KEEP_DAYS)
+        self.days = {day: entry for day, entry in self.days.items() if day >= cutoff}
+        self.closures = list(page.closures)
+        self.last_read = today
+        self.page_modified = page.modified.date() if page.modified else self.page_modified
+
+    @property
+    def latest_day(self) -> date | None:
+        return max(self.days) if self.days else None
+
+
+@dataclass
+class State:
+    """Small facts carried from one run to the next."""
+
+    last_daily_post: date | None = None
+    last_weekly_post: date | None = None
+    council_failures: int = 0  # runs in a row that could not read the council page
+    council_error: str = ""
+    weather_failures: int = 0
+    weather_error: str = ""
+    telegram_error: str = ""
+    uncovered_since: date | None = None  # first day in the current run of days the council page did not cover
+
+    @classmethod
+    def load(cls, path: str | Path) -> "State":
+        raw = _read_json(Path(path))
+
+        def count(key: str) -> int:
+            try:
+                return max(0, int(raw.get(key, 0)))
+            except (TypeError, ValueError):
+                return 0
+
+        return cls(
+            last_daily_post=_date(raw.get("last_daily_post")),
+            last_weekly_post=_date(raw.get("last_weekly_post")),
+            council_failures=count("council_failures"),
+            council_error=str(raw.get("council_error") or ""),
+            weather_failures=count("weather_failures"),
+            weather_error=str(raw.get("weather_error") or ""),
+            telegram_error=str(raw.get("telegram_error") or ""),
+            uncovered_since=_date(raw.get("uncovered_since")),
+        )
+
+    def save(self, path: str | Path) -> None:
+        def iso(value: date | None) -> str | None:
+            return value.isoformat() if value else None
+
+        _write_json(
+            Path(path),
+            {
+                "about": "Written by the daily job; do not edit.",
+                "last_daily_post": iso(self.last_daily_post),
+                "last_weekly_post": iso(self.last_weekly_post),
+                "council_failures": self.council_failures,
+                "council_error": self.council_error,
+                "weather_failures": self.weather_failures,
+                "weather_error": self.weather_error,
+                "telegram_error": self.telegram_error,
+                "uncovered_since": iso(self.uncovered_since),
+            },
+        )
