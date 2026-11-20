@@ -143,6 +143,42 @@ class RunTest(unittest.TestCase):
                 self.assertEqual(self.world.sent, [])
         self.assertIsNone(self.world.state().last_daily_post)
 
+    def test_at_the_weekend_the_post_goes_out_in_the_morning(self):
+        # Saturday: the window opens at 7:30 AM, half an hour before the alert's time.
+        self.world.run("2026-11-21T06:20")
+        self.world.run("2026-11-21T07:29")
+        self.assertEqual(self.world.sent, [])
+        self.assertIn("outside the posting window (7:30 AM to 7 PM)", self.world.said())
+        self.world.run("2026-11-21T07:55")
+        self.assertEqual(len(self.world.sent), 1)
+        # Written before the booking starts, the post names all of it.
+        self.assertIn("Usually booked 10 AM to 6 PM", self.world.sent[0]["text"])
+        # The later runs of the day stay quiet, the afternoon's too.
+        for later in ("2026-11-21T08:25", "2026-11-21T14:45", "2026-11-21T15:55"):
+            self.world.run(later)
+        self.assertEqual(len(self.world.sent), 1)
+
+    def test_on_a_weekday_the_morning_runs_do_not_post(self):
+        # 8 AM is the weekend's time. On a Friday the post waits for the afternoon.
+        for moment in ("2026-11-20T07:30", "2026-11-20T07:55", "2026-11-20T09:00"):
+            self.world.run(moment)
+        self.assertEqual(self.world.sent, [])
+        self.assertIn("outside the posting window (2:30 PM to 7 PM)", self.world.said())
+        self.world.run("2026-11-20T14:55")
+        self.assertEqual(len(self.world.sent), 1)
+
+    def test_each_day_of_a_week_gets_one_post_at_its_own_time(self):
+        # Monday to Sunday, with a run in the morning and one in the afternoon.
+        posted = []
+        for day in range(23, 30):
+            for moment in (f"2026-11-{day}T07:55", f"2026-11-{day}T14:55"):
+                before = len(self.world.sent)
+                self.world.run(moment)
+                # The week-ahead post that follows Sunday's is not counted: it is the quiet one.
+                if [post for post in self.world.sent[before:] if not post["silent"]]:
+                    posted.append(moment[5:])
+        self.assertEqual(posted, ["11-23T14:55", "11-24T14:55", "11-25T14:55", "11-26T14:55", "11-27T14:55", "11-28T07:55", "11-29T07:55"])
+
     def test_never_and_force(self):
         self.world.run("2026-11-20T14:45", post="never")
         self.assertEqual(self.world.sent, [])
@@ -153,7 +189,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(len(self.world.sent), 1)
 
     def test_sunday_adds_a_quiet_week_ahead_post(self):
-        self.world.run("2026-11-22T14:45")
+        self.world.run("2026-11-22T07:55")
         self.assertEqual([post["silent"] for post in self.world.sent], [False, True])
         self.assertIn("the week ahead", self.world.sent[1]["text"])
         self.assertIn("Mon 23 Nov", self.world.sent[1]["text"])

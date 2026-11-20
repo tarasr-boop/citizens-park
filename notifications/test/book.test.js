@@ -10,7 +10,7 @@ import { SITE, at, clock, day, memoryStorage, newDevice, pageData, readProof, ru
 const TODAY = "2026-11-20";
 const MINUTE = 60 * 1000;
 
-/** The page's data after the afternoon's check has run on `date`. */
+/** The page's data after the check that goes with the alert has run on `date`, a Friday unless told otherwise. */
 function checked(date = TODAY, time = "15:02") {
   return pageData({
     generated: `${date}T${time}:00+11:00`,
@@ -41,7 +41,7 @@ async function seed(it, count, host = "fcm.googleapis.com", extra = {}) {
 }
 
 /** Let the timer look once and run every round of sending that follows. */
-async function afternoon(it, time = "15:05", date = TODAY) {
+async function lookAt(it, time = "15:05", date = TODAY) {
   it.time.set(at(date, time));
   const said = await it.book.tick();
   const rounds = await runAlarms(it.book, it.storage, it.time);
@@ -88,7 +88,7 @@ test("a new device gets a first notification and is then written into the book",
     web_push: 8030,
     notification: {
       title: "Alerts are on",
-      body: "You'll get one notification a day, at about 3 PM, saying when the oval is booked.",
+      body: "You'll get one notification a day, at about 3 PM on weekdays and 8 AM on weekends, saying when the oval is booked.",
       navigate: SITE,
       tag: "welcome",
       renotify: true,
@@ -289,15 +289,15 @@ test("the timer does nothing before the alert time, after the window, or with no
   assert.deepEqual((await it.book.status()).body.timer, { at: at(TODAY, "23:55"), did: "nothing", why: "too late" });
 });
 
-test("the timer waits for the afternoon's check, then starts the alert", async () => {
+test("the timer waits for the check before the alert, then starts the alert", async () => {
   const morning = pageData({ generated: `${TODAY}T11:47:00+11:00`, days: [day(TODAY)] });
   const it = await open({ page: morning });
   await seed(it, 3);
 
   it.time.set(at(TODAY, "14:30"));
-  assert.deepEqual((await it.book.tick()).body, { ok: true, did: "nothing", why: "waiting for the afternoon's check" });
+  assert.deepEqual((await it.book.tick()).body, { ok: true, did: "nothing", why: "waiting for the check before the alert" });
   it.time.set(at(TODAY, "14:55"));
-  assert.deepEqual((await it.book.tick()).body, { ok: true, did: "nothing", why: "waiting for the afternoon's check" });
+  assert.deepEqual((await it.book.tick()).body, { ok: true, did: "nothing", why: "waiting for the check before the alert" });
   assert.equal(it.net.pushes.length, 0);
   // One look at the page's data each time, and past any copy kept on the way.
   assert.equal(it.net.reads.length, 2);
@@ -309,14 +309,14 @@ test("the timer waits for the afternoon's check, then starts the alert", async (
   assert.equal(it.storage.alarm, at(TODAY, "15:00"));
   assert.deepEqual((await it.book.status()).body.timer, { at: at(TODAY, "15:00"), did: "started", why: "" });
   assert.equal((await it.book.status()).body.sending, true);
-  assert.deepEqual(it.lines, ["today's alert started (after the afternoon's check)"]);
+  assert.deepEqual(it.lines, ["today's alert started (after a fresh check)"]);
 });
 
 test("today's alert goes to every device, forty at a time, and only once", async () => {
   const it = await open({ page: checked(), pause: 1 });
   const devices = [...(await seed(it, 60)), ...(await seed(it, 25, "web.push.apple.com")), ...(await seed(it, 10, "updates.push.services.mozilla.com"))];
 
-  const { said, rounds } = await afternoon(it, "15:05");
+  const { said, rounds } = await lookAt(it, "15:05");
   assert.deepEqual(said, { ok: true, did: "started", fresh: true });
   // Three rounds, a second apart: 40, 40 and 15.
   assert.deepEqual(rounds, [at(TODAY, "15:05"), at(TODAY, "15:05") + 1000, at(TODAY, "15:05") + 2000]);
@@ -364,7 +364,7 @@ test("today's alert goes to every device, forty at a time, and only once", async
 
   // The timer keeps looking all afternoon, and nothing more goes out.
   for (const time of ["15:10", "15:15", "17:00", "18:55"]) {
-    const later = await afternoon(it, time);
+    const later = await lookAt(it, time);
     assert.deepEqual(later.said, { ok: true, did: "nothing", why: "today's alert has gone out" });
     assert.deepEqual(later.rounds, []);
   }
@@ -399,18 +399,51 @@ test("no waking makes more outgoing requests than Cloudflare's free plan allows"
 test("the alert goes out again the next day", async () => {
   const it = await open({ page: checked() });
   const devices = await seed(it, 2);
-  await afternoon(it, "15:05");
+  await lookAt(it, "15:05");
   assert.equal(it.net.pushes.length, 2);
 
-  // Next morning, with yesterday's data still on the page: nothing.
-  assert.deepEqual((await afternoon(it, "10:00", "2026-11-21")).said, { ok: true, did: "nothing", why: "too early" });
+  // Early the next morning, with yesterday's data still on the page: nothing.
+  assert.deepEqual((await lookAt(it, "07:00", "2026-11-21")).said, { ok: true, did: "nothing", why: "too early" });
 
-  it.net.page = pageData({ generated: "2026-11-21T14:41:00+11:00", days: [day("2026-11-20", "Yesterday's"), day("2026-11-21", "No bookings today", "")] });
-  const next = await afternoon(it, "14:45", "2026-11-21");
+  // The next day is a Saturday, and its alert is a morning one.
+  it.net.page = pageData({ generated: "2026-11-21T07:56:00+11:00", days: [day("2026-11-20", "Yesterday's"), day("2026-11-21", "No bookings today", "")] });
+  const next = await lookAt(it, "08:00", "2026-11-21");
   assert.deepEqual(next.said, { ok: true, did: "started", fresh: true });
   assert.equal(it.net.pushes.length, 4);
   assert.equal(devices[0].words(it.net.pushesTo(devices[0])[1].body).notification.title, "No bookings today");
   assert.equal((await it.book.status()).body.last.date, "2026-11-21");
+  // The afternoon's checks on that Saturday change nothing: one alert a day.
+  it.net.page = checked("2026-11-21", "15:56");
+  assert.deepEqual((await lookAt(it, "16:00", "2026-11-21")).said, { ok: true, did: "nothing", why: "today's alert has gone out" });
+  assert.equal(it.net.pushes.length, 4);
+});
+
+test("each day of the week gets its alert at its own time: the afternoon on weekdays, the morning at the weekend", async () => {
+  const it = await open({ page: checked() });
+  await seed(it, 1);
+  const sent = [];
+  // Friday 20 to Monday 23 November 2026. The check that goes with the alert runs a few minutes before each look.
+  const looks = [
+    ["2026-11-20", "07:55", "08:00", "too early"], // 8 AM is the weekend's time
+    ["2026-11-20", "14:56", "15:00", "started"],
+    ["2026-11-21", "06:35", "07:25", "too early"],
+    ["2026-11-21", "07:56", "08:00", "started"],
+    ["2026-11-21", "14:56", "15:00", "today's alert has gone out"],
+    ["2026-11-22", "07:56", "08:00", "started"],
+    ["2026-11-23", "07:56", "08:00", "too early"],
+    ["2026-11-23", "14:56", "15:00", "started"],
+  ];
+  for (const [date, madeAt, time, expected] of looks) {
+    it.net.page = checked(date, madeAt);
+    const { said } = await lookAt(it, time, date);
+    assert.equal(said.did === "started" ? "started" : said.why, expected, `${date} ${time}`);
+    if (said.did === "started") {
+      assert.equal(said.fresh, true, `${date} ${time}`);
+      sent.push(`${date} ${time}`);
+    }
+  }
+  assert.deepEqual(sent, ["2026-11-20 15:00", "2026-11-21 08:00", "2026-11-22 08:00", "2026-11-23 15:00"]);
+  assert.equal(it.net.pushes.length, 4);
 });
 
 test("if no check has run 45 minutes after the alert time, the alert goes out with what the page has", async () => {
@@ -418,13 +451,39 @@ test("if no check has run 45 minutes after the alert time, the alert goes out wi
   const it = await open({ page: morning });
   const [phone] = await seed(it, 1);
 
-  assert.equal((await afternoon(it, "15:14")).said.why, "waiting for the afternoon's check");
-  const late = await afternoon(it, "15:15");
+  assert.equal((await lookAt(it, "15:14")).said.why, "waiting for the check before the alert");
+  const late = await lookAt(it, "15:15");
   assert.deepEqual(late.said, { ok: true, did: "started", fresh: false });
   // Made this morning, so it is today's notice as it stands.
   assert.deepEqual(phone.words(it.net.pushesTo(phone)[0].body).notification.body, "Cricket training.");
   assert.equal((await it.book.status()).body.last.fresh, false);
   assert.equal(it.lines[0], "today's alert started (without a fresh check)");
+});
+
+test("at the weekend the same wait ends a quarter of an hour after 8 AM", async () => {
+  const saturday = "2026-11-21";
+  // Only the 6:17 AM check has run. It wrote today's notice for the morning alert.
+  const early = pageData({ generated: `${saturday}T06:35:00+11:00`, generatedText: "6:35 AM", days: [day(saturday, "Booked 10 AM to 6 PM", "No rain expected for the rest of today.")] });
+  const it = await open({ page: early, start: at(saturday, "06:40") });
+  const [phone] = await seed(it, 1);
+
+  assert.equal((await lookAt(it, "07:25", saturday)).said.why, "too early");
+  assert.equal((await lookAt(it, "07:30", saturday)).said.why, "waiting for the check before the alert");
+  assert.equal((await lookAt(it, "08:10", saturday)).said.why, "waiting for the check before the alert");
+  assert.deepEqual((await lookAt(it, "08:15", saturday)).said, { ok: true, did: "started", fresh: false });
+  const { notification } = phone.words(it.net.pushesTo(phone)[0].body);
+  assert.deepEqual([notification.title, notification.body], ["Booked 10 AM to 6 PM", "No rain expected for the rest of today."]);
+});
+
+test("an alert that could not go out by the evening is left out for the day, at the weekend too", async () => {
+  for (const date of ["2026-11-20", "2026-11-21"]) {
+    const it = await open({ page: "down", start: at(date, "06:00") });
+    await seed(it, 1);
+    assert.match((await lookAt(it, "18:55", date)).said.why, /could not be read/);
+    it.net.page = checked(date, "18:58");
+    assert.deepEqual((await lookAt(it, "19:00", date)).said, { ok: true, did: "nothing", why: "too late" });
+    assert.equal(it.net.pushes.length, 0);
+  }
 });
 
 test("an alert made from another day's data says that it may be out of date", async () => {
@@ -435,7 +494,7 @@ test("an alert made from another day's data says that it may be out of date", as
   });
   const it = await open({ page: stale });
   const [phone] = await seed(it, 1);
-  await afternoon(it, "15:20");
+  await lookAt(it, "15:20");
   const { notification } = phone.words(it.net.pushesTo(phone)[0].body);
   assert.equal(notification.title, "Booked 5 PM to 7:30 PM");
   assert.equal(notification.body, "Cricket training.\n⚠️ The page has not been updated since Thu 19 Nov, 7:47 PM, so this may be out of date.");
@@ -444,30 +503,30 @@ test("an alert made from another day's data says that it may be out of date", as
 test("when the page's data cannot be read, the timer tries again at its next look", async () => {
   const it = await open({ page: "down" });
   const [phone] = await seed(it, 1);
-  assert.match((await afternoon(it, "15:05")).said.why, /^the page's data could not be read \(fetch failed\)$/);
+  assert.match((await lookAt(it, "15:05")).said.why, /^the page's data could not be read \(fetch failed\)$/);
   it.net.page = 404;
-  assert.match((await afternoon(it, "15:10")).said.why, /could not be read \(the page's data answered 404\)/);
+  assert.match((await lookAt(it, "15:10")).said.why, /could not be read \(the page's data answered 404\)/);
   it.net.page = "<html>not the data</html>";
-  assert.match((await afternoon(it, "15:15")).said.why, /could not be read/);
+  assert.match((await lookAt(it, "15:15")).said.why, /could not be read/);
   it.net.page = "[1, 2]";
-  assert.equal((await afternoon(it, "15:17")).said.why, "the page has no notice for today");
+  assert.equal((await lookAt(it, "15:17")).said.why, "the page has no notice for today");
   it.net.page = "null";
-  assert.match((await afternoon(it, "15:18")).said.why, /could not be read \(the page's data is not what was expected\)/);
+  assert.match((await lookAt(it, "15:18")).said.why, /could not be read \(the page's data is not what was expected\)/);
   assert.equal(it.net.pushes.length, 0);
   assert.equal((await it.book.status()).body.last, null);
 
   // The day is not used up: once the page is back, the alert goes out.
   it.net.page = checked(TODAY, "15:19");
-  assert.equal((await afternoon(it, "15:20")).said.did, "started");
+  assert.equal((await lookAt(it, "15:20")).said.did, "started");
   assert.equal(it.net.pushesTo(phone).length, 1);
 });
 
 test("a page with no notice for today sends nothing, and the day is not used up", async () => {
   const it = await open({ page: pageData({ generated: `${TODAY}T15:02:00+11:00`, days: [day("2026-11-21")] }) });
   await seed(it, 1);
-  assert.equal((await afternoon(it, "15:05")).said.why, "the page has no notice for today");
+  assert.equal((await lookAt(it, "15:05")).said.why, "the page has no notice for today");
   it.net.page = checked(TODAY, "15:06");
-  assert.equal((await afternoon(it, "15:10")).said.did, "started");
+  assert.equal((await lookAt(it, "15:10")).said.did, "started");
   assert.equal(it.net.pushes.length, 1);
 });
 
@@ -477,7 +536,7 @@ test("a device whose address is gone is taken out of the book", async () => {
   const devices = await seed(it, 5);
   gone.add(devices[1].endpoint);
   gone.add(devices[3].endpoint);
-  await afternoon(it);
+  await lookAt(it);
 
   const { last, devices: count } = (await it.book.status()).body;
   assert.equal(last.sent, 3);
@@ -494,7 +553,7 @@ async function days(it, count, first = 0) {
   for (let index = first; index < first + count; index += 1) {
     const date = `2026-11-${20 + index}`;
     it.net.page = checked(date);
-    assert.equal((await afternoon(it, "15:05", date)).said.did, "started", date);
+    assert.equal((await lookAt(it, "15:05", date)).said.did, "started", date);
   }
 }
 
@@ -675,7 +734,7 @@ test("a send left over from yesterday is closed before today is looked at", asyn
   await it.book.alarm(); // one round, then nothing more until the next day
   it.storage.alarm = null;
 
-  it.time.set(at("2026-11-21", "14:00"));
+  it.time.set(at("2026-11-21", "07:00"));
   assert.equal((await it.book.tick()).body.why, "too early");
   const { last, sending } = (await it.book.status()).body;
   assert.equal(sending, false);
@@ -685,7 +744,7 @@ test("a send left over from yesterday is closed before today is looked at", asyn
 
   // Today's alert then goes out to everyone as usual.
   it.net.page = checked("2026-11-21");
-  assert.equal((await afternoon(it, "15:05", "2026-11-21")).said.did, "started");
+  assert.equal((await lookAt(it, "15:05", "2026-11-21")).said.did, "started");
   assert.equal(it.net.pushes.length, 40 + 50);
   for (const device of devices) assert.ok(it.net.pushesTo(device).length >= 1);
   assert.equal((await it.book.status()).body.last.sent, 50);
@@ -695,7 +754,7 @@ test("the number of devices is counted afresh after every alert", async () => {
   const it = await open({ page: checked() });
   await seed(it, 7);
   await it.storage.put("count", 3); // drifted
-  await afternoon(it);
+  await lookAt(it);
   assert.equal((await it.book.status()).body.devices, 7);
   assert.equal((await it.book.status()).body.last.sent, 7);
 });
@@ -726,7 +785,7 @@ test("an entry in the book that is not an address is counted as refused and send
   const it = await open({ page: checked() });
   await seed(it, 1);
   await it.storage.put("sub:broken", { endpoint: "not an address", p256dh: "x", auth: "y", added: 1, fails: 0 });
-  await afternoon(it);
+  await lookAt(it);
   const { last } = (await it.book.status()).body;
   assert.equal(last.sent, 1);
   assert.equal(last.refused, 1);
@@ -757,7 +816,7 @@ test("what the status shows names no device", async () => {
   const it = await open({ page: checked() });
   const phone = newDevice();
   await it.book.subscribe({ subscription: phone.subscription });
-  await afternoon(it);
+  await lookAt(it);
   const status = await it.book.status();
   assert.equal(status.status, 200);
   assert.deepEqual(Object.keys(status.body).sort(), ["devices", "last", "ok", "sending", "timer", "unknownServices"]);

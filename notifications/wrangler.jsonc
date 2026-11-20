@@ -23,9 +23,12 @@
     // The page's address. Only this page may add or remove a device.
     "SITE_URL": "https://citizensbark.com/",
     "TIMEZONE": "Australia/Melbourne",
-    // The alert goes out once a day between these two times, as soon as the
-    // afternoon's check has run.
-    "ALERT_FROM": "14:30",
+    // The alert goes out once a day: at about the first time from Monday to
+    // Friday and at about the second on Saturday and Sunday, as soon as the
+    // check that goes with it has run. An alert that could not go out by
+    // ALERT_UNTIL is left out for the day.
+    "ALERT_WEEKDAYS": "16:00",
+    "ALERT_WEEKENDS": "08:00",
     "ALERT_UNTIL": "19:00",
     // The second timer: the check on GitHub that it starts when GitHub's own
     // timer has not, and the times of day, at the park, at which GitHub is
@@ -35,7 +38,7 @@
     "CHECK_REPOSITORY": "tarasr-boop/citizens-park",
     "CHECK_WORKFLOW": "daily.yml",
     "CHECK_BRANCH": "main",
-    "CHECK_TIMES": "06:17 11:47 13:47 14:40 15:10 15:45 17:47 19:47",
+    "CHECK_TIMES": "06:17 07:40 08:10 08:45 11:47 14:47 15:40 16:10 16:45 17:47 19:47",
     // The Telegram bot: its name for the park, and where Telegram brings what
     // people write to it (this backend's own address). People pick an hour
     // from BOT_FIRST to BOT_LAST, once for weekdays and once for weekends; a
@@ -58,8 +61,9 @@
 
   // The timer. The first line is every five minutes, except from noon to 7 PM
   // in UTC. In Melbourne that leaves out 11 PM to 6 AM during daylight saving
-  // time and 10 PM to 5 AM in winter. Either way it covers the alert's two
-  // times and every time in CHECK_TIMES with the hour and a quarter after it.
+  // time and 10 PM to 5 AM in winter. Either way it covers the alert on
+  // weekdays and on weekends, and every time in CHECK_TIMES with the hour and
+  // a quarter after it.
   // The second line adds the first half hour of the bot's early and late
   // hours that the first leaves out, so that each hour from BOT_FIRST to
   // BOT_LAST gets its look in summer and in winter. Cloudflare's timers only

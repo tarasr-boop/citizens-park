@@ -38,10 +38,11 @@ const TOKEN = "github_pat_11STANDIN0aBcDeFgHiJkLmNoPqRsTuVwXyZ";
 const BOT_TOKEN = "123456789:STANDIN-aBcDeFgHiJkLmNoPqRsTuVwXyZ01234";
 const TELEGRAM = `https://api.telegram.org/bot${BOT_TOKEN}/`;
 
-// The alert only goes out in the afternoon at the park, and this test has to
-// pass at any hour. So the park is moved, for the test, to wherever it is
-// midday right now. In these names the sign is the other way round:
-// "Etc/GMT-5" is five hours ahead of UTC.
+// The alert only goes out around its time of day at the park, and this test
+// has to pass at any hour of any day. So the park is moved, for the test, to
+// wherever it is midday right now, and the alert is set for half past eleven
+// on weekdays and weekends alike. In these names the sign is the other way
+// round: "Etc/GMT-5" is five hours ahead of UTC.
 const started = Date.now();
 const ahead = 12 - new Date(started).getUTCHours();
 const zone = ahead === 0 ? "Etc/GMT" : `Etc/GMT${ahead > 0 ? "-" : "+"}${Math.abs(ahead)}`;
@@ -125,7 +126,8 @@ function start(folder) {
           env: {
             SITE_URL: text(SITE),
             TIMEZONE: text(zone),
-            ALERT_FROM: text("11:00"),
+            ALERT_WEEKDAYS: text("11:30"),
+            ALERT_WEEKENDS: text("11:30"),
             ALERT_UNTIL: text("13:30"),
             CHECK_REPOSITORY: text("someone/park"),
             CHECK_WORKFLOW: text("daily.yml"),

@@ -6,28 +6,40 @@ name: Daily check
 on:
   schedule:
     # These times are Melbourne time. Extra runs do no harm: the script posts
-    # once a day, on the first run inside the window set in config.toml
-    # (from 2:30 PM). GitHub often starts scheduled runs 10 to 30 minutes late,
-    # which is why the post run is set for 2:40 PM and has two backups. In this
-    # repository's first days it started them eight to nine hours late.
+    # once a day, on the first run inside the day's window. The alert is meant
+    # for 4 PM from Monday to Friday and for 8 AM on Saturday and Sunday
+    # (config.toml), and its window opens half an hour before that. GitHub
+    # often starts scheduled runs late, and in this repository's first days
+    # it started them eight to nine hours late.
     #
-    # The same times are written in notifications/wrangler.jsonc, as
-    # CHECK_TIMES. The backend there starts a run that GitHub has missed (see
-    # "The second timer" in the README). The tests say so if the two lists no
-    # longer agree.
+    # So the same times are written in notifications/wrangler.jsonc, as
+    # CHECK_TIMES. The backend there starts a run that GitHub has not started a
+    # quarter of an hour after its time (see "The second timer" in the
+    # README). That is why each post run is set for 20 minutes before the
+    # alert's time: started 5 minutes before it, the post is out on the hour.
+    # The tests say so if the two lists no longer agree.
     - cron: "17 6 * * *"
+      timezone: "Australia/Melbourne"
+    # The post run at the weekend, and its two backups. On other days these
+    # keep the page fresh through the morning.
+    - cron: "40 7 * * *"
+      timezone: "Australia/Melbourne"
+    - cron: "10 8 * * *"
+      timezone: "Australia/Melbourne"
+    - cron: "45 8 * * *"
       timezone: "Australia/Melbourne"
     - cron: "47 11 * * *"
       timezone: "Australia/Melbourne"
-    # Shortly before the post, so that a recent forecast is saved in case the
-    # weather service does not answer the post run.
-    - cron: "47 13 * * *"
+    # An hour before the weekday post, so that a recent forecast is saved in
+    # case the weather service does not answer the post run.
+    - cron: "47 14 * * *"
       timezone: "Australia/Melbourne"
-    - cron: "40 14 * * *"
+    # The post run from Monday to Friday, and its two backups.
+    - cron: "40 15 * * *"
       timezone: "Australia/Melbourne"
-    - cron: "10 15 * * *"
+    - cron: "10 16 * * *"
       timezone: "Australia/Melbourne"
-    - cron: "45 15 * * *"
+    - cron: "45 16 * * *"
       timezone: "Australia/Melbourne"
     # Two evening runs, so the rain forecast on the page stays fresh while the
     # oval is in use.
@@ -35,9 +47,11 @@ on:
       timezone: "Australia/Melbourne"
     - cron: "47 19 * * *"
       timezone: "Australia/Melbourne"
-    # A safety net in plain UTC, in case the time zone setting above ever
-    # fails: 3:55 PM during daylight saving time, 2:55 PM in winter.
-    - cron: "55 4 * * *"
+    # Two safety nets in plain UTC, in case the time zone setting above ever
+    # fails. The first is 8:50 AM during daylight saving time and 7:50 AM in
+    # winter, the second 4:50 PM and 3:50 PM.
+    - cron: "50 21 * * *"
+    - cron: "50 5 * * *"
   push:
     branches: [main]
     paths-ignore:

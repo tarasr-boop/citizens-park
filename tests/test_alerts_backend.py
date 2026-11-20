@@ -119,8 +119,9 @@ class SettingsTest(unittest.TestCase):
         hint = "notifications/wrangler.jsonc and config.toml no longer agree"
         self.assertEqual(told["SITE_URL"], self.config.site_url, hint)
         self.assertEqual(told["TIMEZONE"], self.config.timezone_name, hint)
-        self.assertEqual(told["ALERT_FROM"], hhmm(self.config.post_from), hint)
-        self.assertEqual(told["ALERT_UNTIL"], hhmm(self.config.post_until), hint)
+        self.assertEqual(told["ALERT_WEEKDAYS"], hhmm(self.config.alert_weekdays), hint)
+        self.assertEqual(told["ALERT_WEEKENDS"], hhmm(self.config.alert_weekends), hint)
+        self.assertEqual(told["ALERT_UNTIL"], hhmm(self.config.alert_until), hint)
         # The Telegram bot's hours, and its name for the park.
         self.assertEqual(told["BOT_FIRST"], hhmm(self.config.bot_first), hint)
         self.assertEqual(told["BOT_LAST"], hhmm(self.config.bot_last), hint)
@@ -134,8 +135,9 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(
             sorted(told),
             [
-                "ALERT_FROM",
                 "ALERT_UNTIL",
+                "ALERT_WEEKDAYS",
+                "ALERT_WEEKENDS",
                 "BACKEND_URL",
                 "BOT_EVENING",
                 "BOT_FIRST",
@@ -152,17 +154,26 @@ class SettingsTest(unittest.TestCase):
             ],
         )
 
+    def test_the_backend_and_the_daily_check_open_the_alerts_window_at_the_same_time(self):
+        # Both let the alert go out a little before its stated time, and by the same number of minutes.
+        rules = (BACKEND / "src" / "rules.js").read_text(encoding="utf-8")
+        lead = int(re.search(r"^export const ALERT_LEAD = (\d+);$", rules, flags=re.MULTILINE).group(1))
+        self.assertEqual(lead, config_module.ALERT_LEAD, "ALERT_LEAD in notifications/src/rules.js and in parkbot/config.py no longer agree")
+
     def test_the_timer_covers_the_alert_window_in_summer_and_in_winter(self):
         crons = self.settings["triggers"]["crons"]
         # Cloudflare's free plan allows five timers for a whole account.
         self.assertLessEqual(len(crons), 5)
         fires = set().union(*(utc_minutes(cron) for cron in crons))
         zone = ZoneInfo(self.config.timezone_name)
-        # A summer day, a winter day, and the two Sundays on which the clocks change.
-        for day in (date(2027, 1, 15), date(2027, 7, 15), date(2026, 10, 4), date(2027, 4, 4)):
+        # A Friday and a Saturday in summer, the same in winter, and the two Sundays on which the clocks change.
+        days = (date(2027, 1, 15), date(2027, 1, 16), date(2027, 7, 16), date(2027, 7, 17), date(2026, 10, 4), date(2027, 4, 4))
+        self.assertEqual([day.weekday() for day in days], [4, 5, 4, 5, 6, 6])
+        for day in days:
             with self.subTest(day=day.isoformat()):
+                opens, closes = self.config.alert_from(day), self.config.alert_until
                 looks = []
-                for minute in range(self.config.post_from, self.config.post_until):
+                for minute in range(opens, closes):
                     moment = datetime.combine(day, time(minute // 60, minute % 60), tzinfo=zone)
                     utc = moment.astimezone(ZoneInfo("UTC"))
                     if utc.hour * 60 + utc.minute in fires:
@@ -170,8 +181,8 @@ class SettingsTest(unittest.TestCase):
                 self.assertTrue(looks, "the timer never looks inside the alert window")
                 # It looks within five minutes of the window opening, every five
                 # minutes after that, and within five minutes of it closing.
-                self.assertLessEqual(looks[0], self.config.post_from + 5)
-                self.assertGreaterEqual(looks[-1], self.config.post_until - 5)
+                self.assertLessEqual(looks[0], opens + 5)
+                self.assertGreaterEqual(looks[-1], closes - 5)
                 gaps = [later - earlier for earlier, later in zip(looks, looks[1:])]
                 self.assertLessEqual(max(gaps), 5)
 
@@ -326,19 +337,35 @@ class SecondTimerTest(unittest.TestCase):
     def test_one_set_time_falls_due_early_in_the_posting_window(self):
         # If only the second timer works, the post still goes out near its
         # usual time: some check falls due after the window opens and before
-        # the alert stops waiting for a fresh check.
+        # the alert stops waiting for a fresh check. That holds for a weekday
+        # and for a weekend day, which have different alert times.
         rules = (BACKEND / "src" / "rules.js").read_text(encoding="utf-8")
         grace = int(re.search(r"^export const GRACE_MINUTES = (\d+);$", rules, flags=re.MULTILINE).group(1))
         early_enough = self.number("EARLY_ENOUGH")
         if not self.set_times():
             return  # switched off on purpose
         due = [set_time + self.number("START_AFTER") for set_time in self.set_times()]
-        in_time = [minute for minute in due if self.config.post_from <= minute < self.config.post_from + grace]
-        self.assertTrue(in_time, "no set time falls due between the window opening and the alert going out without a fresh check")
-        # A run from just before the window opened would not post, so it must not count for that set time.
-        for set_time in self.set_times():
-            if self.config.post_from <= set_time + self.number("START_AFTER") < self.config.post_from + grace:
-                self.assertGreaterEqual(set_time - early_enough, self.config.post_from)
+        for name, day in (("weekdays", date(2026, 11, 20)), ("weekends", date(2026, 11, 21))):
+            with self.subTest(name):
+                opens = self.config.alert_from(day)
+                in_time = [minute for minute in due if opens <= minute < opens + grace]
+                self.assertTrue(in_time, "no set time falls due between the window opening and the alert going out without a fresh check")
+                # A run from just before the window opened would not post, so it must not count for that set time.
+                for set_time in self.set_times():
+                    if opens <= set_time + self.number("START_AFTER") < opens + grace:
+                        self.assertGreaterEqual(set_time - early_enough, opens)
+
+    def test_the_post_run_is_started_just_before_the_alerts_time(self):
+        # People are told a time on the hour. Started by the second timer in the
+        # ten minutes before it, the check has posted and published the page by
+        # then, and the backend sends the notification at its next look.
+        if not self.set_times():
+            return  # switched off on purpose
+        due = [set_time + self.number("START_AFTER") for set_time in self.set_times()]
+        for name, day in (("weekdays", date(2026, 11, 20)), ("weekends", date(2026, 11, 21))):
+            with self.subTest(name):
+                at = self.config.alert_at(day)
+                self.assertTrue([minute for minute in due if at - 10 <= minute < at], f"no set time falls due in the ten minutes before the alert's time on {name}")
 
     def test_set_times_are_far_enough_apart_for_one_check_to_finish(self):
         # A check is started a quarter of an hour after its set time. The one
@@ -356,6 +383,7 @@ class SecondTimerTest(unittest.TestCase):
         self.test_its_times_are_the_times_github_is_asked_to_run_the_check()
         self.test_the_timer_looks_after_every_set_time_in_summer_and_in_winter()
         self.test_one_set_time_falls_due_early_in_the_posting_window()
+        self.test_the_post_run_is_started_just_before_the_alerts_time()
         self.test_set_times_are_far_enough_apart_for_one_check_to_finish()
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("To switch the second timer off, make `CHECK_TIMES` empty", readme)

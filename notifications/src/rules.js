@@ -10,8 +10,15 @@ const encoder = new TextEncoder();
 // The largest request this backend reads. What a browser hands over is well under 1,000 bytes.
 export const MOST_BYTES = 4096;
 
-// If no check of the council's page has run by this long after the alert time,
-// the alert goes out anyway, with the notice the page already has for today.
+// The alert may go out from this many minutes before its stated time. The
+// check that sends it is asked for a little before that time, so that the
+// alert arrives on the hour and not after it. The daily check has the same
+// number: ALERT_LEAD in parkbot/config.py.
+export const ALERT_LEAD = 30;
+
+// If no check of the council's page has run by this long after the alert may
+// first go out, it goes out anyway, with the notice the page already has for
+// today. That is a quarter of an hour after its stated time.
 export const GRACE_MINUTES = 45;
 
 // The notification services of the browsers people use: Chrome and most
@@ -56,12 +63,19 @@ export function settingsFrom(env) {
     siteUrl: site.href.endsWith("/") ? site.href : site.href + "/",
     origin: site.origin,
     zone,
-    from: minutes(env.ALERT_FROM, "ALERT_FROM"),
+    // When the alert goes out, as minutes of the day: from Monday to Friday,
+    // on Saturday and Sunday, and the time after which it is left out.
+    weekdays: minutes(env.ALERT_WEEKDAYS, "ALERT_WEEKDAYS"),
+    weekends: minutes(env.ALERT_WEEKENDS, "ALERT_WEEKENDS"),
     until: minutes(env.ALERT_UNTIL, "ALERT_UNTIL"),
     check: checkFrom(env),
     bot: botFrom(env),
   };
-  if (settings.from >= settings.until) throw new Error("ALERT_FROM should be earlier than ALERT_UNTIL");
+  for (const name of ["weekdays", "weekends"]) {
+    const told = `ALERT_${name.toUpperCase()}`;
+    if (settings[name] < ALERT_LEAD) throw new Error(`${told} should be ${ALERT_LEAD} minutes after midnight or later`);
+    if (settings[name] >= settings.until) throw new Error(`${told} should be earlier than ALERT_UNTIL`);
+  }
   return settings;
 }
 
@@ -170,9 +184,25 @@ export function clockText(minute) {
   return `${hour % 12 || 12}${past ? ":" + String(past).padStart(2, "0") : ""} ${hour < 12 ? "AM" : "PM"}`;
 }
 
-/** The hour people are told to expect the alert: "3 PM" when it goes out from 2:30 PM. */
-export function alertHour(settings) {
-  return clockText(Math.floor((settings.from + 30) / 60) * 60);
+/** Is `date`, written like "2026-11-21", a Saturday or a Sunday? */
+export function isWeekend(date) {
+  const day = new Date(`${date}T00:00:00Z`).getUTCDay();
+  return day === 0 || day === 6;
+}
+
+/** The earliest minute of the day at which the alert may go out on `date`. */
+export function alertFrom(settings, date) {
+  return (isWeekend(date) ? settings.weekends : settings.weekdays) - ALERT_LEAD;
+}
+
+/**
+ * When people are told to expect the alert: "4 PM on weekdays and 8 AM on
+ * weekends", or "4 PM" if the two times are the same. The page says it the
+ * same way.
+ */
+export function alertTimes(settings) {
+  if (settings.weekdays === settings.weekends) return clockText(settings.weekdays);
+  return `${clockText(settings.weekdays)} on weekdays and ${clockText(settings.weekends)} on weekends`;
 }
 
 function knownPushService(host) {
@@ -227,14 +257,15 @@ function cut(text, most) {
 }
 
 /**
- * Was the page's data made today, at or after the alert time? Then the day's
- * check has run, and what it found is as fresh as it gets.
+ * Was the page's data made today, at or after the time from which the alert
+ * may go out? Then the check that goes with the alert has run, and what it
+ * found is as fresh as it gets.
  */
 export function isFresh(data, local, settings) {
   const made = Date.parse(data && data.generated);
   if (Number.isNaN(made)) return false;
   const when = localTime(made, settings.zone);
-  return when.date === local.date && when.minute >= settings.from;
+  return when.date === local.date && when.minute >= alertFrom(settings, local.date);
 }
 
 /**
@@ -284,7 +315,7 @@ export function messageFor(notice, settings, tag) {
 export function welcome(settings) {
   return {
     title: "Alerts are on",
-    body: `You'll get one notification a day, at about ${alertHour(settings)}, saying when the oval is booked.`,
+    body: `You'll get one notification a day, at about ${alertTimes(settings)}, saying when the oval is booked.`,
   };
 }
 

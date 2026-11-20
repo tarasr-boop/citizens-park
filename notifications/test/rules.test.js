@@ -6,13 +6,16 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
+  ALERT_LEAD,
   GRACE_MINUTES,
   Refusal,
-  alertHour,
+  alertFrom,
+  alertTimes,
   checkSubscription,
   clockText,
   corsHeaders,
   isFresh,
+  isWeekend,
   localTime,
   messageFor,
   noticeFor,
@@ -24,7 +27,7 @@ import { LARGEST_MESSAGE } from "../src/webpush.js";
 import { BOT, CHECK, ENV, SITE, at, day, newDevice, pageData, readJsonc, settings } from "./standins.js";
 
 test("the settings are read and tidied", () => {
-  assert.deepEqual(settings, { siteUrl: SITE, origin: "https://citizensbark.example", zone: "Australia/Melbourne", from: 870, until: 1140, check: null, bot: null });
+  assert.deepEqual(settings, { siteUrl: SITE, origin: "https://citizensbark.example", zone: "Australia/Melbourne", weekdays: 900, weekends: 480, until: 1140, check: null, bot: null });
   // An address without its last slash gets one, so that file names can be added to it.
   assert.equal(settingsFrom({ ...ENV, SITE_URL: "https://example.org/park" }).siteUrl, "https://example.org/park/");
   assert.equal(settingsFrom({ ...ENV, SITE_URL: "https://example.org/park" }).origin, "https://example.org");
@@ -37,12 +40,20 @@ test("settings that make no sense are turned down with a plain reason", () => {
     [{ SITE_URL: "http://citizensbark.example/" }, /https/],
     [{ TIMEZONE: "Australia/Richmond" }, /TIMEZONE/],
     [{ TIMEZONE: undefined }, /TIMEZONE/],
-    [{ ALERT_FROM: "2:30 PM" }, /ALERT_FROM/],
-    [{ ALERT_FROM: "24:00" }, /ALERT_FROM/],
+    [{ ALERT_WEEKDAYS: "3 PM" }, /ALERT_WEEKDAYS/],
+    [{ ALERT_WEEKDAYS: "24:00" }, /ALERT_WEEKDAYS/],
+    [{ ALERT_WEEKDAYS: undefined }, /ALERT_WEEKDAYS/],
+    [{ ALERT_WEEKENDS: "8" }, /ALERT_WEEKENDS/],
+    [{ ALERT_WEEKENDS: undefined }, /ALERT_WEEKENDS/],
     [{ ALERT_UNTIL: "19:60" }, /ALERT_UNTIL/],
     [{ ALERT_UNTIL: undefined }, /ALERT_UNTIL/],
-    [{ ALERT_FROM: "19:00", ALERT_UNTIL: "14:30" }, /earlier/],
-    [{ ALERT_FROM: "14:30", ALERT_UNTIL: "14:30" }, /earlier/],
+    [{ ALERT_WEEKDAYS: "19:00" }, /ALERT_WEEKDAYS should be earlier than ALERT_UNTIL/],
+    [{ ALERT_WEEKENDS: "19:30" }, /ALERT_WEEKENDS should be earlier than ALERT_UNTIL/],
+    [{ ALERT_UNTIL: "08:00" }, /earlier/],
+    // The alert may go out half an hour early, and that must still be the same day.
+    [{ ALERT_WEEKENDS: "00:29" }, /ALERT_WEEKENDS should be 30 minutes after midnight or later/],
+    // The names the two times had before. A deploy with only those must fail, not guess.
+    [{ ALERT_WEEKDAYS: undefined, ALERT_WEEKENDS: undefined, ALERT_FROM: "14:30" }, /ALERT_WEEKDAYS/],
   ];
   for (const [change, reason] of wrong) {
     assert.throws(() => settingsFrom({ ...ENV, ...change }), reason, JSON.stringify(change));
@@ -102,13 +113,16 @@ test("the settings in wrangler.jsonc are ones the backend takes", () => {
   const file = readJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
   const real = settingsFrom(file.vars);
   assert.equal(real.siteUrl.startsWith("https://"), true);
-  assert.equal(real.from < real.until, true);
+  // Taras asked for the alert at 4 PM on weekdays and at 8 AM on weekends.
+  assert.deepEqual([real.weekdays, real.weekends], [16 * 60, 8 * 60]);
+  assert.equal(real.weekdays < real.until && real.weekends < real.until, true);
   // The second timer has a handful of times of day there. Without any, it is switched off on purpose.
   if (real.check) assert.ok(real.check.times.length >= 3 && real.check.times.length <= 24);
   assert.equal(settingsFrom({ ...file.vars, CHECK_TIMES: "" }).check, null);
   assert.deepEqual(Object.keys(file.vars).sort(), [
-    "ALERT_FROM",
     "ALERT_UNTIL",
+    "ALERT_WEEKDAYS",
+    "ALERT_WEEKENDS",
     "BACKEND_URL",
     "BOT_EVENING",
     "BOT_FIRST",
@@ -205,12 +219,32 @@ test("times are written the way the page writes them", () => {
   assert.equal(clockText(23 * 60 + 59), "11:59 PM");
 });
 
-test("people are told the nearest hour to expect the alert", () => {
-  assert.equal(alertHour(settings), "3 PM");
-  assert.equal(alertHour({ ...settings, from: 15 * 60 }), "3 PM");
-  assert.equal(alertHour({ ...settings, from: 15 * 60 + 29 }), "3 PM");
-  assert.equal(alertHour({ ...settings, from: 15 * 60 + 30 }), "4 PM");
-  assert.equal(GRACE_MINUTES, 45);
+test("Saturday and Sunday are the weekend, by the date at the park", () => {
+  // Monday 16 to Sunday 22 November 2026.
+  const week = ["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20", "2026-11-21", "2026-11-22"];
+  assert.deepEqual(week.map(isWeekend), [false, false, false, false, false, true, true]);
+  // The days around a new year and a leap day.
+  assert.deepEqual(["2026-12-31", "2027-01-01", "2027-01-02", "2028-02-29"].map(isWeekend), [false, false, true, false]);
+  // Early on Saturday at the park it is still Friday in UTC. The date at the park decides.
+  const early = localTime(Date.parse("2026-11-20T20:35:00Z"), "Australia/Melbourne");
+  assert.deepEqual(early, { date: "2026-11-21", minute: 455 });
+  assert.equal(isWeekend(early.date), true);
+});
+
+test("the alert may go out from half an hour before its time, which differs at the weekend", () => {
+  assert.equal(ALERT_LEAD, 30);
+  assert.equal(alertFrom(settings, "2026-11-20"), 14 * 60 + 30);
+  assert.equal(alertFrom(settings, "2026-11-21"), 7 * 60 + 30);
+  assert.equal(alertFrom(settings, "2026-11-22"), 7 * 60 + 30);
+  assert.equal(alertFrom(settings, "2026-11-23"), 14 * 60 + 30);
+  // Without a fresh check it goes out a quarter of an hour after its time.
+  assert.equal(GRACE_MINUTES - ALERT_LEAD, 15);
+});
+
+test("people are told both times to expect the alert, or the one time if they are the same", () => {
+  assert.equal(alertTimes(settings), "3 PM on weekdays and 8 AM on weekends");
+  assert.equal(alertTimes({ ...settings, weekdays: 16 * 60 }), "4 PM on weekdays and 8 AM on weekends");
+  assert.equal(alertTimes({ ...settings, weekdays: 9 * 60 + 30, weekends: 9 * 60 + 30 }), "9:30 AM");
 });
 
 test("an address at one of the browsers' notification services is taken", () => {
@@ -327,7 +361,7 @@ test("an address is filed the same way however it was written", () => {
   }
 });
 
-test("the page's data is fresh once a check has run today at or after the alert time", () => {
+test("the page's data is fresh once a check has run today at or after the time the alert may go out", () => {
   const local = { date: "2026-11-20", minute: 905 };
   const fresh = (generated) => isFresh({ generated }, local, settings);
   assert.equal(fresh("2026-11-20T14:30:00+11:00"), true);
@@ -337,6 +371,13 @@ test("the page's data is fresh once a check has run today at or after the alert 
   assert.equal(fresh("2026-11-20T14:29:59+11:00"), false);
   assert.equal(fresh("2026-11-20T11:47:00+11:00"), false);
   assert.equal(fresh("2026-11-19T15:00:00+11:00"), false);
+  // At the weekend the alert is a morning one, so the morning's check is the one that counts.
+  const saturday = { date: "2026-11-21", minute: 480 };
+  assert.equal(isFresh({ generated: "2026-11-21T07:30:00+11:00" }, saturday, settings), true);
+  assert.equal(isFresh({ generated: "2026-11-21T07:56:00+11:00" }, saturday, settings), true);
+  assert.equal(isFresh({ generated: "2026-11-21T07:29:00+11:00" }, saturday, settings), false);
+  assert.equal(isFresh({ generated: "2026-11-21T06:35:00+11:00" }, saturday, settings), false);
+  assert.equal(isFresh({ generated: "2026-11-20T15:56:00+11:00" }, saturday, settings), false);
   assert.equal(fresh("not a time"), false);
   assert.equal(fresh(undefined), false);
   assert.equal(isFresh(null, local, settings), false);
@@ -416,7 +457,10 @@ test("a notification is written in the shape that iPhones show by themselves", (
 });
 
 test("the first notification says when to expect the alert", () => {
-  assert.deepEqual(welcome(settings), { title: "Alerts are on", body: "You'll get one notification a day, at about 3 PM, saying when the oval is booked." });
+  assert.deepEqual(welcome(settings), {
+    title: "Alerts are on",
+    body: "You'll get one notification a day, at about 3 PM on weekdays and 8 AM on weekends, saying when the oval is booked.",
+  });
 });
 
 test("only the page itself is allowed to talk to the backend from a browser", () => {
