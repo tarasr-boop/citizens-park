@@ -60,6 +60,8 @@ class Config:
     bot_evening: int = 21 * 60  # an alert at this time or later is about the next day, sent the evening before
     bot_weekday: int = 16 * 60  # the times a new chat starts with
     bot_weekend: int = 8 * 60
+    # The channel has moved to the bot: it gets one last post pointing there, and nothing after.
+    channel_retired: bool = False
 
     @property
     def zone(self) -> ZoneInfo:
@@ -103,6 +105,12 @@ def _email_address(value: str, what: str) -> str:
     value = value.strip()
     if value and not re.fullmatch(r"[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+", value):
         raise ConfigError(f"{what} should be an email address, such as hello@example.org, got {value!r}")
+    return value
+
+
+def _yes_or_no(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{name} should be true or false, without quotation marks")
     return value
 
 
@@ -210,6 +218,7 @@ def load(path: str | Path = "config.toml") -> Config:
             bot_evening=_on_the_hour(bot.get("evening", "21:00"), "bot.evening"),
             bot_weekday=_on_the_hour(bot.get("weekday", "16:00"), "bot.weekday"),
             bot_weekend=_on_the_hour(bot.get("weekend", "08:00"), "bot.weekend"),
+            channel_retired=_yes_or_no(telegram.get("retired", False), "telegram.retired"),
         )
     except KeyError as error:
         raise ConfigError(f"{path} is missing the setting {error}") from error
@@ -229,6 +238,8 @@ def load(path: str | Path = "config.toml") -> Config:
         raise ConfigError("bot.weekday and bot.weekend must lie between bot.first and bot.last, and bot.first before bot.last")
     if not config.bot_first < config.bot_evening <= config.bot_last + 60:
         raise ConfigError("bot.evening must be later than bot.first, and no later than an hour after bot.last")
+    if config.channel_retired and not (config.channel and config.bot_name):
+        raise ConfigError("telegram.retired needs telegram.channel and bot.name: the channel's last post points people to the bot")
     if not config.advice_from < config.advice_until:
         raise ConfigError("telegram.advice_from must be earlier than telegram.advice_until")
     try:

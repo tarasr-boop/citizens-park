@@ -24,6 +24,10 @@ user_agent = "Mozilla/5.0 (compatible; CitizensParkAlerts/1.0; community dog-wal
 # The public channel's link name: the part after "t.me/".
 # While this is empty nothing is posted, and the page leaves out its Telegram button.
 channel = "CitizensBark"
+# The channel has moved to the bot (see [bot]). With this set to true, the next
+# daily check posts once in the channel to say where the alerts are now, and
+# after that the channel gets nothing more. The page leaves the channel out.
+retired = true
 # On a rainy day the post names the best time to stay out of the rain. It looks
 # between these two times, and only at times when the oval is not booked.
 advice_from = "17:00"
@@ -41,7 +45,7 @@ weekends = "08:00"
 until = "19:00"
 
 [bot]
-# Custom alerts from the Telegram bot (the same bot that posts to the channel).
+# Custom alerts from the Telegram bot (the same bot that posted to the channel).
 # The bot's link name: the part after "t.me/". While it is empty, the page's
 # Telegram button leads to the channel instead.
 name = "CitizensParkDogsBot"

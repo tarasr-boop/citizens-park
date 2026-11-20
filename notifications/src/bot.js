@@ -202,7 +202,8 @@ export class Bot {
       hook = { secret: toBase64Url(crypto.getRandomValues(new Uint8Array(32))) };
     }
     const wanted = `${await markOf(this.token)} ${bot.address}`;
-    const described = words.description(bot.park);
+    // What the bot shows of itself: its name and its description. A change to either is made at the next look.
+    const described = `${words.NAME}\n${words.description(bot.park)}`;
     const fresh = now - hook.at < (hook.ok ? HOOK_AGAIN_MS : HOOK_RETRY_MS);
     if (hook.wanted === wanted && fresh && (!hook.ok || hook.described === described)) return hook;
 
@@ -219,7 +220,10 @@ export class Bot {
       await this.telegram("setMyCommands", { commands: words.COMMANDS });
       this.log("the bot is set up");
     }
-    if (set.ok && (hook.wanted !== wanted || hook.described !== described)) await this.describe(described);
+    if (set.ok && (hook.wanted !== wanted || hook.described !== described)) {
+      await this.rename(words.NAME);
+      await this.describe(words.description(bot.park));
+    }
     // How Telegram's deliveries to this backend have gone, for the status page.
     const info = set.ok ? await this.telegram("getWebhookInfo") : null;
     const about = info && info.ok && info.result && typeof info.result === "object" ? info.result : {};
@@ -246,6 +250,13 @@ export class Bot {
    * wrote with @BotFather is left as it is; only an empty one, or one an
    * earlier version of the bot wrote, is replaced.
    */
+  /** Give the bot its name, unless someone gave it a name of their own in @BotFather. */
+  async rename(name) {
+    const now = await this.telegram("getMyName");
+    const there = now.ok && now.result && typeof now.result.name === "string" ? now.result.name : null;
+    if (there !== null && there !== name && ["", ...words.EARLIER_NAMES].includes(there)) await this.telegram("setMyName", { name });
+  }
+
   async describe(text) {
     const bot = this.settings.bot;
     const ours = new Set(["", text, ...words.earlierDescriptions(bot.park, bot)]);

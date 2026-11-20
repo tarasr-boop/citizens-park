@@ -78,7 +78,7 @@ async function outbound(request) {
   if (request.url.startsWith("https://api.telegram.org/")) {
     const call = { url: request.url, method: request.url.split("/").pop(), body: JSON.parse((await request.text()) || "{}") };
     outside.telegram.push(call);
-    const results = { getMe: { id: 123456789, is_bot: true, username: "standin_park_bot" }, getWebhookInfo: { pending_update_count: 0 }, getMyDescription: { description: "" }, getMyShortDescription: { short_description: "" } };
+    const results = { getMe: { id: 123456789, is_bot: true, username: "standin_park_bot" }, getWebhookInfo: { pending_update_count: 0 }, getMyDescription: { description: "" }, getMyShortDescription: { short_description: "" }, getMyName: { name: "Citizens Park Dogs" } };
     if (call.method === "sendMessage") results.sendMessage = { message_id: 1000 + outside.telegram.filter((one) => one.method === "sendMessage").length };
     return new Response(JSON.stringify({ ok: true, result: results[call.method] ?? true }), { headers: { "Content-Type": "application/json" } });
   }

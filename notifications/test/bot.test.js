@@ -139,6 +139,8 @@ test("the first look tells Telegram where to bring messages, with a password it 
   assert.equal(it.net.bot.find((call) => call.method === "setMyDescription").body.description, wanted);
   assert.equal(it.net.bot.find((call) => call.method === "setMyShortDescription").body.short_description, wanted);
   assert.ok(wanted.length <= 120);
+  // Its earlier name gives way to the name of the channel that moved here.
+  assert.deepEqual(it.net.bot.find((call) => call.method === "setMyName").body, { name: "Citizens Bark" });
   // Every request went to Telegram's API with the token, and nowhere else.
   for (const call of it.net.bot) assert.equal(call.token, BOT_TOKEN);
   const status = await it.bot.status();
@@ -167,6 +169,15 @@ test("a description someone wrote is left alone, one the bot wrote before is rep
   assert.deepEqual(it.net.bot.map((call) => call.method), ["getMe", "setWebhook", "getWebhookInfo"]);
   // The same password as before.
   assert.equal(it.net.bot[1].body.secret_token, secret);
+});
+
+test("a name someone gave the bot is left alone, and one it already has is not set again", async () => {
+  for (const name of ["Dog Park News", "Citizens Bark"]) {
+    const it = open({ telegram: (call) => (call.method === "getMyName" ? { result: { name } } : null) });
+    await it.bot.tick();
+    assert.ok(it.net.bot.some((call) => call.method === "getMyName"));
+    assert.equal(it.net.bot.some((call) => call.method === "setMyName"), false, name);
+  }
 });
 
 test("a bot that already has the earlier version's description gets the new one at the next look", async () => {

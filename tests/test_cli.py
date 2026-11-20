@@ -669,5 +669,56 @@ class MainTest(unittest.TestCase):
             self.assertTrue(Path(folder, "site", "qr.svg").exists())
 
 
+
+class RetiredChannelTest(unittest.TestCase):
+    """Once the channel has moved to the bot (telegram.retired), it gets one last post, then nothing."""
+
+    def setUp(self):
+        self._folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self._folder.cleanup)
+        folder = Path(self._folder.name)
+        text = CONFIG_FILE.read_text(encoding="utf-8").replace("[telegram]\n", "[telegram]\nretired = true\n")
+        (folder / "config.toml").write_text(text + '\n[bot]\nname = "ExampleParkBot"\n', encoding="utf-8")
+        self.world = FakeWorld(folder)
+        self.config = str(folder / "config.toml")
+
+    def run_at(self, now, post="auto"):
+        return self.world.run(now, post=post, config=self.config)
+
+    def test_one_last_post_points_to_the_bot_and_then_the_channel_is_quiet(self):
+        # The last post goes at the first run, whatever the time of day.
+        self.assertEqual(self.run_at("2026-11-20T09:00"), 0)
+        self.assertEqual(len(self.world.sent), 1)
+        post = self.world.sent[0]
+        self.assertEqual(post["channel"], "ExampleParkDogs")
+        self.assertFalse(post["silent"])
+        self.assertTrue(post["text"].startswith("🐕 <b>Citizens Park has moved to a bot</b>\n\nThis channel stops posting today."))
+        self.assertIn('<a href="https://t.me/ExampleParkBot">Open the bot</a> and press Start.', post["text"])
+        self.assertIn("It starts at 4 PM on weekdays and 8 AM on weekends.", post["text"])
+        self.assertEqual(self.world.state().channel_farewell, date(2026, 11, 20))
+
+        # No daily post, no week-ahead post on Sunday, not even a forced one.
+        for now, post in (("2026-11-20T14:45", "auto"), ("2026-11-21T14:45", "force"), ("2026-11-22T07:55", "auto")):
+            with self.subTest(now=now):
+                self.assertEqual(self.run_at(now, post), 0)
+        self.assertEqual(len(self.world.sent), 1)
+        self.assertIn("the channel has moved to the bot, and its last post went out on Fri 20 Nov", self.world.said())
+
+    def test_a_failed_last_post_is_tried_again(self):
+        self.world.send_error = telegram.TelegramError("Forbidden: bot is not a member of the channel chat")
+        self.assertEqual(self.run_at("2026-11-20T09:00"), 1)
+        self.assertIsNone(self.world.state().channel_farewell)
+        self.assertIn("not a member", self.world.state().telegram_error)
+        self.world.send_error = None
+        self.assertEqual(self.run_at("2026-11-20T11:47"), 0)
+        self.assertEqual(len(self.world.sent), 1)
+        self.assertEqual(self.world.state().telegram_error, "")
+
+    def test_never_holds_the_last_post_back(self):
+        self.run_at("2026-11-20T09:00", post="never")
+        self.assertEqual(self.world.sent, [])
+        self.assertIn("the channel's last post is still to go", self.world.said())
+
+
 if __name__ == "__main__":
     unittest.main()

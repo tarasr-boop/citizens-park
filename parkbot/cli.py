@@ -7,6 +7,7 @@ One run does everything, in this order:
 3. work out today and the week ahead
 4. build the public page
 5. post to Telegram, if a channel is set, it is time and today's post has not gone out yet
+   (or, once the channel has moved to the bot, its one last post)
 6. save what it learned, and raise or clear watchdog issues
 
 A failing source never stops the run. The post and the page always go out
@@ -309,7 +310,36 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     in_window = opens <= now_minute < config.alert_until
     due = options.post == "force" or (options.post == "auto" and in_window and state.last_daily_post != today)
     token = (tools.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
-    if not due:
+    if config.channel and config.channel_retired:
+        # The channel has moved to the bot: one last post that says so, then nothing more.
+        if state.channel_farewell:
+            reason = f"the channel has moved to the bot, and its last post went out on {short_date(state.channel_farewell)}"
+            state.telegram_error = ""
+            say(f"Telegram: no post, {reason}")
+            summary.append(f"- Telegram: no post, {reason}")
+        elif options.post == "never":
+            say("Telegram: no post, posting is switched off for this run (the channel's last post is still to go)")
+            summary.append("- Telegram: no post, posting is switched off for this run (the channel's last post is still to go)")
+        elif not token:
+            state.telegram_error = "The TELEGRAM_BOT_TOKEN secret is missing."
+            warn("Telegram: the channel's last post is due, but the TELEGRAM_BOT_TOKEN secret is missing")
+            summary.append("- Telegram: **not posted**, the TELEGRAM_BOT_TOKEN secret is missing")
+        else:
+            try:
+                tools.send(token, config.channel, message.farewell(config))
+            except Exception as error:  # noqa: BLE001 - everything after this must still happen
+                reason = str(error) if isinstance(error, telegram.TelegramError) else f"unexpected {type(error).__name__}"
+                reason = _one_line(reason.replace(token, "[token]"))
+                state.telegram_error = reason
+                problems.append(f"The channel's last post failed: {reason}")
+                summary.append(f"- Telegram: channel's last post **failed**, {reason}")
+            else:
+                state.channel_farewell = today
+                state.telegram_error = ""
+                state.save(data_dir / "state.json")  # straight away, so it can never go out twice
+                say(f"Telegram: the channel's last post went to @{config.channel}, pointing to the bot")
+                summary.append(f"- Telegram: the channel's last post went to @{config.channel}, pointing to the bot")
+    elif not due:
         if options.post == "never":
             reason = "posting is switched off for this run"
         elif state.last_daily_post == today:
@@ -347,7 +377,7 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
 
     # The week ahead follows the Sunday post, quietly, so phones buzz only once.
     weekly_due = state.last_daily_post == today and today.weekday() == 6 and state.last_weekly_post != today
-    if token and config.channel and weekly_due and options.post != "never":
+    if token and config.channel and not config.channel_retired and weekly_due and options.post != "never":
         try:
             tools.send(token, config.channel, message.weekly(plans[1:], forecast, config), silent=True)
         except Exception as error:  # noqa: BLE001

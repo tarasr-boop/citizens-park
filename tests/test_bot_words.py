@@ -110,6 +110,14 @@ class ButtonTest(unittest.TestCase):
         self.assertIn('<a class="button" href="https://t.me/ExampleParkBot" rel="noopener">Get custom alerts on Telegram</a>', page)
         self.assertNotIn(">Get alerts on Telegram<", page)
 
+    def test_once_the_channel_has_moved_to_the_bot_the_page_names_only_the_bot(self):
+        page = self.page(bot_name="ExampleParkBot", channel_retired=True)
+        self.assertIn(">Get custom alerts on Telegram</a>", page)
+        self.assertNotIn("t.me/ExampleParkDogs", page)
+        self.assertIn('On Telegram, the <a href="https://t.me/ExampleParkBot" rel="noopener">Citizens Park bot</a> sends the same alert at a time you choose.', page)
+        # Without the bot's name, a retired channel leaves no Telegram button at all.
+        self.assertNotIn("Telegram</a>", self.page(channel_retired=True, bot_name="").split("How this works")[0])
+
     def test_without_it_the_button_leads_to_the_channel(self):
         page = self.page()
         self.assertIn(">Get alerts on Telegram</a>", page)
@@ -149,6 +157,18 @@ class SettingsTest(unittest.TestCase):
         with self.assertRaises(config_module.ConfigError):
             config_module.load(self.write('name = "not a name"\n'))
         self.assertEqual(load_config().bot_url, "")
+
+    def test_a_retired_channel_needs_the_bot(self):
+        config = config_module.load(self.write('name = "ExampleParkBot"\n'))
+        self.assertFalse(config.channel_retired)
+        for text, extra in (("retired = true", 'name = "ExampleParkBot"\n'), ('retired = "yes"', 'name = "ExampleParkBot"\n'), ("retired = true", "")):
+            path = self.write(extra)
+            path.write_text(path.read_text(encoding="utf-8").replace("[telegram]\n", f"[telegram]\n{text}\n"), encoding="utf-8")
+            if text == "retired = true" and extra:
+                self.assertTrue(config_module.load(path).channel_retired)
+            else:
+                with self.subTest(text=text, extra=extra), self.assertRaises(config_module.ConfigError):
+                    config_module.load(path)
 
     def test_the_real_settings_load(self):
         config = config_module.load(Path(__file__).resolve().parent.parent / "config.toml")
