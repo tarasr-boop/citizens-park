@@ -6,3 +6,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .DS_Store
+
+# The tools the alerts backend is tried and deployed with, and their scratch files.
+notifications/node_modules/
+notifications/.wrangler/

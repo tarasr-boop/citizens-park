@@ -1,0 +1,22 @@
+{
+  "name": "citizens-bark-alerts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The alerts backend for the Citizens Bark page: keeps the devices that want the daily alert and sends it to them.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "wrangler deploy --dry-run --outdir .wrangler/check",
+    "runtime": "npm run check && node test/runtime.js .wrangler/check/worker.js",
+    "deploy": "wrangler deploy"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "dependencies": {
+    "wrangler": "4.165.0"
+  },
+  "devDependencies": {
+    "miniflare": "5.20261118.0-beta"
+  }
+}

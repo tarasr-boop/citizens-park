@@ -1,0 +1,233 @@
+// Stand-ins for the tests: a place to keep things, a clock, a phone with its
+// keys, and the outside world (the notification services and the page).
+//
+// The phone here reads a notification with Node's own cryptography, written
+// separately from the code under test, so that the two check each other.
+
+import crypto from "node:crypto";
+import { settingsFrom } from "../src/rules.js";
+
+export const SITE = "https://citizensbark.example/";
+export const ENV = { SITE_URL: SITE, TIMEZONE: "Australia/Melbourne", ALERT_FROM: "14:30", ALERT_UNTIL: "19:00" };
+export const settings = settingsFrom(ENV);
+
+/** A moment in Melbourne's summer (UTC+11), such as at("2026-11-20", "15:00"). */
+export function at(date, time, offset = "+11:00") {
+  return Date.parse(`${date}T${time}:00${offset}`);
+}
+
+export function clock(start) {
+  const it = {
+    ms: start,
+    now: () => it.ms,
+    set(ms) {
+      it.ms = ms;
+    },
+    forward(ms) {
+      it.ms += ms;
+    },
+  };
+  return it;
+}
+
+/**
+ * Keeps things the way a Durable Object's storage does: by name, in the order
+ * of the names, with one wake-up time. What goes in and what comes out are
+ * copies, as they are in the real thing.
+ */
+export function memoryStorage() {
+  const kept = new Map();
+  const copy = (value) => (value === undefined ? undefined : structuredClone(value));
+  const storage = {
+    kept,
+    alarm: null,
+    writes: 0,
+    async get(name) {
+      if (Array.isArray(name)) {
+        if (name.length > 128) throw new Error("at most 128 names at once");
+        const found = new Map();
+        for (const one of [...name].sort()) if (kept.has(one)) found.set(one, copy(kept.get(one)));
+        return found;
+      }
+      return copy(kept.get(name));
+    },
+    async put(name, value) {
+      storage.writes += 1;
+      if (typeof name === "string") {
+        kept.set(name, copy(value));
+        return;
+      }
+      if (Object.keys(name).length > 128) throw new Error("at most 128 pairs at once");
+      for (const [one, its] of Object.entries(name)) kept.set(one, copy(its));
+    },
+    async delete(name) {
+      storage.writes += 1;
+      if (Array.isArray(name)) {
+        if (name.length > 128) throw new Error("at most 128 names at once");
+        return name.filter((one) => kept.delete(one)).length;
+      }
+      return kept.delete(name);
+    },
+    async list({ start, startAfter, end, prefix, limit, reverse } = {}) {
+      let names = [...kept.keys()].sort();
+      if (prefix !== undefined) names = names.filter((name) => name.startsWith(prefix));
+      if (start !== undefined) names = names.filter((name) => name >= start);
+      if (startAfter !== undefined) names = names.filter((name) => name > startAfter);
+      if (end !== undefined) names = names.filter((name) => name < end);
+      if (reverse) names.reverse();
+      if (limit !== undefined) names = names.slice(0, limit);
+      return new Map(names.map((name) => [name, copy(kept.get(name))]));
+    },
+    async setAlarm(ms) {
+      storage.alarm = Number(ms);
+    },
+    async getAlarm() {
+      return storage.alarm;
+    },
+    async deleteAlarm() {
+      storage.alarm = null;
+    },
+    /** The devices in the book, as pairs of name and entry. */
+    devices() {
+      return [...kept.entries()].filter(([name]) => name.startsWith("sub:")).sort(([a], [b]) => (a < b ? -1 : 1));
+    },
+  };
+  return storage;
+}
+
+const b64 = (bytes) => Buffer.from(bytes).toString("base64url");
+
+/** A phone: an address at a notification service, and the keys only it holds. */
+export function newDevice(host = "fcm.googleapis.com") {
+  const pair = crypto.createECDH("prime256v1");
+  pair.generateKeys();
+  const auth = crypto.randomBytes(16);
+  const endpoint = `https://${host}/send/${crypto.randomBytes(12).toString("hex")}`;
+  return {
+    endpoint,
+    host,
+    /** What the browser hands to the page: the address and the public halves of the keys. */
+    subscription: { endpoint, expirationTime: null, keys: { p256dh: b64(pair.getPublicKey()), auth: b64(auth) } },
+    /** Read a notification as the phone would (RFC 8291 and RFC 8188). Throws if it was not written for this phone. */
+    read(body) {
+      const bytes = Buffer.from(body);
+      const salt = bytes.subarray(0, 16);
+      const recordSize = bytes.readUInt32BE(16);
+      const keyLength = bytes[20];
+      const theirs = bytes.subarray(21, 21 + keyLength);
+      const sealed = bytes.subarray(21 + keyLength);
+      if (sealed.length > recordSize) throw new Error("more than one record");
+      const shared = pair.computeSecret(theirs);
+      const info = Buffer.concat([Buffer.from("WebPush: info\0"), pair.getPublicKey(), theirs]);
+      const mixed = Buffer.from(crypto.hkdfSync("sha256", shared, auth, info, 32));
+      const key = Buffer.from(crypto.hkdfSync("sha256", mixed, salt, Buffer.from("Content-Encoding: aes128gcm\0"), 16));
+      const nonce = Buffer.from(crypto.hkdfSync("sha256", mixed, salt, Buffer.from("Content-Encoding: nonce\0"), 12));
+      const opener = crypto.createDecipheriv("aes-128-gcm", key, nonce);
+      opener.setAuthTag(sealed.subarray(sealed.length - 16));
+      const padded = Buffer.concat([opener.update(sealed.subarray(0, sealed.length - 16)), opener.final()]);
+      let last = padded.length - 1;
+      while (last >= 0 && padded[last] === 0) last -= 1;
+      if (padded[last] !== 2) throw new Error("the last record is not marked as the last");
+      return padded.subarray(0, last);
+    },
+    /** The same, as the words of the notification. */
+    words(body) {
+      return JSON.parse(this.read(body).toString("utf8"));
+    },
+  };
+}
+
+/** Take apart the proof of who is sending (RFC 8292) and check its signature. */
+export function readProof(header) {
+  const found = /^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/.exec(header);
+  if (!found) throw new Error(`not a proof: ${header}`);
+  const [, head, claims, signature, key] = found;
+  const point = Buffer.from(key, "base64url");
+  const publicKey = crypto.createPublicKey({
+    key: { kty: "EC", crv: "P-256", x: b64(point.subarray(1, 33)), y: b64(point.subarray(33)) },
+    format: "jwk",
+  });
+  return {
+    valid: crypto.verify("sha256", Buffer.from(`${head}.${claims}`), { key: publicKey, dsaEncoding: "ieee-p1363" }, Buffer.from(signature, "base64url")),
+    head: JSON.parse(Buffer.from(head, "base64url").toString("utf8")),
+    claims: JSON.parse(Buffer.from(claims, "base64url").toString("utf8")),
+    key,
+    point,
+  };
+}
+
+/** The page's data, as the daily check publishes it: only the parts the backend reads. */
+export function pageData({ generated, generatedText = "3:01 PM", days }) {
+  return { zone: "Australia/Melbourne", generated, generatedText, alert: { from: 870, until: 1140 }, days };
+}
+
+export function day(date, title = "Booked 5 PM to 7:30 PM", body = "Cricket training.") {
+  return { date, notice: { title, body } };
+}
+
+/**
+ * The outside world. `page` is what the page's data.json holds: an object, a
+ * status number, "down" for no connection, or text that is not JSON. `answer`
+ * decides what a notification service says to a message: a status number, or
+ * "down". Every request is written down in `calls`.
+ */
+export function world({ page = null, answer = () => 201, pause = 0 } = {}) {
+  const it = {
+    page,
+    answer,
+    calls: [],
+    flying: 0,
+    mostFlying: 0,
+    /** The messages sent to notification services, in the order they went out. */
+    get pushes() {
+      return it.calls.filter((call) => call.kind === "push");
+    },
+    get reads() {
+      return it.calls.filter((call) => call.kind === "page");
+    },
+    pushesTo(device) {
+      return it.pushes.filter((call) => call.url === device.endpoint);
+    },
+    async fetch(address, options = {}) {
+      const url = String(address);
+      if (url.startsWith(SITE)) {
+        it.calls.push({ kind: "page", url, options });
+        if (it.page === "down") throw new TypeError("fetch failed");
+        if (typeof it.page === "number") return new Response("no", { status: it.page });
+        if (typeof it.page === "string") return new Response(it.page, { status: 200 });
+        return new Response(JSON.stringify(it.page), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const call = { kind: "push", url, options, headers: options.headers || {}, body: options.body };
+      it.calls.push(call);
+      it.flying += 1;
+      it.mostFlying = Math.max(it.mostFlying, it.flying);
+      try {
+        // Let the others take off, as they would on a real network.
+        await new Promise((resolve) => setTimeout(resolve, pause));
+        const said = await it.answer(url, call);
+        if (said === "down") throw new TypeError("fetch failed");
+        return new Response(said === 204 ? null : "", { status: said });
+      } finally {
+        it.flying -= 1;
+      }
+    },
+  };
+  return it;
+}
+
+/**
+ * Run the wake-up calls the way Cloudflare does: when the time comes, the
+ * wake-up time is cleared and `alarm` is called, which may set a new one.
+ * Returns the moments at which rounds ran.
+ */
+export async function runAlarms(book, storage, time, most = 1000) {
+  const rounds = [];
+  while (storage.alarm !== null) {
+    if (rounds.length >= most) throw new Error("the wake-up calls never stop");
+    if (storage.alarm > time.now()) time.set(storage.alarm);
+    storage.alarm = null;
+    rounds.push(time.now());
+    await book.alarm();
+  }
+  return rounds;
+}

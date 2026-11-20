@@ -1,0 +1,39 @@
+// How the alerts backend is set up on Cloudflare. The tool that puts it there
+// ("wrangler") reads this file. See the README for what the backend does.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "citizens-bark-alerts",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-01",
+
+  // The backend's public address: a name under the page's own domain, which
+  // Cloudflare sets up by itself. It is not given an address at workers.dev,
+  // because that one would show the name of the Cloudflare account.
+  "routes": [{ "pattern": "alerts.citizensbark.com", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+
+  // These four must say the same as config.toml. The tests check that they do.
+  "vars": {
+    // The page's address. Only this page may add or remove a device.
+    "SITE_URL": "https://citizensbark.com/",
+    "TIMEZONE": "Australia/Melbourne",
+    // The alert goes out once a day between these two times, as soon as the
+    // afternoon's check has run.
+    "ALERT_FROM": "14:30",
+    "ALERT_UNTIL": "19:00"
+  },
+
+  // The timer: every five minutes from 3:00 to 8:55 in UTC, which is 2 PM to
+  // 7:55 PM in Melbourne during daylight saving time and 1 PM to 6:55 PM in
+  // winter. Either way it covers the two times above. Cloudflare's timers
+  // only know UTC.
+  "triggers": { "crons": ["*/5 3-8 * * *"] },
+
+  // The book of devices: one object with its own small database.
+  "durable_objects": { "bindings": [{ "name": "SUBSCRIBERS", "class_name": "Subscribers" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Subscribers"] }],
+
+  // Keep what the backend writes to its log, to look at in Cloudflare's dashboard.
+  "observability": { "enabled": true }
+}
