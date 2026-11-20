@@ -34,6 +34,16 @@ class Alert:
     body: str
 
 
+def _quoted(problem: str) -> str:
+    """A failure's description, set as plain text inside an issue.
+
+    Part of it may be another service's own words. Inside a code span they are
+    only shown: they cannot become a link, a picture or a mention of somebody.
+    """
+    words = " ".join((problem or "unknown").replace("`", "'").split())
+    return f"`{words[:500]}`"
+
+
 def alerts(state: State, store: CouncilStore, today: date, config: Config) -> list[Alert]:
     """Everything that currently deserves the owner's attention."""
     found: list[Alert] = []
@@ -43,7 +53,7 @@ def alerts(state: State, store: CouncilStore, today: date, config: Config) -> li
             Alert(
                 "The council page cannot be read",
                 f"The last {state.council_failures} checks could not read the council's page.\n\n"
-                f"- Problem: {state.council_error or 'unknown'}\n"
+                f"- Problem: {_quoted(state.council_error)}\n"
                 f"- Page: {config.council_url}\n"
                 f"- Last good read: {long_date(store.last_read) if store.last_read else 'never'}\n\n"
                 "The alerts keep going with the last good copy and the usual pattern, and they say so.\n\n"
@@ -73,7 +83,7 @@ def alerts(state: State, store: CouncilStore, today: date, config: Config) -> li
             Alert(
                 "The rain forecast cannot be read",
                 f"The last {state.weather_failures} checks could not get the forecast from Open-Meteo.\n\n"
-                f"- Problem: {state.weather_error or 'unknown'}\n\n"
+                f"- Problem: {_quoted(state.weather_error)}\n\n"
                 "The alerts keep going. They use the last forecast that loaded for up to 12 hours, "
                 "and after that they leave out the rain line.\n\n"
                 "This issue closes by itself when the forecast is back.",
@@ -84,7 +94,7 @@ def alerts(state: State, store: CouncilStore, today: date, config: Config) -> li
         found.append(
             Alert(
                 "The Telegram post is not going out",
-                f"The daily post could not be sent to the channel.\n\n- Problem: {state.telegram_error}\n\n"
+                f"The daily post could not be sent to the channel.\n\n- Problem: {_quoted(state.telegram_error)}\n\n"
                 "What to check:\n"
                 "1. The repository secret `TELEGRAM_BOT_TOKEN` holds the token from @BotFather "
                 "(Settings, Secrets and variables, Actions).\n"

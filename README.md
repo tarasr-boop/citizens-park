@@ -5,9 +5,9 @@ Is the oval at Citizens Park in Richmond free for dogs today?
 The oval is a dog off-lead area, but dogs must stay off it while organised sport or training is on. This project checks the council's booking table and the rain forecast every day and tells people in two places:
 
 - **A Telegram channel.** One post at about 3 PM Melbourne time, plus a quiet "week ahead" post on Sundays.
-- **A web page.** Today's booked times, the week ahead, rain by the hour, a QR code and a poster to print: <https://tarasr-boop.github.io/citizens-park/>
+- **A web page.** Today's booked times hour by hour, the week ahead, rain by the hour in millimetres, and a QR code to share it: <https://tarasr-boop.github.io/citizens-park/>
 
-It is unofficial. It is run by a local dog trainer, not by the council or the sports clubs.
+It is unofficial. It is not affiliated with the council or the sports clubs.
 
 ## What a post looks like
 
@@ -33,7 +33,7 @@ Every post says how sure it is:
 
 ## How it works
 
-A scheduled job on GitHub (the **Daily check** workflow) runs a few times a day. Each run:
+A scheduled job on GitHub (the **Daily check** workflow) runs about nine times a day, from early morning to the evening. Each run:
 
 1. reads the booking table on the [council's Citizens Park page](https://www.yarracity.vic.gov.au/things-to-do/parks-reserves-and-playgrounds/citizens-park)
 2. gets the rain forecast from [Open-Meteo](https://open-meteo.com/)
@@ -43,6 +43,8 @@ A scheduled job on GitHub (the **Daily check** workflow) runs a few times a day.
 6. saves what it learned in the `data/` folder
 
 Nothing needs a server, a database or a paid plan. The code uses only Python's standard library.
+
+The line at the top of the page, "Last checked", is the last time a run read the council's page successfully. If a run cannot read it, the line keeps the time of the last read that worked.
 
 It is built to keep going when something fails:
 
@@ -59,7 +61,8 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | --- | --- |
 | The Telegram channel | `channel` in `config.toml`. Use the link name: the part after `t.me/`. |
 | The name shown at the top of the page | `name` under `[site]` in `config.toml` |
-| Who the page says it is run by | `run_by` under `[site]` in `config.toml` |
+| The "About me" block | `text`, `link` and `link_text` under `[about]` in `config.toml`. Leave `text` empty to hide the block. |
+| The hours on the page's timeline | `day_start` and `day_end` under `[park]` in `config.toml` |
 | The tip button | `tip_url` in `config.toml`. Paste your Ko-fi link. Leave it empty to hide the button. |
 | The usual weekly pattern | `schedule.toml`. It is only used on days the council's page does not cover. |
 | The time of the daily post | `post_from` in `config.toml`, and the run times in `.github/workflows/daily.yml` |
@@ -125,7 +128,7 @@ The QR code holds the page's address. If you rename the repository or move the p
 
 3. Commit the new files in `assets/`.
 
-The tests fail while the QR code and the address do not match, so a forgotten QR code cannot go unnoticed. Posters that were already printed keep the old address.
+The tests fail while the QR code and the address do not match, so a forgotten QR code cannot go unnoticed. A QR code that was already printed keeps the old address.
 
 ## For developers
 
@@ -156,6 +159,8 @@ Run the tests:
 ```
 python3 -m unittest discover -s tests -t .
 ```
+
+The tests that run the page's script need Node, and the ones for the detour need `openssl`. Without them those tests are skipped. GitHub's runners have both.
 
 Try a run on your own computer without posting anything:
 

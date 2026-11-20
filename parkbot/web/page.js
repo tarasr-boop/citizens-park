@@ -22,6 +22,9 @@
   var LIKELY = 50;
   var SLIGHT = 20;
   var LAST_RAIN_HOUR = 21;
+  // In the rain chart a full-height bar is at least this many millimetres in
+  // one hour, so that a drizzle looks like a drizzle.
+  var RAIN_FULL_MM = 5;
   var lastFetch = Date.now();
   var shown = "";
 
@@ -76,9 +79,42 @@
     };
   }
 
+  // The timeline runs from data.dayStart to this minute of the day.
+  function dayEnd() {
+    return data.dayEnd || data.lightsOff;
+  }
+
   function percent(minute) {
-    var length = data.lightsOff - data.dayStart;
+    var length = dayEnd() - data.dayStart;
     return Math.max(0, Math.min(100, ((minute - data.dayStart) / length) * 100));
+  }
+
+  // Every whole hour on the timeline.
+  function hourMarks() {
+    var marks = [];
+    for (var hour = Math.ceil(data.dayStart / 60); hour * 60 <= dayEnd(); hour += 1) marks.push(hour);
+    return marks;
+  }
+
+  // "2026-11-20" gives "2026-11-19".
+  function dayBefore(date) {
+    var day = new Date(date + "T00:00:00Z");
+    if (isNaN(day.getTime())) return "";
+    day.setUTCDate(day.getUTCDate() - 1);
+    return day.toISOString().slice(0, 10);
+  }
+
+  // When the council's page was last read, which is not always when this page
+  // was built: if a read fails, the time of the last good one stays.
+  function checkedText(now) {
+    var council = data.council || {};
+    var at = /^(\d{4}-\d\d-\d\d)T(\d\d):(\d\d)/.exec(council.lastReadAt || "");
+    if (at) {
+      var time = clock(Number(at[2]) * 60 + Number(at[3]));
+      if (at[1] === now.date) return "Last checked today at " + time;
+      if (at[1] === dayBefore(now.date)) return "Last checked yesterday at " + time;
+    }
+    return council.lastReadText ? "Last checked " + council.lastReadText : "";
   }
 
   // ---- The answer at the top ----
@@ -135,24 +171,39 @@
     };
   }
 
+  // Where today's answer comes from, as a link to that source: the council's
+  // page, or the part of this page that explains the usual pattern.
   function pill(day) {
-    if (day.closed) return { sure: "yes", text: "From a notice on the council’s page" };
-    if (day.basis === "council") return { sure: "yes", text: "From the council’s schedule" };
-    if (day.basis === "usual") return { sure: "no", text: "Usual pattern, not confirmed" };
-    if (day.basis === "rough") return { sure: "no", text: "Rough guide only" };
+    var council = String((data.council && data.council.url) || "");
+    if (!/^https:\/\//.test(council)) council = "";
+    if (day.closed) return { sure: "yes", text: "From a notice on the council’s page", href: council, outside: true };
+    if (day.basis === "council") return { sure: "yes", text: "From the council’s schedule", href: council, outside: true };
+    if (day.basis === "usual") return { sure: "no", text: "Usual pattern, not confirmed", href: "#how" };
+    if (day.basis === "rough") return { sure: "no", text: "Rough guide only", href: "#how" };
     return null;
+  }
+
+  function pillHtml(day) {
+    var badge = pill(day);
+    if (!badge) return "";
+    if (!badge.href) return '<p class="source-row"><span class="pill" data-sure="' + badge.sure + '">' + esc(badge.text) + "</span></p>";
+    return (
+      '<p class="source-row"><a class="pill" data-sure="' + badge.sure + '" href="' + esc(badge.href) + '"' +
+      (badge.outside ? ' rel="noopener"' : "") + ">" + esc(badge.text) +
+      '<span aria-hidden="true">' + NBSP + "›</span></a></p>"
+    );
   }
 
   function heroHtml(day, now) {
     var found = answer(day, now.minute);
-    var badge = pill(day);
     return (
       '<section class="hero" data-state="' + found.state + '">' +
-      '<p class="kicker">' + esc(day.name) + ", " + clock(now.minute) + "</p>" +
+      '<p class="kicker">' + esc(checkedText(now) || day.name) + "</p>" +
       "<h1>" + esc(found.title) + "</h1>" +
       '<p class="sub">' + esc(found.sub) + "</p>" +
       (found.rule ? '<p class="rule">' + esc(found.rule) + "</p>" : "") +
-      (badge ? '<p class="pill" data-sure="' + badge.sure + '">' + esc(badge.text) + "</p>" : "") +
+      pillHtml(day) +
+      (day.why ? '<p class="why">' + esc(day.why) + "</p>" : "") +
       "</section>"
     );
   }
@@ -170,13 +221,35 @@
       .join("");
   }
 
+  // A thin line across the bar at every hour, so a booking can be read off it.
+  function hourLinesHtml() {
+    return hourMarks()
+      .map(function (hour) {
+        var at = percent(hour * 60);
+        return at > 0 && at < 100 ? '<i style="left:' + at.toFixed(2) + '%"></i>' : "";
+      })
+      .join("");
+  }
+
+  // A mark and a number for every hour. "am" or "pm" is written once, under
+  // the first hour of each half of the day. A very long day gets a number at
+  // every second mark, so the numbers still fit on a small phone.
   function ticksHtml() {
-    var html = "";
-    for (var hour = Math.ceil(data.dayStart / 180) * 3; hour * 60 <= data.lightsOff; hour += 3) {
-      var label = hour === 12 ? "noon" : clock(hour * 60);
-      html += '<span style="left:' + percent(hour * 60).toFixed(2) + '%">' + label + "</span>";
-    }
-    return html;
+    var marks = hourMarks();
+    var every = marks.length > 17 ? 2 : 1;
+    var half = "";
+    return marks
+      .map(function (hour, index) {
+        var numbered = index % every === 0;
+        var mine = hour % 24 < 12 ? "am" : "pm";
+        var html = '<span style="left:' + percent(hour * 60).toFixed(2) + '%">';
+        if (numbered) {
+          html += (hour % 12 || 12) + (mine !== half ? "<small>" + mine + "</small>" : "");
+          half = mine;
+        }
+        return html + "</span>";
+      })
+      .join("");
   }
 
   function timesHtml(day) {
@@ -237,32 +310,59 @@
     return { level: "likely", text: text };
   }
 
+  // Millimetres for a label on the chart: "4.6", "0.2", "12".
+  function mmText(mm) {
+    return mm >= 9.95 ? String(Math.round(mm)) : mm.toFixed(1);
+  }
+
   function rainHtml(day, minute, live) {
     if (!day.hours) {
-      if (!day.rain || day.rain.chance === null) return "";
-      return '<div class="rain"><p class="rain-text">Chance of rain: <strong>' + day.rain.chance + "%</strong></p></div>";
+      var total = day.rain ? day.rain.mm : null;
+      if (total === null || total === undefined) return "";
+      var words = total < 0.05 ? "No rain expected today." : "Rain today: " + (total < 0.75 ? "under 1" : "about " + Math.round(total)) + NBSP + "mm.";
+      return '<div class="rain"><p class="rain-text">' + esc(words) + "</p></div>";
     }
     var look = live ? outlook(day.hours, minute) : null;
-    var firstHour = Math.floor(data.dayStart / 60);
-    var lastHour = Math.ceil(data.lightsOff / 60) - 1;
-    var bars = "";
-    var top = 0;
-    day.hours.forEach(function (hour) {
-      if (hour[0] < firstHour || hour[0] > lastHour) return;
-      var chance = hour[1] === null ? 0 : hour[1];
-      top = Math.max(top, chance);
-      var title = clock(hour[0] * 60) + ": " + (hour[1] === null ? "no forecast" : chance + "%" + (hour[2] ? ", " + hour[2] + " mm" : ""));
-      bars +=
-        '<span style="height:' + Math.max(4, chance) + '%" title="' + esc(title) + '"' +
-        (live && hour[0] < Math.floor(minute / 60) ? ' data-past="yes"' : "") +
-        "></span>";
+    var nowHour = Math.floor(minute / 60);
+    // The hours on the timeline, so that the bars sit under the same hour marks.
+    var hours = day.hours.filter(function (hour) {
+      return (hour[0] + 1) * 60 > data.dayStart && hour[0] * 60 < dayEnd();
     });
+    var most = null;
+    hours.forEach(function (hour) {
+      if (hour[2] >= 0.05 && (!most || hour[2] > most[2])) most = hour;
+    });
+
+    var chart = "";
+    if (most) {
+      var full = Math.max(RAIN_FULL_MM, most[2]);
+      var bars = hours
+        .map(function (hour) {
+          var mm = hour[2] || 0;
+          if (mm < 0.05) return "";
+          var left = percent(hour[0] * 60);
+          var width = percent((hour[0] + 1) * 60) - left;
+          var title = clock(hour[0] * 60) + ": " + mmText(mm) + " mm" + (hour[1] === null ? "" : ", " + hour[1] + "% chance");
+          return (
+            '<span style="left:' + left.toFixed(2) + "%;width:" + width.toFixed(2) + "%;height:" + Math.max(5, (mm / full) * 100).toFixed(1) + '%"' +
+            ' title="' + esc(title) + '"' + (live && hour[0] < nowHour ? ' data-past="yes"' : "") + ">" +
+            "<b>" + mmText(mm) + "</b></span>"
+          );
+        })
+        .join("");
+      var label = "Rain for each hour in millimetres. Most: " + mmText(most[2]) + " mm at " + clock(most[0] * 60) + ".";
+      chart =
+        '<div class="rain-chart" role="img" aria-label="' + esc(label) + '"><div class="rain-plot">' + bars + "</div></div>" +
+        '<div class="ticks" aria-hidden="true">' + ticksHtml() + "</div>";
+    }
+    var caption = [];
+    if (most) caption.push("Rain each hour, in millimetres.");
+    if (data.rainFrom) caption.push("Forecast from " + data.rainFrom + ".");
     return (
       '<div class="rain">' +
       (look ? '<p class="rain-text">' + esc(look.text) + "</p>" : "") +
-      (data.rainFrom ? '<p class="rain-caption">Forecast from ' + esc(data.rainFrom) + ".</p>" : "") +
-      '<div class="rain-bars" role="img" aria-label="Chance of rain for each hour, highest ' + top + ' percent">' + bars + "</div>" +
-      '<p class="rain-caption">Chance of rain by the hour, ' + clock(firstHour * 60) + " to " + clock((lastHour + 1) * 60) + ". A full-height bar is 100%.</p>" +
+      chart +
+      (caption.length ? '<p class="rain-caption">' + esc(caption.join(" ")) + "</p>" : "") +
       "</div>"
     );
   }
@@ -270,19 +370,18 @@
   function todayHtml(day, now) {
     var sure = day.basis === "council" ? "yes" : "no";
     var known = day.basis === "none" ? "no" : "yes";
-    var inDay = now.minute >= data.dayStart && now.minute <= data.lightsOff;
+    var inDay = now.minute >= data.dayStart && now.minute <= dayEnd();
     return (
       '<section class="card">' +
       "<h2>Today <span>" + esc(day.name) + "</span></h2>" +
       '<div class="timeline">' +
-      '<div class="bar-wrap"><div class="bar" data-sure="' + sure + '" data-known="' + known + '">' + segments(day) + "</div>" +
+      '<div class="bar-wrap"><div class="bar" data-sure="' + sure + '" data-known="' + known + '">' + segments(day) + hourLinesHtml() + "</div>" +
       (inDay ? '<span class="now-line" style="left:' + percent(now.minute).toFixed(2) + '%" title="Now"></span>' : "") +
       "</div>" +
       '<div class="ticks" aria-hidden="true">' + ticksHtml() + "</div>" +
       "</div>" +
       '<ul class="times">' + timesHtml(day) + "</ul>" +
       rainHtml(day, now.minute, true) +
-      (day.note ? '<p class="source" data-sure="' + sure + '">' + esc(day.note) + "</p>" : "") +
       "</section>"
     );
   }
@@ -310,15 +409,17 @@
     var rows = days
       .map(function (day) {
         var usual = isUsual(day) && !allUsual;
-        var chance = day.rain ? day.rain.chance : null;
-        var rain = chance === null ? "" : chance >= SLIGHT ? "Rain " + chance + "%" : "Dry";
+        // The day's rain in millimetres. Under a twentieth of one counts as dry.
+        var mm = day.rain && typeof day.rain.mm === "number" ? day.rain.mm : null;
+        var wet = mm !== null && mm >= 0.05;
+        var rain = mm === null ? "" : wet ? "<strong>" + (mm < 0.75 ? "&lt;1" : Math.round(mm)) + NBSP + "mm</strong><small>rain</small>" : "Dry";
         var parts = day.name.split(" ");
         return (
           '<li class="day">' +
           '<div class="day-name">' + esc(parts[0]) + "<small>" + esc(parts.slice(1).join(" ")) + "</small></div>" +
           '<div class="day-main"><div class="day-text">' + esc(dayText(day)) + (usual ? ' <span class="tag">usual</span>' : "") + "</div>" +
           '<div class="mini" data-known="' + (day.basis === "none" ? "no" : "yes") + '">' + segments(day) + "</div></div>" +
-          '<div class="day-rain" data-dry="' + (chance !== null && chance >= SLIGHT ? "no" : "yes") + '">' + rain + "</div>" +
+          '<div class="day-rain" data-dry="' + (wet ? "no" : "yes") + '">' + rain + "</div>" +
           "</li>"
         );
       })
@@ -327,14 +428,13 @@
       '<section class="card">' +
       "<h2>The week ahead " + (allUsual ? '<span class="tag">usual pattern</span>' : "<span>booked times</span>") + "</h2>" +
       '<ol class="days">' + rows + "</ol>" +
-      '<p class="legend"><span class="key"></span>free<span class="key booked"></span>booked, ' +
-      clock(data.dayStart) + " to " + clock(data.lightsOff) + "." +
+      '<p class="legend"><span class="key"></span>Free<span class="key booked"></span>Booked</p>' +
       (allUsual
-        ? " These are the usual times, not yet confirmed by the council."
+        ? '<p class="legend-note">These are the usual times, not yet confirmed by the council.</p>'
         : anyUsual
-          ? ' <span class="tag">usual</span> means the usual pattern, not yet confirmed by the council.'
+          ? '<p class="legend-note"><span class="tag">usual</span> means the usual pattern, not yet confirmed by the council.</p>'
           : "") +
-      "</p></section>"
+      "</section>"
     );
   }
 
@@ -355,7 +455,7 @@
     var html = staleHtml();
     if (index === -1) {
       html +=
-        '<section class="hero" data-state="unknown"><p class="kicker">' + clock(now.minute) + "</p>" +
+        '<section class="hero" data-state="unknown"><p class="kicker">' + esc(checkedText(now) || clock(now.minute)) + "</p>" +
         "<h1>No information for today</h1>" +
         '<p class="sub">This page is out of date. Check the signs at the park or the council’s page.</p></section>';
       html += weekHtml(data.days.filter(function (day) { return day.date > now.date; }));
@@ -366,8 +466,6 @@
       app.innerHTML = html;
       shown = html;
     }
-    var checked = document.getElementById("checked");
-    if (checked && data.generatedText) checked.textContent = "Last checked " + data.generatedText + ".";
   }
 
   function refresh() {
@@ -378,7 +476,8 @@
         return response.ok ? response.json() : null;
       })
       .then(function (fresh) {
-        if (fresh && fresh.days && fresh.generated && fresh.generated !== data.generated) {
+        // Only ever move forward: a stale copy from a cache must not replace newer data.
+        if (fresh && fresh.days && Date.parse(fresh.generated) > Date.parse(data.generated)) {
           data = fresh;
           render();
         }
@@ -395,28 +494,42 @@
     if (Date.now() - lastFetch > 5 * 60 * 1000) refresh();
   });
 
-  // ---- Share button ----
+  // ---- Links and buttons ----
 
-  var share = document.getElementById("share");
-  if (share) {
-    share.addEventListener("click", function () {
+  // The "usual pattern" badge leads to "How this works", which is folded shut.
+  app.addEventListener("click", function (event) {
+    var target = event.target;
+    var link = target && target.closest ? target.closest('a[href="#how"]') : null;
+    var how = document.getElementById("how");
+    if (link && how) how.open = true;
+  });
+
+  var copy = document.getElementById("copy");
+  if (copy) {
+    var copyLabel = copy.textContent;
+    var copyTimer = null;
+    copy.addEventListener("click", function () {
       var address = data.site || window.location.href;
-      var label = share.textContent;
-      var done = function (text) {
-        share.textContent = text;
-        setTimeout(function () {
-          share.textContent = label;
+      var copied = function () {
+        copy.textContent = "Link copied";
+        clearTimeout(copyTimer);
+        copyTimer = setTimeout(function () {
+          copy.textContent = copyLabel;
         }, 2500);
       };
-      if (navigator.share) {
-        navigator.share({ title: document.title, text: "Is the oval free for dogs right now?", url: address }).catch(function () {});
-      } else if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(address).then(
-          function () { done("Link copied"); },
-          function () { done(address); }
-        );
+      // If the link cannot be copied from here, show it so it can be copied by hand.
+      var byHand = function () {
+        var line = document.getElementById("address");
+        if (line) line.hidden = false;
+      };
+      var share = function () {
+        if (!navigator.share) return byHand();
+        navigator.share({ title: document.title, text: "Is the oval free for dogs right now?", url: address }).catch(byHand);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(address).then(copied, share);
       } else {
-        done(address);
+        share();
       }
     });
   }

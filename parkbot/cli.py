@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -77,6 +78,32 @@ def _unexpected(error: BaseException) -> str:
     return f"{type(error).__name__}: {words}" if words else type(error).__name__
 
 
+def _one_line(text: str, limit: int = 300) -> str:
+    """Words about a failure, on one line and not too long.
+
+    They go into the job log, the saved state and a watchdog issue, and part of
+    them may come from another service. On one line they stay what they are: a
+    description, never a second log line of their own.
+    """
+    return " ".join(text.split())[:limit]
+
+
+def _show_as_it_came(say: Callable[[str], None], text: str, on_github: bool) -> None:
+    """Print words that came from outside, such as a web page or an error it caused.
+
+    GitHub reads a log line that starts with "::" as a command to itself. Words
+    from outside must never be taken for one, so GitHub is told to stop reading
+    commands until a line that only this run knows.
+    """
+    if not on_github:
+        say(text)
+        return
+    resume = secrets.token_hex(16)
+    say(f"::stop-commands::{resume}")
+    say(text)
+    say(f"::{resume}::")
+
+
 def _append(path: str | None, text: str) -> None:
     if path:
         with open(path, "a", encoding="utf-8") as handle:
@@ -90,6 +117,10 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
 
     def warn(text: str) -> None:
         say(f"::warning::{text}" if on_github else f"WARNING: {text}")
+
+    def trace() -> None:
+        """Print where the error being handled came from."""
+        _show_as_it_came(say, traceback.format_exc(), on_github)
 
     try:
         config = load_config(options.config)
@@ -121,7 +152,7 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
         except fetch.FetchError as error:
             council_problem = f"the page could not be fetched: {error}"
         except Exception as error:  # noqa: BLE001 - a surprise while fetching must not stop today's post
-            say(traceback.format_exc())
+            trace()
             council_problem = f"fetching the page failed unexpectedly ({_unexpected(error)})"
 
     if html is not None:
@@ -129,20 +160,21 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
             say(f"Council page: {len(html)} characters")
             for number, source in enumerate(council.table_sources(html), start=1):
                 say(f"::group::Council table {number}" if on_github else f"--- Council table {number} ---")
-                say(source)
+                _show_as_it_came(say, source, on_github)
                 say("::endgroup::" if on_github else "--- end ---")
         try:
             page = council.parse(html, today, zone)
-            store.update(page, today)
+            store.update(page, today, now)
         except council.CouncilPageError as error:
             council_problem = f"the page loaded, but its booking table could not be read: {error}"
         except Exception as error:  # noqa: BLE001 - a surprise in the page must not stop today's post
-            say(traceback.format_exc())
+            trace()
             council_problem = f"the page loaded, but reading it failed unexpectedly ({_unexpected(error)})"
         else:
             for warning in page.warnings:
                 warn(f"Council page: {warning}")
 
+    council_problem = _one_line(council_problem)
     if html is None and not council_problem:
         say("Council page: not checked (offline)")
         summary.append("- Council page: not checked")
@@ -189,7 +221,7 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
             if addresses:
                 say(f"Rain forecast: the weather service's address at the time was {', '.join(addresses)}")
         except Exception as error:  # noqa: BLE001 - the post goes out without rain rather than not at all
-            say(traceback.format_exc())
+            trace()
             weather_problem = f"fetching the forecast failed unexpectedly ({_unexpected(error)})"
         else:
             # Remember the server that answered, so that a later run can turn to it.
@@ -208,9 +240,10 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
         except weather.WeatherError as error:
             weather_problem = str(error)
         except Exception as error:  # noqa: BLE001 - the post goes out without rain rather than not at all
-            say(traceback.format_exc())
+            trace()
             weather_problem = f"reading the forecast failed unexpectedly ({_unexpected(error)})"
 
+    weather_problem = _one_line(weather_problem)
     if forecast_text is None and not weather_problem:
         say("Rain forecast: not checked (offline)")
         summary.append("- Rain forecast: not checked")
@@ -256,7 +289,7 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
         out = site.build(config, plans, forecast, store, now, options.site, options.assets)
     except Exception as error:  # noqa: BLE001 - the Telegram post must still go out
         problems.append(f"The page could not be built: {error}")
-        say(traceback.format_exc())
+        trace()
         summary.append(f"- Page: **not built**, {error}")
     else:
         say(f"Page: built in {out}/")
@@ -299,7 +332,7 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
             # Only a TelegramError's own words are safe to repeat. state.json is public,
             # so anything else is reduced to its type, and the token is blanked regardless.
             reason = str(error) if isinstance(error, telegram.TelegramError) else f"unexpected {type(error).__name__}"
-            reason = reason.replace(token, "[token]")
+            reason = _one_line(reason.replace(token, "[token]"))
             state.telegram_error = reason
             problems.append(f"The Telegram post failed: {reason}")
             summary.append(f"- Telegram: **failed**, {reason}")
@@ -317,7 +350,7 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
             tools.send(token, config.channel, message.weekly(plans[1:], forecast, config), silent=True)
         except Exception as error:  # noqa: BLE001
             reason = str(error) if isinstance(error, telegram.TelegramError) else f"unexpected {type(error).__name__}"
-            reason = reason.replace(token, "[token]")
+            reason = _one_line(reason.replace(token, "[token]"))
             problems.append(f"The week-ahead post failed: {reason}")
             summary.append(f"- Week-ahead post: **failed**, {reason}")
         else:

@@ -4,7 +4,7 @@ The **Daily check** job writes the files in this folder and saves them after eac
 
 | File | What it holds |
 | --- | --- |
-| `council.json` | The booked times read from the council's page. They are kept so that a day still has an answer when the page cannot be read, and so that the usual weekly pattern can be learned. |
+| `council.json` | The booked times read from the council's page, and the time of the last read that worked (the page shows it as "Last checked"). The times are kept so that a day still has an answer when the page cannot be read, and so that the usual weekly pattern can be learned. |
 | `state.json` | The day of the last post, and how many times in a row each source has failed. Also the addresses of the weather service's servers and the day each one last answered, so that another server can be asked when the usual one does not answer. |
 | `forecast.json` | The last rain forecast that loaded. It stands in for up to 12 hours when the weather service does not answer. |
 

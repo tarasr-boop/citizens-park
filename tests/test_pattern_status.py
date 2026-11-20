@@ -1,7 +1,9 @@
+import json
 import tempfile
 import unittest
 from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from parkbot.council import Closure, DayEntry
 from parkbot.pattern import ScheduleError, load_seasons, usual_for
@@ -93,6 +95,7 @@ class PlanDayTest(unittest.TestCase):
         self.assertEqual(plan.basis, "council")
         self.assertEqual(texts(plan.slots), ["16:00-20:00"])
         self.assertEqual(plan.note, "From the council's schedule.")
+        self.assertEqual(plan.why, "")  # nothing to explain: the day is confirmed
 
     def test_a_day_past_the_council_page_uses_the_usual_pattern(self):
         today = date(2026, 11, 20)
@@ -100,6 +103,8 @@ class PlanDayTest(unittest.TestCase):
         self.assertEqual(plan.basis, "usual")
         self.assertEqual(texts(plan.slots), ["16:00-20:00"])
         self.assertEqual(plan.note, "Usual pattern only, not confirmed. The council's page only goes up to 31 October.")
+        # The page shows the reason on its own, next to a badge that already says "usual pattern".
+        self.assertEqual(plan.why, "The council's page only goes up to 31 October.")
 
     def test_old_council_data_says_when_it_was_read(self):
         store = october_store(date(2026, 10, 20))
@@ -111,6 +116,7 @@ class PlanDayTest(unittest.TestCase):
         self.assertEqual(plan.basis, "rough")
         self.assertIn("Rough guide only", plan.note)
         self.assertIn("could not be read", plan.note)
+        self.assertRegex(plan.why, r"^Based on .+\. The council's page could not be read\.$")
 
     def test_nothing_known(self):
         plan = plan_day(date(2026, 11, 20), CouncilStore(), [], date(2026, 11, 20))
@@ -188,8 +194,45 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(loaded.days, store.days)
         self.assertEqual(loaded.closures, store.closures)
         self.assertEqual(loaded.last_read, date(2026, 11, 20))
+        self.assertIsNone(loaded.last_read_at)
         self.assertEqual(loaded.page_modified, date(2026, 10, 12))
         self.assertEqual(loaded.latest_day, date(2026, 10, 31))
+
+    def test_the_moment_of_the_last_read_is_remembered(self):
+        melbourne = ZoneInfo("Australia/Melbourne")
+        read_at = datetime(2026, 11, 20, 13, 47, 31, tzinfo=melbourne)
+        store = october_store(read_at.date(), read_at)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "council.json"
+            store.save(path)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            loaded = CouncilStore.load(path)
+        self.assertEqual(saved["last_read_at"], "2026-11-20T13:47+11:00")
+        self.assertEqual(loaded.last_read_at, datetime(2026, 11, 20, 13, 47, tzinfo=melbourne))
+        self.assertEqual(loaded.last_read, date(2026, 11, 20))
+
+    def test_a_read_that_fails_leaves_the_last_good_moment(self):
+        # Nothing calls update() when a read fails, so the store still names the last good one.
+        melbourne = ZoneInfo("Australia/Melbourne")
+        read_at = datetime(2026, 11, 19, 15, 55, tzinfo=melbourne)
+        store = october_store(read_at.date(), read_at)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "council.json"
+            store.save(path)
+            again = CouncilStore.load(path)
+            again.save(path)
+            self.assertEqual(CouncilStore.load(path).last_read_at, read_at)
+
+    def test_a_moment_that_cannot_be_trusted_is_dropped(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "council.json"
+            for written in ("yesterday", "2026-11-20T13:47", "2026-11-19T13:47+11:00", 5, None):
+                with self.subTest(written=written):
+                    # No time zone, or a day that disagrees with last_read: not believed.
+                    path.write_text(json.dumps({"last_read": "2026-11-20", "last_read_at": written}), encoding="utf-8")
+                    loaded = CouncilStore.load(path)
+                    self.assertIsNone(loaded.last_read_at)
+                    self.assertEqual(loaded.last_read, date(2026, 11, 20))
 
     def test_a_new_read_replaces_its_own_date_range_only(self):
         store = october_store()

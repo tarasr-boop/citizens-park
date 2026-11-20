@@ -23,18 +23,22 @@ class Config:
     latitude: float
     longitude: float
     timezone_name: str
-    day_start: int  # minutes after midnight
-    lights_off: int
+    day_start: int  # minutes after midnight: where the page's timeline begins
+    day_end: int  # where the page's timeline ends
+    lights_off: int  # when the council switches the oval's lights off
     council_url: str
     user_agent: str
     channel: str  # Telegram channel link name, without "@"
     post_from: int
     post_until: int
     site_name: str  # the page's own name, such as "Citizens Bark"; may be empty
-    run_by: str  # who runs the page; finishes the sentence "This page is run by ..."
     site_url: str  # always ends with "/"
     tip_url: str
     repo_url: str
+    about_heading: str  # the page's "About me" block; left out while about_text is empty
+    about_text: str
+    about_link: str
+    about_link_text: str
 
     @property
     def zone(self) -> ZoneInfo:
@@ -72,7 +76,8 @@ def load(path: str | Path = "config.toml") -> Config:
 
     try:
         park, council, telegram, site = raw["park"], raw["council"], raw["telegram"], raw["site"]
-        for name, section in (("park", park), ("council", council), ("telegram", telegram), ("site", site)):
+        about = raw.get("about", {})  # optional
+        for name, section in (("park", park), ("council", council), ("telegram", telegram), ("site", site), ("about", about)):
             if not isinstance(section, dict):
                 raise ConfigError(f"{path}: {name} should be a section that starts with a [{name}] line")
         channel = str(telegram.get("channel", "")).strip()
@@ -88,6 +93,8 @@ def load(path: str | Path = "config.toml") -> Config:
             raise ConfigError(f"telegram.channel should be the channel's link name, such as CitizensPark, got {channel!r}")
 
         site_url = _web_address(str(site["url"]), "site.url", required=True)
+        lights_off = parse_hhmm(str(park.get("lights_off", "22:00")))
+        about_link = _web_address(str(about.get("link", "")), "about.link")
         config = Config(
             park_name=str(park["name"]),
             park_short=str(park.get("short_name") or park["name"]),
@@ -96,17 +103,22 @@ def load(path: str | Path = "config.toml") -> Config:
             longitude=float(park["longitude"]),
             timezone_name=str(park["timezone"]),
             day_start=parse_hhmm(str(park.get("day_start", "06:00"))),
-            lights_off=parse_hhmm(str(park.get("lights_off", "22:00"))),
+            day_end=parse_hhmm(str(park["day_end"])) if "day_end" in park else lights_off,
+            lights_off=lights_off,
             council_url=_web_address(str(council["url"]), "council.url", required=True),
             user_agent=str(council.get("user_agent") or "CitizensParkAlerts/1.0"),
             channel=channel,
             post_from=parse_hhmm(str(telegram.get("post_from", "14:30"))),
             post_until=parse_hhmm(str(telegram.get("post_until", "19:00"))),
             site_name=str(site.get("name", "")).strip(),
-            run_by=str(site.get("run_by", "")).strip() or "a local dog owner",
             site_url=site_url if site_url.endswith("/") else site_url + "/",
             tip_url=_web_address(str(site.get("tip_url", "")), "site.tip_url"),
             repo_url=_web_address(str(site.get("repo_url", "")), "site.repo_url"),
+            about_heading=str(about.get("heading", "")).strip() or "About me",
+            about_text=str(about.get("text", "")).strip(),
+            about_link=about_link,
+            # With no words of its own, the link shows its address without the "https://".
+            about_link_text=str(about.get("link_text", "")).strip() or about_link.removeprefix("https://").rstrip("/"),
         )
     except KeyError as error:
         raise ConfigError(f"{path} is missing the setting {error}") from error
@@ -115,6 +127,8 @@ def load(path: str | Path = "config.toml") -> Config:
 
     if not config.day_start < config.lights_off:
         raise ConfigError("park.day_start must be earlier than park.lights_off")
+    if not config.day_start < config.day_end:
+        raise ConfigError("park.day_start must be earlier than park.day_end")
     if not config.post_from < config.post_until:
         raise ConfigError("telegram.post_from must be earlier than telegram.post_until")
     try:

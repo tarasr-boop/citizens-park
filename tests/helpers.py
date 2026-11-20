@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from parkbot import config as config_module
@@ -41,10 +41,10 @@ def october_html() -> str:
     return (FIXTURES / "council_october_2026.html").read_text(encoding="utf-8")
 
 
-def october_store(read_on: date = date(2026, 11, 20)) -> CouncilStore:
-    """A store holding the October 2026 table, as read on ``read_on``."""
+def october_store(read_on: date = date(2026, 11, 20), at: datetime | None = None) -> CouncilStore:
+    """A store holding the October 2026 table, as read on ``read_on`` (at the moment ``at``, if given)."""
     store = CouncilStore()
-    store.update(parse(october_html(), read_on), read_on)
+    store.update(parse(october_html(), read_on), read_on, at)
     return store
 
 

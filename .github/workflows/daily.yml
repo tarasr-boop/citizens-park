@@ -23,6 +23,12 @@ on:
       timezone: "Australia/Melbourne"
     - cron: "45 15 * * *"
       timezone: "Australia/Melbourne"
+    # Two evening runs, so the rain forecast on the page stays fresh while the
+    # oval is in use.
+    - cron: "47 17 * * *"
+      timezone: "Australia/Melbourne"
+    - cron: "47 19 * * *"
+      timezone: "Australia/Melbourne"
     # A safety net in plain UTC, in case the time zone setting above ever
     # fails: 3:55 PM during daylight saving time, 2:55 PM in winter.
     - cron: "55 4 * * *"
@@ -47,11 +53,8 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write # save data/ back to the repository
-  pages: write # publish the page
-  id-token: write # needed by GitHub Pages
-  issues: write # the watchdog opens an issue when a source keeps failing
+# No rights for the workflow as a whole. Each job below is given only the ones it needs.
+permissions: {}
 
 # One run at a time, so two runs can never both decide to post.
 concurrency:
@@ -63,6 +66,9 @@ jobs:
     name: Check, post and build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write # save data/ back to the repository
+      issues: write # the watchdog opens an issue when a source keeps failing
     outputs:
       page: ${{ steps.check.outputs.page }}
     steps:
@@ -120,6 +126,10 @@ jobs:
     if: ${{ !cancelled() && needs.check.outputs.page == 'ready' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # This job cannot change the repository or its issues. It can only publish.
+    permissions:
+      pages: write # publish the page
+      id-token: write # lets GitHub Pages confirm the page comes from this workflow
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
