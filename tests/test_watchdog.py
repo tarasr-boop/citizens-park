@@ -61,6 +61,7 @@ class AlertsTest(unittest.TestCase):
         found = alerts(state, self.store, TODAY, self.config)
         self.assertEqual(titles(found), ["The rain forecast cannot be read"])
         self.assertIn("502", found[0].body)
+        self.assertIn("the last forecast that loaded for up to 12 hours", found[0].body)
 
     def test_telegram_failing_is_raised_straight_away(self):
         state = State(telegram_error="Forbidden: bot is not a member of the channel chat")

@@ -8,8 +8,10 @@ import zlib
 from unittest import mock
 
 from parkbot import fetch, telegram
-from parkbot.fetch import FetchError
+from parkbot.fetch import FetchError, NoAnswer
 from parkbot.telegram import TelegramError
+
+from .helpers import EAST, WEST
 
 TOKEN = "123456:SECRET-test-token"
 
@@ -264,6 +266,205 @@ class FetchTest(NetworkTest):
         self.urlopen.return_value = FakeReply(b"this is not gzip", {"Content-Encoding": "gzip"})
         with self.assertRaises(FetchError):
             fetch.get("https://council.example/park", "x", tries=1)
+
+    def test_a_reply_that_is_cut_short_is_asked_for_again(self):
+        class CutShort(FakeReply):
+            def read(self) -> bytes:
+                raise http.client.IncompleteRead(b"half a pa")
+
+        self.urlopen.side_effect = [CutShort(b""), FakeReply(b"the whole page")]
+        self.assertEqual(fetch.get("https://council.example/park", "x"), "the whole page")
+        # And if it never arrives whole, that is an ordinary failed fetch, not a crash.
+        self.urlopen.side_effect = [CutShort(b""), http.client.BadStatusLine("garbage"), CutShort(b"")]
+        with self.assertRaisesRegex(FetchError, "IncompleteRead"):
+            fetch.get("https://council.example/park", "x")
+
+    def test_a_page_with_one_known_route_takes_no_detour(self):
+        with mock.patch.object(fetch, "addresses_of") as lookup, mock.patch.object(fetch, "get_at") as get_at:
+            self.urlopen.side_effect = urllib.error.URLError("timed out")
+            with self.assertRaisesRegex(FetchError, r"^could not connect \(timed out\)$"):
+                fetch.get("https://council.example/park", "x")
+        lookup.assert_not_called()
+        get_at.assert_not_called()
+
+
+FORECAST_URL = "https://weather.example/v1/forecast?latitude=-37.8&longitude=145.0"
+STALLED = urllib.error.URLError(TimeoutError("_ssl.c:1011: The handshake operation timed out"))
+
+
+class DetourTest(NetworkTest):
+    """When the usual route gets no answer, another of the site's servers is asked by its address."""
+
+    def setUp(self):
+        super().setUp()
+        lookup = mock.patch.object(fetch, "addresses_of", return_value=[WEST])  # where the name leads right now
+        direct = mock.patch.object(fetch, "get_at", return_value="the forecast")
+        self.lookup = lookup.start()
+        self.get_at = direct.start()
+        self.addCleanup(lookup.stop)
+        self.addCleanup(direct.stop)
+        self.detours: list[tuple[str, str]] = []
+
+    def get(self, addresses=(WEST, EAST), **extra) -> str:
+        return fetch.get(
+            FORECAST_URL,
+            "ParkbotTests/1.0",
+            accept="application/json",
+            addresses=addresses,
+            detour=lambda address, reason: self.detours.append((address, reason)),
+            **extra,
+        )
+
+    def asked(self) -> list[str]:
+        return [call.args[2] for call in self.get_at.call_args_list]
+
+    def test_no_detour_while_the_usual_route_works(self):
+        self.urlopen.return_value = FakeReply(b"the forecast")
+        self.assertEqual(self.get(), "the forecast")
+        self.lookup.assert_not_called()
+        self.get_at.assert_not_called()
+        self.assertEqual(self.detours, [])
+
+    def test_asks_the_other_server_as_soon_as_the_usual_one_says_nothing(self):
+        self.urlopen.side_effect = STALLED
+        self.assertEqual(self.get(timeout=12, tries=5, pause=10), "the forecast")
+        self.assertEqual(self.urlopen.call_count, 1)
+        # A server that is well answers at once, so the detour is not waited on for as long.
+        self.get_at.assert_called_once_with(FORECAST_URL, "ParkbotTests/1.0", EAST, timeout=8, accept="application/json")
+        self.assertEqual(self.detours, [(EAST, "could not connect (_ssl.c:1011: The handshake operation timed out)")])
+        self.sleep.assert_not_called()  # no waiting first
+
+    def test_the_detour_never_waits_longer_than_the_usual_route(self):
+        self.urlopen.side_effect = STALLED
+        self.get(timeout=3)
+        self.assertEqual(self.get_at.call_args.kwargs["timeout"], 3)
+
+    def test_a_server_having_a_bad_moment_is_a_reason_too(self):
+        for failure in (http_error(500), http_error(503), TimeoutError("The read operation timed out"), ConnectionResetError("reset")):
+            with self.subTest(failure=repr(failure)[:40]):
+                self.urlopen.reset_mock()
+                self.get_at.reset_mock()
+                self.urlopen.side_effect = failure
+                self.assertEqual(self.get(), "the forecast")
+                self.assertEqual(self.asked(), [EAST])
+
+    def test_a_refusal_is_not_taken_elsewhere(self):
+        # The service said no. Its other server would be asked the same question.
+        for code, calls in ((400, 1), (403, 1), (404, 1), (429, 3)):
+            with self.subTest(code=code):
+                self.urlopen.reset_mock()
+                self.urlopen.side_effect = http_error(code)
+                with self.assertRaisesRegex(FetchError, f"^the server answered {code}$"):
+                    self.get()
+                self.assertEqual(self.urlopen.call_count, calls)
+        self.get_at.assert_not_called()
+
+    def test_keeps_trying_both_ways_and_then_says_so(self):
+        self.urlopen.side_effect = STALLED
+        self.get_at.side_effect = NoAnswer("TimeoutError: timed out")
+        with self.assertRaisesRegex(FetchError, r"^could not connect \(.*timed out\); the site's other server did not work either$"):
+            self.get(tries=3, pause=10)
+        self.assertEqual(self.urlopen.call_count, 3)
+        self.assertEqual(self.asked(), [EAST, EAST, EAST])
+        self.assertEqual(self.waits(), [10, 20])
+        self.assertEqual(self.detours, [])
+
+    def test_the_usual_route_coming_back_is_not_a_detour(self):
+        self.urlopen.side_effect = [STALLED, FakeReply(b"the forecast, by the usual route")]
+        self.get_at.side_effect = FetchError("the server answered 502")
+        self.assertEqual(self.get(), "the forecast, by the usual route")
+        self.assertEqual(self.detours, [])
+
+    def test_asks_the_next_known_server_when_one_fails(self):
+        self.lookup.return_value = ["51.81.167.1"]
+        self.urlopen.side_effect = STALLED
+        self.get_at.side_effect = [FetchError("the server's certificate was not accepted (Hostname mismatch)"), "the forecast"]
+        self.assertEqual(self.get(), "the forecast")
+        self.assertEqual(self.asked(), [WEST, EAST])
+        self.assertEqual([address for address, reason in self.detours], [EAST])
+
+    def test_no_more_than_two_other_servers_for_each_try(self):
+        self.urlopen.side_effect = STALLED
+        self.get_at.side_effect = NoAnswer("TimeoutError: timed out")
+        with self.assertRaisesRegex(FetchError, "; the site's other servers did not work either$"):
+            self.get(addresses=("51.81.167.1", "51.81.167.2", "51.81.167.3", "51.81.167.4"), tries=2)
+        self.assertEqual(self.asked(), ["51.81.167.1", "51.81.167.2"] * 2)
+
+    def test_a_name_that_leads_to_several_addresses(self):
+        # Only one of them was tried, and there is no telling which. So both are worth asking.
+        self.lookup.return_value = [EAST, WEST]
+        self.urlopen.side_effect = STALLED
+        self.get_at.side_effect = [NoAnswer("TimeoutError: timed out"), "the forecast"]
+        self.assertEqual(self.get(), "the forecast")
+        self.assertEqual(self.asked(), [WEST, EAST])
+        self.assertEqual([address for address, reason in self.detours], [EAST])
+
+    def test_servers_the_name_does_not_lead_to_are_asked_first(self):
+        # The name leads to one server by two addresses. The other server must not be crowded out.
+        west_too = "2604:2dc0:101:200::1"
+        self.lookup.return_value = [WEST, west_too]
+        self.urlopen.side_effect = STALLED
+        self.get_at.side_effect = NoAnswer("TimeoutError: timed out")
+        with self.assertRaises(FetchError):
+            self.get(addresses=(WEST, west_too, EAST), tries=1)
+        self.assertEqual(self.asked(), [EAST, WEST])
+
+    def test_only_asks_public_addresses(self):
+        self.urlopen.side_effect = STALLED
+        self.get_at.side_effect = NoAnswer("TimeoutError: timed out")
+        with self.assertRaisesRegex(FetchError, r"^could not connect \(.*timed out\)$"):
+            self.get(addresses=("10.0.0.8", "127.0.0.1", "169.254.169.254", "::1", "localhost", "weather.example", ""), tries=1)
+        self.get_at.assert_not_called()
+
+    def test_a_name_that_cannot_be_looked_up_leaves_every_known_server_to_ask(self):
+        self.lookup.return_value = []
+        self.urlopen.side_effect = urllib.error.URLError("Temporary failure in name resolution")
+        self.assertEqual(self.get(), "the forecast")
+        self.assertEqual(self.asked(), [WEST])
+        self.assertEqual(self.detours, [(WEST, "could not connect (Temporary failure in name resolution)")])
+
+    def test_nowhere_else_to_go_when_the_only_known_server_is_the_one_that_stalled(self):
+        self.urlopen.side_effect = STALLED
+        with self.assertRaisesRegex(FetchError, r"^could not connect \(.*timed out\)$"):
+            self.get(addresses=(WEST,), tries=2)
+        self.get_at.assert_not_called()
+        self.assertEqual(self.urlopen.call_count, 2)
+
+
+class AddressTest(unittest.TestCase):
+    def test_public_addresses(self):
+        for address in (WEST, EAST, "2607:5300:60:1234::1"):
+            self.assertTrue(fetch.is_public(address), address)
+
+    def test_everything_else(self):
+        not_public = [
+            "10.0.0.8", "172.16.4.1", "192.168.1.1", "127.0.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "192.0.2.7",
+            "224.0.0.1", "240.0.0.1", "255.255.255.255",
+            "::1", "::", "fe80::1", "fe80::1%eth0", "fd00::1", "ff02::1", "2001:db8::1", "2607:5300:60:1234::1%eth0",
+            "::ffff:127.0.0.1", "::ffff:10.0.0.8", "::ffff:51.81.167.44", "64:ff9b::7f00:1",
+            "weather.example", "localhost", "51.81.167", "51.81.167.44:443", " 51.81.167.44", "", None, 858761004, b"51.81.167.44",
+        ]  # fmt: skip
+        for address in not_public:
+            self.assertFalse(fetch.is_public(address), repr(address))
+
+    def test_looks_up_where_a_name_leads(self):
+        found = [
+            (2, 1, 6, "", (EAST, 443)),
+            (2, 1, 6, "", (WEST, 443)),
+            (2, 1, 6, "", (EAST, 443)),
+            (10, 1, 6, "", ("2607:5300:60:1234::1", 443, 0, 0)),
+        ]
+        with mock.patch("socket.getaddrinfo", return_value=found) as lookup:
+            self.assertEqual(fetch.addresses_of(FORECAST_URL), [EAST, "2607:5300:60:1234::1", WEST])
+        self.assertEqual(lookup.call_args.args, ("weather.example", 443))
+
+    def test_not_knowing_is_an_answer_too(self):
+        with mock.patch("socket.getaddrinfo", side_effect=OSError("Temporary failure in name resolution")):
+            self.assertEqual(fetch.addresses_of(FORECAST_URL), [])
+        with mock.patch("socket.getaddrinfo") as lookup:
+            self.assertEqual(fetch.addresses_of("not a web address"), [])
+            self.assertEqual(fetch.addresses_of("https://weather.example:port/"), [])
+        lookup.assert_not_called()
 
 
 if __name__ == "__main__":

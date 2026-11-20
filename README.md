@@ -47,7 +47,7 @@ Nothing needs a server, a database or a paid plan. The code uses only Python's s
 It is built to keep going when something fails:
 
 - If the council's page cannot be read, it uses the last good copy, and then the usual weekly pattern, and says so.
-- If the forecast does not load, it tries again for a few minutes. Then it uses the last one that did load (up to 12 hours old) and says when it is from.
+- If the weather service's usual server does not answer, it asks the service's other server straight away. If that fails too, it tries again for a few minutes. Then it uses the last forecast that did load (up to 12 hours old) and says when it is from.
 - GitHub often starts scheduled jobs late, so there are several runs each afternoon. Only the first one posts.
 - If a source keeps failing, it opens an issue in this repository, and GitHub emails you. See [When something goes wrong](#when-something-goes-wrong).
 
@@ -132,6 +132,7 @@ The tests fail while the QR code and the address do not match, so a forgotten QR
 ```
 parkbot/
   cli.py        the command the job runs: python3 -m parkbot run
+  fetch.py      fetches a page patiently, and can ask a site's other server when one does not answer
   council.py    reads the council's monthly table from its HTML
   pattern.py    the usual weekly pattern, learned from the council's data or from schedule.toml
   status.py     decides what to say about each day, and how sure it is
@@ -163,6 +164,14 @@ python3 -m parkbot run --post never --data /tmp/park/data --site /tmp/park/site
 ```
 
 Then open `/tmp/park/site/index.html`. Add `--now 2026-11-22T14:45` to pretend it is another time, or `--offline` to skip the web. `python3 -m parkbot run --help` lists every option.
+
+The weather service has more than one server. A run remembers the address of each one that answers (in `data/state.json`), and when the usual one says nothing it asks another by its address. To try that detour on purpose:
+
+```
+python3 -m parkbot routes
+```
+
+It asks each known server for the forecast and prints how it went. The **Tests** workflow runs it after every change.
 
 Python 3.11 or newer is needed. The job itself installs nothing.
 

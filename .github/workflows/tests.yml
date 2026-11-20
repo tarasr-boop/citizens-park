@@ -40,6 +40,12 @@ jobs:
       # scratch folder. It posts nothing and saves nothing.
       - name: Read the live sources
         run: python3 -m parkbot run --post never --show-sources --data "$RUNNER_TEMP/data" --site "$RUNNER_TEMP/site"
+      # The run above takes the usual route to the weather service. This asks
+      # each of the service's servers by its address, which is the detour a run
+      # takes when the usual route gets no answer. Taking it here on purpose
+      # means a change that breaks it is found now, and not on the first bad day.
+      - name: Try the detour to the weather service
+        run: python3 -m parkbot routes
       - name: Show what was read
         if: ${{ !cancelled() }}
         run: |

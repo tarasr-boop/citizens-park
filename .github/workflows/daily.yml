@@ -66,8 +66,14 @@ jobs:
     outputs:
       page: ${{ steps.check.outputs.page }}
     steps:
+      # Without "ref", a run gets the copy of the repository from the moment it
+      # was asked for. A run that then waited for an earlier run to finish would
+      # miss what that run saved in data/, and could post a second time. With
+      # "ref", it gets the newest copy of the branch at the moment it starts.
       - name: Get the code
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
 
       - name: Run the check
         id: check

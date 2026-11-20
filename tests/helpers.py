@@ -20,6 +20,13 @@ FIXTURES = Path(__file__).parent / "fixtures"
 CONFIG_FILE = FIXTURES / "config.toml"
 SCHEDULE_FILE = FIXTURES / "schedule.toml"
 
+# The two addresses the weather service answered from in November 2026: runners
+# in the west of the United States were sent to the first, the others to the
+# second. No test connects to them. They are here because only a public address
+# is ever remembered or asked, so a made-up example address would not do.
+WEST = "51.81.167.44"
+EAST = "167.114.211.86"
+
 
 def load_config(**changes):
     """The test settings, with any fields replaced: ``load_config(channel="")``."""
