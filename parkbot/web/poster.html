@@ -25,15 +25,15 @@
   .sheet {
     max-width: 180mm;
     margin: 16px auto 32px;
-    padding: 14mm 12mm 12mm;
+    padding: 14mm min(12mm, 6vw) 12mm;
     background: #fffdf8;
     border-radius: 6mm;
     text-align: center;
   }
   .eyebrow { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #17693a; }
-  h1 { margin: 5mm 0 4mm; font-size: 15mm; line-height: 1.02; letter-spacing: -0.02em; font-weight: 800; text-wrap: balance; }
+  h1 { margin: 5mm 0 4mm; font-size: min(15mm, 13vw); line-height: 1.02; letter-spacing: -0.02em; font-weight: 800; text-wrap: balance; }
   .lead { margin: 0 auto; max-width: 130mm; font-size: 6.2mm; line-height: 1.35; }
-  .qr { display: block; width: 88mm; height: 88mm; margin: 9mm auto 5mm; }
+  .qr { display: block; width: min(88mm, 100%); height: auto; aspect-ratio: 1; margin: 9mm auto 5mm; }
   .scan { margin: 0; font-size: 6.4mm; font-weight: 800; }
   .address { margin: 2mm 0 0; font-size: 4.6mm; word-break: break-all; }
   .points { margin: 9mm auto 0; padding: 0; max-width: 140mm; list-style: none; text-align: left; font-size: 5mm; }
