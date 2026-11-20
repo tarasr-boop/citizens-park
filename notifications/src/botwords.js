@@ -132,6 +132,11 @@ export const LEFTOVER = { summary: "Your alerts have changed. The latest are fur
 
 export const FULL = "Sorry, the bot has as many people as it can take at the moment. The channel and the page have the same news.";
 
+/** The bot's name, as chats show it. The Telegram channel moved here, so the bot has its name. */
+export const NAME = "Citizens Bark";
+/** The names the bot had before. One of these is replaced; a name a person gave it is left alone. */
+export const EARLIER_NAMES = ["Citizens Park Dogs"];
+
 /** The bot's description, shown in an empty chat before someone presses Start, and on its profile. */
 export function description(park) {
   return `When is the ${park} booked, and is rain on the way? I'll send you an alert at a time you choose.`;

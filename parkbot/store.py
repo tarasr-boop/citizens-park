@@ -157,6 +157,7 @@ class State:
     weather_failures: int = 0
     weather_error: str = ""
     telegram_error: str = ""
+    channel_farewell: date | None = None  # the day the retired channel's last post went out
     uncovered_since: date | None = None  # first day in the current run of days the council page did not cover
     # The addresses the weather service has answered from, and the day each one last
     # did. The service has more than one server. When the one its name leads to says
@@ -187,6 +188,7 @@ class State:
             weather_failures=count("weather_failures"),
             weather_error=str(raw.get("weather_error") or ""),
             telegram_error=str(raw.get("telegram_error") or ""),
+            channel_farewell=_date(raw.get("channel_farewell")),
             uncovered_since=_date(raw.get("uncovered_since")),
             weather_addresses=addresses,
         )
@@ -206,6 +208,7 @@ class State:
                 "weather_failures": self.weather_failures,
                 "weather_error": self.weather_error,
                 "telegram_error": self.telegram_error,
+                "channel_farewell": iso(self.channel_farewell),
                 "uncovered_since": iso(self.uncovered_since),
                 "weather_addresses": {address: seen.isoformat() for address, seen in self.weather_addresses.items()},
             },

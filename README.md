@@ -2,12 +2,13 @@
 
 Is the oval at Citizens Park in Richmond free for dogs today?
 
-The oval is a dog off-lead area, but dogs must stay off it while organised sport or training is on. This project checks the council's booking table and the rain forecast every day and tells people in four places:
+The oval is a dog off-lead area, but dogs must stay off it while organised sport or training is on. This project checks the council's booking table and the rain forecast every day and tells people in three places:
 
-- **A Telegram channel.** One post a day, at about 4 PM on weekdays and 8 AM on weekends (Melbourne time), plus a quiet "week ahead" post on Sundays.
 - **A web page.** Today's booked times hour by hour, the week ahead, rain by the hour in millimetres, and a QR code to share it: <https://citizensbark.com/>
 - **A notification on a phone.** The same alert at the same times, for people who do not use Telegram. The button for it is on the web page.
 - **Custom alerts from the Telegram bot.** The same alert in a private chat, at a time each person picks: one for weekdays and one for weekends. See [The Telegram bot](#the-telegram-bot).
+
+There used to be a Telegram channel as well, posting once a day at about 4 PM on weekdays and 8 AM on weekends. On 21 November 2026 it moved to the bot: it got one last post pointing there and posts nothing more.
 
 It is unofficial. It is not affiliated with the council or the sports clubs.
 
@@ -64,7 +65,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 
 | To change | Edit |
 | --- | --- |
-| The Telegram channel | `channel` in `config.toml`. Use the link name: the part after `t.me/`. |
+| The Telegram channel | `channel` in `config.toml`. Use the link name: the part after `t.me/`. With `retired = true` under it (as now), the channel gets one last post pointing to the bot and nothing after, and the page leaves it out. Set `retired = false` to bring the daily post back. |
 | The name shown at the top of the page | `name` under `[site]` in `config.toml` |
 | The "About me" block | `text`, `link` and `link_text` under `[about]` in `config.toml`. Leave `text` empty to hide the block. |
 | The hours on the page's timeline | `day_start` and `day_end` under `[park]` in `config.toml` |
@@ -177,13 +178,13 @@ To switch the second timer off, make `CHECK_TIMES` empty (`""`) in `notification
 
 ## The Telegram bot
 
-The bot that posts to the channel also sends alerts in a private chat, at a time each person picks. Someone opens a chat with the bot (the page's Telegram button leads there) and presses **Start**. From then on they get the alert at 4 PM on weekdays and 8 AM on weekends.
+The bot, called **Citizens Bark** (link name @CitizensParkDogsBot), sends the daily alert in a private chat, at a time each person picks. It took over from the channel, which it also posted to. Someone opens a chat with the bot (the page's Telegram button leads there) and presses **Start**. From then on they get the alert at 4 PM on weekdays and 8 AM on weekends.
 
 The chat stays tidy. It holds one message with the person's times ("Your alerts"), with buttons under it: **Change times**, **Pause notifications** (which becomes **Resume notifications** while the alerts are paused), and **Book a consultation with Sofia**, which opens her Instagram. **Change times** opens a picker with **Weekdays** and **Weekends**, each with a grid of hours from 4 AM to 11 PM plus **No alert**. Once a time is picked, the picker goes, and a fresh "Your alerts" takes the place of the old one at the bottom of the chat. The bot also takes away what people send it (`/start`, `/pause`, and the like), and yesterday's alert when today's arrives. The bot's menu has the same as commands: `/settings`, `/pause` and `/resume`.
 
 The bot writes its own description, the words shown in an empty chat: "When is the Citizens Park oval booked, and is rain on the way? I'll send you an alert at a time you choose." If you write a different one with @BotFather, the bot leaves yours alone.
 
-The alert is the channel's post, written for its own time of day. At 8 AM it names every booking of the day, at 4 PM only what is left of it. An alert at 9 PM or later is about the next day, sent the evening before, and its heading says "tomorrow". Whether a person's weekday or weekend time counts follows the day the alert is about: a 9 PM alert on a Friday is about Saturday, so it goes to people whose weekend time is 9 PM.
+The alert is what the channel used to post, written for its own time of day. At 8 AM it names every booking of the day, at 4 PM only what is left of it. An alert at 9 PM or later is about the next day, sent the evening before, and its heading says "tomorrow". Whether a person's weekday or weekend time counts follows the day the alert is about: a 9 PM alert on a Friday is about Saturday, so it goes to people whose weekend time is 9 PM.
 
 How it works:
 
@@ -202,7 +203,7 @@ To see how the bot is doing, open <https://alerts.citizensbark.com> and read `te
 - `chats` is how many people have the bot, and `paused` how many of them paused it.
 - `look` is what the bot last did, and why. `last` is how the last hour's alerts went: `sent`, `gone` (people who blocked the bot) and `failed`.
 
-The channel keeps going as before, for people who follow it.
+The bot gives itself its name, unless someone gave it a different one with @BotFather. Its link name, @CitizensParkDogsBot, stays as it is.
 
 ## Stats
 

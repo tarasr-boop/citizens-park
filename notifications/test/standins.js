@@ -303,6 +303,7 @@ export function world({ page = null, words = null, answer = () => 201, pause = 0
           getWebhookInfo: { url: "https://alerts.example/telegram", pending_update_count: 0 },
           getMyDescription: { description: "" },
           getMyShortDescription: { short_description: "" },
+          getMyName: { name: "Citizens Park Dogs" },
           // Message numbers of their own, well away from the numbers of the messages people write.
           sendMessage: call.method === "sendMessage" ? { message_id: (call.sent = 1000 + (it.sent = (it.sent || 0) + 1)) } : null,
         };

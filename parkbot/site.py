@@ -195,7 +195,7 @@ def _actions(config: Config) -> str:
     if config.bot_name:
         # A chat with the bot, where people pick their own times.
         buttons.append(f'    <a class="button" href="{escape(config.bot_url)}" rel="noopener">Get custom alerts on Telegram</a>')
-    elif config.channel:
+    elif config.channel and not config.channel_retired:
         buttons.append(f'    <a class="button" href="{escape(config.channel_url)}" rel="noopener">Get alerts on Telegram</a>')
     if config.tip_url:
         buttons.append(f'    <a class="button" href="{escape(config.tip_url)}" rel="noopener">Leave a tip</a>')
@@ -219,12 +219,19 @@ def _alert_paragraph(config: Config) -> str:
     ways = []
     if config.push_url:
         ways.append("as a notification from this page")
-    if config.channel:
+    if config.channel and not config.channel_retired:
         link = f'<a href="{escape(config.channel_url)}" rel="noopener">{escape(config.channel)}</a>'
         ways.append(f"in the {link} channel on Telegram")
-    if not ways:
+    parts = []
+    if ways:
+        parts.append(f"A free alert goes out once a day, at about {escape(alert_times(config))}, {' and '.join(ways)}.")
+    if config.channel_retired and config.bot_name:
+        # The channel moved to the bot, where each person picks their own times.
+        link = f'<a href="{escape(config.bot_url)}" rel="noopener">{escape(config.display_name)} bot</a>'
+        parts.append(f"On Telegram, the {link} sends the same alert at a time you choose.")
+    if not parts:
         return ""
-    return f"      <p>A free alert goes out once a day, at about {escape(alert_times(config))}, {' and '.join(ways)}.</p>"
+    return f"      <p>{' '.join(parts)}</p>"
 
 
 def _feedback(config: Config) -> str:

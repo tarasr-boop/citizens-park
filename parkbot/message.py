@@ -197,3 +197,21 @@ def weekly(plans: list[DayPlan], forecast: Forecast | None, config: Config) -> s
     lines.append("Dogs can use the oval outside these times.")
     lines += ["", f'<a href="{escape(config.site_url)}">Press here for today and rain by the hour</a>']
     return "\n".join(lines)
+
+
+def farewell(config: Config) -> str:
+    """The channel's last post, once it has moved to the bot (``telegram.retired``): where the alerts are now."""
+    name = config.display_name
+    same = ", the same as this channel" if (config.bot_weekday, config.bot_weekend) == (config.alert_weekdays, config.alert_weekends) else ""
+    lines = [
+        f"🐕 <b>{_text(name)} has moved to a bot</b>",
+        "",
+        f"This channel stops posting today. The same alert now comes in a private chat with the {_text(name)} bot, "
+        "at a time you choose: one for weekdays and one for weekends. "
+        f"It starts at {clock(config.bot_weekday)} on weekdays and {clock(config.bot_weekend)} on weekends{same}.",
+        "",
+        f'👉 <a href="{escape(config.bot_url)}">Open the bot</a> and press Start.',
+        "",
+        f'<a href="{escape(config.site_url)}">The page</a> still shows the week ahead and rain by the hour.',
+    ]
+    return "\n".join(lines)
