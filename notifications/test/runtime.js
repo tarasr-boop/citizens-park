@@ -119,6 +119,11 @@ function start(folder) {
   return new Miniflare({
     // Where the Durable Object keeps its storage, so that a restart can be tried.
     resourcePersistencePath: folder,
+    // What Cloudflare would say about where a request came from: a phone in
+    // Richmond. Without this, Miniflare asks Cloudflare about the machine the
+    // test runs on, which on GitHub is a data centre, so every visit would
+    // look automated.
+    cf: { city: "Richmond", region: "Victoria", regionCode: "VIC", country: "AU", asOrganization: "Telstra Limited", asn: 1221, colo: "MEL" },
     workers: [
       {
         // The same things wrangler.jsonc says, in the words this tool uses.
@@ -499,6 +504,7 @@ try {
     assert.match(html, /QR code<\/td><td>1</);
     assert.match(html, /30 seconds to 2 minutes<\/td><td>1</);
     assert.match(html, /says it is a program<\/td><td>1</);
+    assert.match(html, /Richmond, Victoria<\/td><td>1</);
   });
 
   await check("the bot's chats are still there after a restart", async () => {
