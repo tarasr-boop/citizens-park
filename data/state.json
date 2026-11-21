@@ -11,6 +11,6 @@
   "167.114.211.86": "2026-11-22",
   "51.81.167.44": "2026-11-22"
  },
- "weather_error": "the forecast could not be fetched: the server answered 429",
- "weather_failures": 1
+ "weather_error": "",
+ "weather_failures": 0
 }
