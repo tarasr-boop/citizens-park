@@ -143,11 +143,11 @@ export class Stats {
       } catch {
         return json(400, { ok: false, reason: "bad" });
       }
-      const answer = await this.counter.hit(given);
+      const answer = await this.counter.hit(given && given.hit, given && given.seen);
       return json(answer.status, answer.body);
     }
     if (request.method === "GET" && address.pathname === "/page") {
-      const report = await this.counter.report(address.searchParams.get("month"));
+      const report = await this.counter.report(address.searchParams.get("month"), address.searchParams.get("day"));
       return new Response(statsPage(report, this.siteUrl), { headers: PAGE_HEADERS });
     }
     return json(404, { ok: false, reason: "unknown" });
@@ -163,28 +163,57 @@ const PAGE_HEADERS = {
   "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 };
 
+/**
+ * What the backend itself sees of a request to count: the browser's own
+ * description of itself, and the rough place and network Cloudflare worked
+ * out from the address. The address itself is not passed on.
+ */
+function seenOf(request) {
+  const cf = request.cf || {};
+  const pick = (value) => (typeof value === "string" ? value.slice(0, 100) : "");
+  return {
+    agent: (request.headers.get("User-Agent") || "").slice(0, 400),
+    city: pick(cf.city),
+    region: pick(cf.region),
+    regionCode: pick(cf.regionCode),
+    country: pick(cf.country),
+    asOrganization: pick(cf.asOrganization),
+  };
+}
+
 function counter(env) {
   return env.STATS.get(env.STATS.idFromName("all"), { locationHint: "oc" });
 }
 
 /**
- * The two ways in to the counter. POST /hit is what the page sends: one visit
- * or one press. It answers with nothing, as the page never reads the answer.
- * GET /stats is the stats page, open to anyone, like /status: it shows counts only.
+ * The two ways in to the counter. POST /hit is what the page sends: one visit,
+ * one press or how long one look lasted. It answers with nothing, as the page
+ * never reads the answer. GET /stats is the stats page (?month=2026-11 for a
+ * month, ?day=2026-11-21 for a day), open to anyone, like /status: it shows counts only.
  */
 async function stats(request, env, settings, origin, cors) {
   const address = new URL(request.url);
   try {
     if (request.method === "GET") {
-      const month = address.searchParams.get("month");
-      const answer = await counter(env).fetch(`https://stats/page${month ? `?month=${encodeURIComponent(month)}` : ""}`);
+      const asked = new URLSearchParams();
+      for (const name of ["month", "day"]) {
+        const value = address.searchParams.get(name);
+        if (value) asked.set(name, value.slice(0, 20));
+      }
+      const answer = await counter(env).fetch(`https://stats/page${asked.size ? `?${asked}` : ""}`);
       return new Response(answer.body, { status: answer.status, headers: answer.headers });
     }
     // Only the page itself may count.
     if (origin !== settings.origin) return json(403, { ok: false, reason: "origin" }, cors);
     const body = await textUpTo(request, MOST_HIT_BYTES).catch(() => null);
     if (body === null) return json(413, { ok: false, reason: "bad" }, cors);
-    const answer = await counter(env).fetch("https://stats/hit", { method: "POST", body });
+    let hit;
+    try {
+      hit = JSON.parse(body);
+    } catch {
+      return json(400, { ok: false, reason: "bad" }, cors);
+    }
+    const answer = await counter(env).fetch("https://stats/hit", { method: "POST", body: JSON.stringify({ hit, seen: seenOf(request) }) });
     await answer.body?.cancel();
     return new Response(null, { status: answer.ok ? 204 : answer.status, headers: { ...cors, "Cache-Control": "no-store" } });
   } catch (error) {

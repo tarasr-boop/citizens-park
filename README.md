@@ -208,9 +208,21 @@ The bot gives itself its name, unless someone gave it a different one with @BotF
 
 ## Stats
 
-<https://alerts.citizensbark.com/stats> shows how many times the page was opened, from how many different devices, and which buttons and links were pressed, for each day of a month and for every month since counting began. The arrows at the top go to earlier months. Every day is kept for good.
+<https://alerts.citizensbark.com/stats> shows, for each day of a month and for every month since counting began:
 
-The page counts for itself, through the same backend as the notifications, so it needs no outside service and no cookies. It sends only what happened ("a visit, the first from this device today", or "the first button was pressed"), never anything about the person. A device knows it has been here before only because its browser remembers the date of its last visit. A private window, or a browser whose history was cleared, counts as a new device. Programs that do not run the page's script, such as most search engines, are not counted.
+- visits, different devices, first-time devices and devices that came back on a later day
+- when people visit (by the hour), how long after their last visit returning devices come back, and which visit it was for that device
+- how they found the page: the QR code, Telegram, a search, or no link at all
+- how long each look at the page lasted
+- the kind of device, its system and browser, its rough place and its network
+- which buttons and links were pressed
+- visits that look automated (a program that says so, or a request from a data centre), kept out of all the other numbers
+
+The arrows at the top go to earlier months, and each day in "Each day" opens on its own. Every day is kept for good.
+
+The page counts for itself, through the same backend as the notifications, so it needs no outside service and no cookies. It sends only what happened ("a visit, this device's 3rd, 2 days after its last one", or "the first button was pressed"), never anything about the person. A device knows it has been here before only because its browser remembers the date of its last visit and how many visits it has made. The backend adds the browser's own description of itself and the rough place and network Cloudflare works out from the internet address; the address itself is never kept. Each list is a separate count for the day, so the counts cannot be joined into a picture of one visitor. A private window, or a browser whose history was cleared, counts as a new device. Programs that do not run the page's script, such as link previews in chat apps, are not counted at all.
+
+The QR code holds the address with `?qr` after it, so visits through it can be told apart. To leave your own phone or computer out of the numbers, open <https://citizensbark.com/?me> once in each browser you use (`?me=off` undoes it). Both markers are taken out of the address as the page opens.
 
 The stats page is open to anyone who knows its address, like the backend's own numbers. It shows counts only.
 
@@ -264,7 +276,7 @@ notifications/  the backend that sends notifications to phones (JavaScript, runs
   src/rules.js     the small decisions: the time at the park, which addresses are taken, the words, the settings
   src/book.js      the book of devices, and the daily sending
   src/starter.js   the second timer, which starts the Daily check when GitHub's own timer has not
-  src/stats.js     the counter behind the stats page: visits, devices and presses, kept by the day
+  src/stats.js     the counter behind the stats page: visits, devices, returns, sources and presses, kept by the day
   src/statspage.js the stats page itself
   src/bot.js       the Telegram bot: its chats, their times, and the sending at each hour
   src/botwords.js  what the bot says in a chat, and its buttons

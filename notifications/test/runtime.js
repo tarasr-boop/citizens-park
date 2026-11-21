@@ -477,12 +477,16 @@ try {
     assert.equal((await ask(mf, "GET", "/status")).body.devices, 44);
   });
 
-  await check("the page's visits and presses are counted, kept through a restart and shown on the stats page", async () => {
-    const send = (body) =>
-      mf.dispatchFetch(`${BACKEND}/hit`, { method: "POST", headers: { Origin: PAGE, "Content-Type": "text/plain;charset=UTF-8" }, body: JSON.stringify(body) });
-    assert.equal((await send({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true })).status, 204);
-    assert.equal((await send({ kind: "visit", newToday: false, newThisMonth: false, firstEver: false })).status, 204);
+  await check("the page's visits, presses and stays are counted, kept through a restart and shown on the stats page", async () => {
+    const phone = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1";
+    const send = (body, agent = phone) =>
+      mf.dispatchFetch(`${BACKEND}/hit`, { method: "POST", headers: { Origin: PAGE, "Content-Type": "text/plain;charset=UTF-8", "User-Agent": agent }, body: JSON.stringify(body) });
+    assert.equal((await send({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true, nth: 1, source: "qr" })).status, 204);
+    assert.equal((await send({ kind: "visit", newToday: false, newThisMonth: false, firstEver: false, since: 0, nth: 2 })).status, 204);
     assert.equal((await send({ kind: "press", name: "buttons:t.me" })).status, 204);
+    assert.equal((await send({ kind: "stay", seconds: 45 })).status, 204);
+    // A program that says so is counted apart.
+    assert.equal((await send({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true }, "Mozilla/5.0 HeadlessChrome/142.0")).status, 204);
     assert.equal((await mf.dispatchFetch(`${BACKEND}/hit`, { method: "POST", headers: { Origin: "https://example.org" }, body: "{}" })).status, 403);
     await mf.dispose();
     mf = start(folder);
@@ -490,8 +494,11 @@ try {
     assert.equal(page.status, 200);
     assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
     const html = await page.text();
-    assert.match(html, /today<\/span><\/td><td>2<\/td><td>1<\/td><td>1</);
-    assert.match(html, /Telegram button<\/td><td>1</);
+    assert.match(html, /·<\/td><td>2<\/td><td>1<\/td><td>1<\/td><td>0<\/td><td>1</);
+    assert.match(html, /Telegram button \(custom alerts\)<\/td><td>1</);
+    assert.match(html, /QR code<\/td><td>1</);
+    assert.match(html, /30 seconds to 2 minutes<\/td><td>1</);
+    assert.match(html, /says it is a program<\/td><td>1</);
   });
 
   await check("the bot's chats are still there after a restart", async () => {

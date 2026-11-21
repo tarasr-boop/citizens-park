@@ -250,9 +250,10 @@ class RealFilesTest(unittest.TestCase):
     def test_the_qr_code_points_at_the_page(self):
         config = config_module.load(ROOT / "config.toml")
         held = (ROOT / "assets" / "qr-url.txt").read_text(encoding="utf-8").strip()
+        # "?qr" lets the stats page tell a visit through the code from others.
         self.assertEqual(
             held,
-            config.site_url,
+            config.site_url + "?qr",
             "The QR code still points at the old address. Make it again: see 'If the page's address changes' in the README.",
         )
 
