@@ -337,7 +337,7 @@ try {
       assert.equal(push.method, "POST");
       assert.equal(push.headers["content-encoding"], "aes128gcm");
       assert.equal(push.headers.ttl, "3600");
-      assert.equal(push.headers.topic, "welcome");
+      assert.equal("topic" in push.headers, false);
       assert.equal(push.headers.urgency, "high");
       const proof = readProof(push.headers.authorization);
       assert.equal(proof.valid, true);
@@ -446,7 +446,8 @@ try {
       const pushes = outside.pushes.filter((one) => one.url === phone.endpoint);
       assert.equal(pushes.length, 1);
       assert.equal(pushes[0].headers.ttl, "14400");
-      assert.equal(pushes[0].headers.topic, "daily");
+      // The daily alert carries no topic: Apple's service refused every one that did (21 and 22 Nov 2026).
+      assert.equal("topic" in pushes[0].headers, false);
       assert.equal(readProof(pushes[0].headers.authorization).valid, true);
       assert.deepEqual(phone.words(pushes[0].body).notification, {
         title: "Booked 5 PM to 7:30 PM",
