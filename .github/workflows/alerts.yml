@@ -89,6 +89,7 @@ jobs:
           BOTH_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
           TIMER_SET: ${{ secrets.DAILY_CHECK_TOKEN != '' }}
           BOT_SET: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}
+          STATS_SET: ${{ secrets.STATS_PASSWORD != '' }}
         run: |
           if [ "$BOTH_SET" != "true" ]; then
             echo "found=no" >> "$GITHUB_OUTPUT"
@@ -108,6 +109,12 @@ jobs:
           else
             echo "bot=no" >> "$GITHUB_OUTPUT"
             echo "::notice title=Telegram bot is off::The secret TELEGRAM_BOT_TOKEN is not set, so the backend does not run the bot's custom alerts."
+          fi
+          if [ "$STATS_SET" = "true" ]; then
+            echo "stats=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "stats=no" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Stats page is open::The secret STATS_PASSWORD is not set, so the stats page shows counts only, to anyone, and no list of visitors."
           fi
 
       - name: Get Node
@@ -155,6 +162,18 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           WRANGLER_SEND_METRICS: "false"
         run: printf '%s' "$TELEGRAM_BOT_TOKEN" | npx --no-install wrangler secret put TELEGRAM_BOT_TOKEN
+
+      # The password for the stats page, which then also lists the visitors.
+      # Straight from GitHub's secret into the deploy tool, with nothing
+      # written to a file or to this log on the way.
+      - name: Hand the stats page its password
+        if: steps.secrets.outputs.found == 'yes' && steps.secrets.outputs.stats == 'yes'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STATS_PASSWORD: ${{ secrets.STATS_PASSWORD }}
+          WRANGLER_SEND_METRICS: "false"
+        run: printf '%s' "$STATS_PASSWORD" | npx --no-install wrangler secret put STATS_PASSWORD
 
       # The address comes from wrangler.jsonc. The first time, Cloudflare needs
       # a few minutes to set it up, so this asks patiently.

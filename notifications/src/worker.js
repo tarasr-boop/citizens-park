@@ -147,8 +147,10 @@ export class Stats {
       return json(answer.status, answer.body);
     }
     if (request.method === "GET" && address.pathname === "/page") {
-      const report = await this.counter.report(address.searchParams.get("month"), address.searchParams.get("day"));
-      return new Response(statsPage(report, this.siteUrl), { headers: PAGE_HEADERS });
+      // "visitors" is set by the worker only after the password was given.
+      const visitors = address.searchParams.get("visitors");
+      const report = await this.counter.report(address.searchParams.get("month"), address.searchParams.get("day"), { visitors: visitors === "1" });
+      return new Response(statsPage(report, this.siteUrl, { locked: visitors !== "off" }), { headers: PAGE_HEADERS });
     }
     return json(404, { ok: false, reason: "unknown" });
   }
@@ -181,6 +183,37 @@ function seenOf(request) {
   };
 }
 
+/**
+ * Whether the request carries the stats password, the way a browser sends it
+ * after asking (HTTP "Basic" sign-in; any name will do). The two are compared
+ * as fingerprints of equal length, in a time that does not depend on how much
+ * of the guess was right.
+ */
+async function rightPassword(request, password) {
+  const found = /^Basic\s+([A-Za-z0-9+/=]{1,1000})$/.exec(request.headers.get("Authorization") || "");
+  if (!found) return false;
+  let given;
+  try {
+    const decoded = atob(found[1]);
+    given = new TextDecoder().decode(Uint8Array.from(decoded, (char) => char.charCodeAt(0)));
+  } catch {
+    return false;
+  }
+  const colon = given.indexOf(":");
+  if (colon < 0) return false;
+  const encoder = new TextEncoder();
+  const [mine, theirs] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(String(password))),
+    crypto.subtle.digest("SHA-256", encoder.encode(given.slice(colon + 1))),
+  ]);
+  const a = new Uint8Array(mine);
+  const b = new Uint8Array(theirs);
+  if (crypto.subtle.timingSafeEqual) return crypto.subtle.timingSafeEqual(a, b);
+  let difference = 0;
+  for (let index = 0; index < a.length; index += 1) difference |= a[index] ^ b[index];
+  return difference === 0;
+}
+
 function counter(env) {
   return env.STATS.get(env.STATS.idFromName("all"), { locationHint: "oc" });
 }
@@ -189,18 +222,32 @@ function counter(env) {
  * The two ways in to the counter. POST /hit is what the page sends: one visit,
  * one press or how long one look lasted. It answers with nothing, as the page
  * never reads the answer. GET /stats is the stats page (?month=2026-11 for a
- * month, ?day=2026-11-21 for a day), open to anyone, like /status: it shows counts only.
+ * month, ?day=2026-11-21 for a day). With the secret STATS_PASSWORD set, it
+ * asks for that password and also lists the visitors. Without it, it is open
+ * to anyone, like /status, and shows counts only.
  */
 async function stats(request, env, settings, origin, cors) {
   const address = new URL(request.url);
   try {
     if (request.method === "GET") {
-      const asked = new URLSearchParams();
+      // With a password set, the whole page asks for it. Without one, it
+      // shows counts only, and never the list of visitors.
+      let visitors = "off";
+      if (env.STATS_PASSWORD) {
+        if (!(await rightPassword(request, env.STATS_PASSWORD))) {
+          return new Response("This page needs the stats password.\n", {
+            status: 401,
+            headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "WWW-Authenticate": 'Basic realm="Citizens Bark stats", charset="UTF-8"' },
+          });
+        }
+        visitors = "1";
+      }
+      const asked = new URLSearchParams({ visitors });
       for (const name of ["month", "day"]) {
         const value = address.searchParams.get(name);
         if (value) asked.set(name, value.slice(0, 20));
       }
-      const answer = await counter(env).fetch(`https://stats/page${asked.size ? `?${asked}` : ""}`);
+      const answer = await counter(env).fetch(`https://stats/page?${asked}`);
       return new Response(answer.body, { status: answer.status, headers: answer.headers });
     }
     // Only the page itself may count.

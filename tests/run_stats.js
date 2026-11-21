@@ -137,6 +137,13 @@ const page = {
       origin: scenario.origin || "https://citizensbark.example",
     },
     localStorage,
+    // Random numbers that are the same each run, so a new device's id is known.
+    crypto: {
+      getRandomValues(bytes) {
+        bytes.fill(0xab);
+        return bytes;
+      },
+    },
     history: {
       replaceState(state, title, address) {
         replaced.push(address);

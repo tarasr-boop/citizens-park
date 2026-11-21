@@ -113,6 +113,7 @@ async function modules() {
 }
 
 const manifest = await modules();
+const STATS_PASSWORD = "a stand-in stats password";
 const text = (value) => ({ type: "text", value });
 
 function start(folder) {
@@ -150,6 +151,7 @@ function start(folder) {
             BOT_WEEKDAY: text("16:00"),
             BOT_WEEKEND: text("08:00"),
             TELEGRAM_BOT_TOKEN: text(BOT_TOKEN),
+            STATS_PASSWORD: text(STATS_PASSWORD),
             SUBSCRIBERS: { type: "durable-object", worker: "alerts", exportName: "Subscribers" },
             STATS: { type: "durable-object", worker: "alerts", exportName: "Stats" },
             CHATS: { type: "durable-object", worker: "alerts", exportName: "Chats" },
@@ -486,16 +488,21 @@ try {
     const phone = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1";
     const send = (body, agent = phone) =>
       mf.dispatchFetch(`${BACKEND}/hit`, { method: "POST", headers: { Origin: PAGE, "Content-Type": "text/plain;charset=UTF-8", "User-Agent": agent }, body: JSON.stringify(body) });
-    assert.equal((await send({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true, nth: 1, source: "qr" })).status, 204);
-    assert.equal((await send({ kind: "visit", newToday: false, newThisMonth: false, firstEver: false, since: 0, nth: 2 })).status, 204);
-    assert.equal((await send({ kind: "press", name: "buttons:t.me" })).status, 204);
-    assert.equal((await send({ kind: "stay", seconds: 45 })).status, 204);
+    assert.equal((await send({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true, nth: 1, source: "qr", id: "a1b2c3d4e5f60718" })).status, 204);
+    assert.equal((await send({ kind: "visit", newToday: false, newThisMonth: false, firstEver: false, since: 0, nth: 2, id: "a1b2c3d4e5f60718" })).status, 204);
+    assert.equal((await send({ kind: "press", name: "buttons:t.me", id: "a1b2c3d4e5f60718" })).status, 204);
+    assert.equal((await send({ kind: "stay", seconds: 45, id: "a1b2c3d4e5f60718" })).status, 204);
     // A program that says so is counted apart.
     assert.equal((await send({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true }, "Mozilla/5.0 HeadlessChrome/142.0")).status, 204);
     assert.equal((await mf.dispatchFetch(`${BACKEND}/hit`, { method: "POST", headers: { Origin: "https://example.org" }, body: "{}" })).status, 403);
     await mf.dispose();
     mf = start(folder);
-    const page = await mf.dispatchFetch(`${BACKEND}/stats`);
+    // The page asks for its password, and opens with it.
+    const refused = await mf.dispatchFetch(`${BACKEND}/stats`);
+    assert.equal(refused.status, 401);
+    assert.match(refused.headers.get("www-authenticate"), /^Basic realm=/);
+    assert.equal((await mf.dispatchFetch(`${BACKEND}/stats`, { headers: { Authorization: `Basic ${btoa("me:wrong")}` } })).status, 401);
+    const page = await mf.dispatchFetch(`${BACKEND}/stats`, { headers: { Authorization: `Basic ${btoa(`me:${STATS_PASSWORD}`)}` } });
     assert.equal(page.status, 200);
     assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
     const html = await page.text();
@@ -505,6 +512,9 @@ try {
     assert.match(html, /30 seconds to 2 minutes<\/td><td>1</);
     assert.match(html, /says it is a program<\/td><td>1</);
     assert.match(html, /Richmond, Victoria<\/td><td>1</);
+    // The phone has a row of its own: two visits, one press, 45 seconds.
+    assert.equal((html.match(/<details class="visitor">/g) || []).length, 1);
+    assert.match(html, /2 visits/);
   });
 
   await check("the bot's chats are still there after a restart", async () => {

@@ -506,15 +506,16 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(secrets_named(self.header), [])
         self.assertEqual(secrets_named(self.test_job), [])
         with_secrets = [step for step in self.steps(self.deploy_job) if secrets_named(step)]
-        self.assertEqual(len(with_secrets), 4)
-        look, deploy, hand_over, hand_bot = with_secrets
+        self.assertEqual(len(with_secrets), 5)
+        look, deploy, hand_over, hand_bot, hand_stats = with_secrets
         both = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
         # The first only learns which secrets exist: "true" or "false" is all it is handed.
         self.assertIn("BOTH_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}", look)
         self.assertIn("TIMER_SET: ${{ secrets.DAILY_CHECK_TOKEN != '' }}", look)
         self.assertIn("BOT_SET: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}", look)
-        self.assertEqual(secrets_named(look), [*both, "DAILY_CHECK_TOKEN", "TELEGRAM_BOT_TOKEN"])
-        self.assertEqual(len(re.findall(r"\$\{\{ secrets\.", look)), 3)
+        self.assertIn("STATS_SET: ${{ secrets.STATS_PASSWORD != '' }}", look)
+        self.assertEqual(secrets_named(look), [*both, "DAILY_CHECK_TOKEN", "TELEGRAM_BOT_TOKEN", "STATS_PASSWORD"])
+        self.assertEqual(len(re.findall(r"\$\{\{ secrets\.", look)), 4)
         # The second is the deploy itself, and it runs nothing but the pinned deploy tool.
         self.assertIn("CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}", deploy)
         self.assertIn("CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}", deploy)
@@ -526,6 +527,9 @@ class WorkflowTest(unittest.TestCase):
         # The fourth hands the bot its token, the same way.
         self.assertEqual(secrets_named(hand_bot), [*both, "TELEGRAM_BOT_TOKEN"])
         self.assertTrue(hand_bot.startswith("      - name: Hand the bot its token\n"))
+        # The fifth hands the stats page its password, the same way.
+        self.assertEqual(secrets_named(hand_stats), [*both, "STATS_PASSWORD"])
+        self.assertTrue(hand_stats.startswith("      - name: Hand the stats page its password\n"))
         # No other workflow is handed any of them.
         for other in sorted(WORKFLOWS.glob("*.yml")):
             if other.name != "alerts.yml":
@@ -570,6 +574,22 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(bot.count("this.fetch("), 2)  # Telegram, and the page's telegram.json
         self.assertIn('redirect: "manual"', bot)
 
+    def test_the_stats_password_goes_straight_into_the_deploy_tool(self):
+        hand_over = [step for step in self.steps(self.deploy_job) if step.startswith("      - name: Hand the stats page its password\n")][0]
+        self.assertIn("\n        if: steps.secrets.outputs.found == 'yes' && steps.secrets.outputs.stats == 'yes'\n", hand_over)
+        names = [re.match(r"      - name: (.*)", step).group(1) for step in self.steps(self.deploy_job)]
+        self.assertEqual(names.index("Hand the stats page its password"), names.index("Hand the bot its token") + 1)
+        runs = re.findall(r"\n        run: (.*)\n", hand_over)
+        self.assertEqual(runs, ["""printf '%s' "$STATS_PASSWORD" | npx --no-install wrangler secret put STATS_PASSWORD"""])
+        self.assertNotIn("run: |", hand_over)
+        self.assertEqual(self.text.count("${{ secrets.STATS_PASSWORD }}"), 1)
+        self.assertEqual(self.text.count('"$STATS_PASSWORD"'), 1)
+        # The backend only compares it with what a browser sends, and never shows or sends it.
+        worker = (BACKEND / "src" / "worker.js").read_text(encoding="utf-8")
+        self.assertEqual(worker.count("env.STATS_PASSWORD"), 2)
+        self.assertIn("if (env.STATS_PASSWORD) {", worker)
+        self.assertIn("await rightPassword(request, env.STATS_PASSWORD)", worker)
+
     def test_the_run_checks_that_the_second_timer_switched_on(self):
         ask = [step for step in self.steps(self.deploy_job) if step.startswith("      - name: Ask the backend how things are")][0]
         self.assertIn("TIMER: ${{ steps.secrets.outputs.timer }}", ask)
@@ -596,7 +616,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(names[:2], ["Get the code", "Look for the secrets"])
         for step in steps[2:]:
             with self.subTest(step=step.splitlines()[0].strip()):
-                self.assertRegex(step, r"\n        if: steps\.secrets\.outputs\.found == 'yes'( && steps\.secrets\.outputs\.(timer|bot) == 'yes')?\n")
+                self.assertRegex(step, r"\n        if: steps\.secrets\.outputs\.found == 'yes'( && steps\.secrets\.outputs\.(timer|bot|stats) == 'yes')?\n")
         # Without the Cloudflare secrets the step that looks for them says nothing about the second timer.
         look = steps[1]
         self.assertLess(look.index('echo "found=no"'), look.index("exit 0"))

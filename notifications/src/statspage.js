@@ -91,6 +91,13 @@ table + table { margin-top: 1rem; }
 th { font-weight: 600; color: var(--muted); font-size: .85rem; }
 tr:last-child td { border-bottom: 0; }
 .small { font-size: .85rem; }
+h3 { font-size: .95rem; margin: 1rem 0 .4rem; }
+.jump { line-height: 1.9; margin: -.25rem 0 1rem; }
+.visitor { border-top: 1px solid var(--line); padding: .5rem 0; }
+.visitor summary { cursor: pointer; list-style-position: outside; margin-left: 1rem; }
+.visitor-body { margin: .25rem 0 0 1rem; }
+.visitor-body p { margin: .25rem 0; }
+.times { margin: .25rem 0 0; padding-left: 1.5rem; }
 `;
 
 function tile(value, words) {
@@ -126,13 +133,84 @@ function listTable(list, name, heading, unit, words = (key) => key) {
   return `<table><thead><tr><th>${esc(heading)}</th><th>${esc(unit)}</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
-function card(title, inside, note = "") {
+function card(title, inside, note = "", id = "") {
   if (!inside.trim()) return "";
-  return `<section class="card">\n<h2>${esc(title)}</h2>\n${note ? `<p class="small muted">${note}</p>\n` : ""}${inside}\n</section>`;
+  return `<section class="card"${id ? ` id="${id}"` : ""}>\n<h2>${esc(title)}</h2>\n${note ? `<p class="small muted">${note}</p>\n` : ""}${inside}\n</section>`;
+}
+
+/** "8:14 AM" for minute 494 of the day. */
+function clockText(minute) {
+  const hour = Math.floor(minute / 60);
+  return `${hour % 12 || 12}:${String(minute % 60).padStart(2, "0")} ${hour < 12 ? "AM" : "PM"}`;
+}
+
+/** "Sun 22 Nov, 8:14 AM" for a moment at the park (`{ date, minute }`). */
+function momentText(moment) {
+  const [, month] = moment.date.split("-").map(Number);
+  return `${dayText(moment.date)} ${MONTH_NAMES[month - 1].slice(0, 3)}, ${clockText(moment.minute)}`;
+}
+
+/** "45 seconds", "3 minutes", "1 hour 5 minutes". */
+function durationText(seconds) {
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return `${hours} hour${hours === 1 ? "" : "s"}${rest ? ` ${rest} minute${rest === 1 ? "" : "s"}` : ""}`;
+}
+
+function plural(count, one, many = one + "s") {
+  return `${number(count)} ${count === 1 ? one : many}`;
+}
+
+// At most this many visitors are listed in each group.
+const MOST_LISTED = 200;
+
+/** One visitor, as a fold: two lines that sum it up, and its visits inside. */
+function visitorHtml(visitor, period) {
+  const name = `Visitor ${visitor.id.slice(0, 4)}`;
+  const what = [visitor.kind === "other" ? "" : visitor.kind, visitor.system, visitor.browser].filter((part) => part && part !== "other" && part !== "program");
+  const line1 = `<b>${esc(name)}</b> · ${esc(what.join(", ") || "unknown device")}`;
+  const line2 = [visitor.place, visitor.network].filter((part) => part && part !== "unknown").map(esc).join(" · ") || "place unknown";
+  const facts = [
+    `${plural(visitor.inPeriod.length, "visit")} this ${period}`,
+    `${plural(visitor.visits, "visit")} on ${plural(visitor.days, "day")} since ${esc(momentText({ ...visitor.firstSeen }).split(",")[0])}`,
+  ];
+  if (visitor.nth && visitor.nth > visitor.visits) facts.push(`${plural(visitor.nth, "visit")} by its own count, including some from before visitors were listed`);
+  const ways = [`First came by ${esc(visitor.came || "unknown")}`];
+  if (visitor.lastCame && visitor.lastCame !== visitor.came) ways.push(`Last came by ${esc(visitor.lastCame)}`);
+  if (visitor.seconds) ways.push(`On the page for ${esc(durationText(visitor.seconds))} in all`);
+  const pressed = Object.entries(visitor.presses || {}).sort((a, b) => b[1] - a[1]);
+  if (pressed.length) ways.push(`Pressed ${pressed.map(([key, count]) => `${esc(label(key))}${count > 1 ? ` ×${count}` : ""}`).join(", ")}`);
+  const times = visitor.inPeriod.map((moment) => `<li>${esc(momentText(moment))}</li>`).join("");
+  return (
+    `<details class="visitor"><summary>${line1}<br><span class="muted">${line2}</span><br><span class="small">Last ${esc(momentText(visitor.inPeriod[0]))} · ${facts[0]}</span></summary>` +
+    `<div class="visitor-body"><p class="small">${facts.slice(1).join(". ")}.</p><p class="small">${ways.join(". ")}.</p>` +
+    `<p class="small muted">Visits this ${period}, latest first:</p><ol class="times small">${times}</ol></div></details>`
+  );
+}
+
+/** The visitors of the period, in three groups: people, the owner's own devices, and programs. */
+function visitorsHtml(visitors, period, locked) {
+  if (!locked) {
+    return `<p class="muted">The list of visitors appears here once the stats password is set (see the README). Until then this page is open to anyone and shows totals only.</p>`;
+  }
+  if (!visitors || !visitors.length) return `<p class="muted">No visitors this ${period} yet. Visitors are listed from 22 November 2026.</p>`;
+  const people = visitors.filter((one) => !one.robot && !one.mine);
+  const yours = visitors.filter((one) => one.mine);
+  const robots = visitors.filter((one) => one.robot && !one.mine);
+  const group = (title, list, open) =>
+    list.length
+      ? `<h3>${esc(title)} <span class="muted">(${number(list.length)})</span></h3>${list.slice(0, MOST_LISTED).map((one) => visitorHtml(one, period)).join("\n")}${list.length > MOST_LISTED ? `<p class="small muted">And ${number(list.length - MOST_LISTED)} more.</p>` : ""}`
+      : open
+        ? `<p class="muted">No people this ${period} yet.</p>`
+        : "";
+  return [group("People", people, true), group("Your own devices", yours, false), group("Look automated", robots, false)].filter(Boolean).join("\n");
 }
 
 /** The whole page for the counter's report (see Counter.report). */
-export function statsPage(report, siteUrl) {
+export function statsPage(report, siteUrl, { locked = false } = {}) {
   const { month, day, thisMonth, first, days, totals, months, total } = report;
   const period = day ? "day" : "month";
   const before = shift(month, -1);
@@ -189,7 +267,24 @@ export function statsPage(report, siteUrl) {
 <h1>Citizens Bark stats</h1>
 <p class="muted">Visits to <a href="${esc(siteUrl)}">${esc(siteUrl.replace(/^https:\/\//, "").replace(/\/$/, ""))}</a> and what visitors do there. Times are Melbourne time.</p>
 <nav>${nav}</nav>
-<section class="card">
+<p class="jump small">${[
+    ["overview", "Overview"],
+    ["visitors", "Visitors"],
+    day ? null : ["days", "Each day"],
+    ["when", "When"],
+    ["back", "Coming back"],
+    ["sources", "Found by"],
+    ["time", "Time on page"],
+    ["devices", "Devices"],
+    ["where", "Where"],
+    ["buttons", "Buttons"],
+    ["bots", "Bots"],
+    ["months", "Months"],
+  ]
+    .filter(Boolean)
+    .map(([id, words]) => `<a href="#${id}">${words}</a>`)
+    .join(" · ")}</p>
+<section class="card" id="overview">
 <div class="tiles">
 ${tile(totals.visits, "visits")}
 ${tile(totals.devices, "different devices")}
@@ -198,15 +293,20 @@ ${tile(totals.returning, day ? "devices that came back" : "returns (a device bac
 </div>
 ${asides.length ? `<p class="small muted">Not counted above: ${asides.join(", and ")}.</p>` : ""}
 </section>
-${day ? "" : card("Each day", days.length ? `<table class="wide"><thead><tr><th>Day</th><th>Visits</th><th>Devices</th><th>New</th><th>Back</th><th>Bots</th></tr></thead><tbody>${dayRows}</tbody></table>` : "", "Tap a day to see it on its own. The dot marks today. <b>New</b>: first visit ever. <b>Back</b>: had been here on an earlier day. <b>Bots</b>: visits that look automated, not counted in the others.")}
-${card("When people visit", hourTable)}
+<section class="card" id="visitors">
+<h2>Visitors</h2>
+${locked ? `<p class="small muted">One row for each device, by the random number it keeps in its browser. Tap one to see its visits. Clearing the browser, or a private window, makes a new one.</p>\n` : ""}${visitorsHtml(report.visitors, period, locked)}
+</section>
+${day ? "" : card("Each day", days.length ? `<table class="wide"><thead><tr><th>Day</th><th>Visits</th><th>Devices</th><th>New</th><th>Back</th><th>Bots</th></tr></thead><tbody>${dayRows}</tbody></table>` : "", "Tap a day to see it on its own. The dot marks today. <b>New</b>: first visit ever. <b>Back</b>: had been here on an earlier day. <b>Bots</b>: visits that look automated, not counted in the others.", "days")}
+${card("When people visit", hourTable, "", "when")}
 ${card(
   "Coming back",
   set([listTable(totals.since, "since", "Time since the last visit", "Visits"), listTable(totals.nth, "nth", "Which visit it was for that device", "Visits")]),
-  "Only devices that had been here before are in the first table."
+  "Only devices that had been here before are in the first table.",
+  "back"
 )}
-${card("How they found the page", listTable(totals.sources, "sources", "Came from", "Visits"))}
-${card("Time on the page", listTable(totals.stays, "stays", "Each look lasted", "Looks"), "A look ends when the page goes out of sight: another app, another tab, or the screen turning off.")}
+${card("How they found the page", listTable(totals.sources, "sources", "Came from", "Visits"), "", "sources")}
+${card("Time on the page", listTable(totals.stays, "stays", "Each look lasted", "Looks"), "A look ends when the page goes out of sight: another app, another tab, or the screen turning off.", "time")}
 ${card(
   "Devices",
   set([
@@ -214,25 +314,28 @@ ${card(
     listTable(totals.systems, "systems", "System", "Devices"),
     listTable(totals.browsers, "browsers", "Browser", "Devices"),
   ]),
-  "Each device once a day."
+  "Each device once a day.",
+  "devices"
 )}
 ${card(
   "Where",
   set([listTable(totals.places, "places", "Rough place", "Devices"), listTable(totals.networks, "networks", "Network", "Devices")]),
-  "Worked out from the internet address, which is not kept. It is often the nearest big city, not the suburb, and on iPhones with iCloud Private Relay it can be a city nearby."
+  "Worked out from the internet address, which is not kept. It is often the nearest big city, not the suburb, and on iPhones with iCloud Private Relay it can be a city nearby.",
+  "where"
 )}
-${card("Buttons and links", listTable(totals.presses, "presses", "What was pressed", "Times", label) || `<p class="muted">Nothing pressed this ${period} yet.</p>`)}
+${card("Buttons and links", listTable(totals.presses, "presses", "What was pressed", "Times", label) || `<p class="muted">Nothing pressed this ${period} yet.</p>`, "", "buttons")}
 ${card(
   "Looks automated",
   set([listTable(totals.robotWhy, "robotWhy", "Why", "Visits"), listTable(totals.robotNets, "robotNets", "Network", "Visits")]),
-  "Programs that run the page’s script: link checkers, security scanners, search engines. They are left out of every other number on this page. Now and then one is a person on a VPN."
+  "Programs that run the page’s script: link checkers, security scanners, search engines. They are left out of every other number on this page. Now and then one is a person on a VPN.",
+  "bots"
 )}
-<section class="card">
+<section class="card" id="months">
 <h2>Every month</h2>
 ${monthRows ? `<table class="wide"><thead><tr><th>Month</th><th>Visits</th><th>Devices</th><th>New</th><th>Back</th><th>Presses</th></tr></thead><tbody>${monthRows}</tbody></table>` : `<p class="muted">Nothing counted yet.</p>`}
 <p class="small muted">Since counting began: ${number(total.visits)} visits from ${number(total.fresh)} first-time devices.</p>
 </section>
-<p class="small muted">How this is counted: a visit is each time the page is opened, or looked at again after half an hour away. A device (a phone or computer) counts once a day in “Each day” and once a month in the totals. It knows it has been here before only because its browser remembers the date of its last visit and how many visits it has made. No cookies are used, no number is given to a device, and the internet address is not kept: each list above is a separate count for the day, so they cannot be joined into a picture of one visitor. A private window, or a browser whose history was cleared, counts as a new device. Programs that do not run the page’s script, such as link previews in chat apps, are not counted at all. Device, place, source, returns and time on the page are counted from 22 November 2026; days before that show only visits, devices and presses.</p>
+<p class="small muted">How this is counted: a visit is each time the page is opened, or looked at again after half an hour away. A device (a phone or computer) counts once a day in “Each day” and once a month in the totals. It knows it has been here before only because its browser remembers a random number it made for itself, the date of its last visit and how many visits it has made. No cookies are used and the internet address is not kept. A private window, or a browser whose history was cleared, counts as a new device. Programs that do not run the page’s script, such as link previews in chat apps, are not counted at all. Device, place, source, returns, time on the page and the list of visitors start on 22 November 2026; days before that show only visits, devices and presses.</p>
 <p class="small muted">To leave your own phone or computer out of the numbers, open <a href="${esc(siteUrl)}?me">${esc(siteUrl.replace(/^https:\/\//, ""))}?me</a> once in each browser you use. <a href="${esc(siteUrl)}?me=off">?me=off</a> undoes it.</p>
 </main>
 </body>
