@@ -144,7 +144,7 @@ export function plainWords(text) {
  * "later". Never throws for something the other side did.
  *
  * `to` is `{ endpoint, p256dh, auth }` with the two keys as base64url text.
- * `how` is `{ authorization, ttl, topic, fetch, timeout, refused }`. If the
+ * `how` is `{ authorization, ttl, fetch, timeout, refused }`. If the
  * push service refuses the message, `refused`, when given, is called with the
  * number of its answer and its words (see `plainWords`). If the message could
  * not be made for this address at all, the number is 0 and the words are ours.
@@ -169,8 +169,13 @@ export async function send(to, message, how) {
         TTL: String(how.ttl),
         // A phone that is asleep is woken for it: the alert is wanted at its time, not hours later.
         Urgency: "high",
-        // A newer message with the same topic replaces one still waiting for the phone.
-        Topic: how.topic,
+        // No "Topic" header, on purpose. It is optional: it lets a newer message
+        // take the place of one still waiting for the phone, and a message here
+        // waits four hours at most, so there is never an older one to replace.
+        // Apple's service answered 400, "BadWebPushTopic", to every daily alert
+        // that carried the topic "daily" (21 and 22 Nov 2026), so an iPhone got
+        // none, although its first notification, with the topic "welcome", went
+        // through. Nothing can be refused for a header that is not sent.
       },
       body,
       redirect: "manual",

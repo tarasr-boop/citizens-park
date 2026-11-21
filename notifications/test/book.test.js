@@ -75,7 +75,8 @@ test("a new device gets a first notification and is then written into the book",
   const [push] = it.net.pushesTo(phone);
   assert.equal(push.options.method, "POST");
   assert.equal(push.headers.TTL, "3600");
-  assert.equal(push.headers.Topic, "welcome");
+  // No topic: Apple's service refuses a message for a topic it does not like (see webpush.js).
+  assert.equal("Topic" in push.headers, false);
   assert.equal(push.headers.Urgency, "high");
   assert.equal(push.headers["Content-Encoding"], "aes128gcm");
 
@@ -326,7 +327,7 @@ test("today's alert goes to every device, forty at a time, and only once", async
     const pushes = it.net.pushesTo(device);
     assert.equal(pushes.length, 1);
     assert.equal(pushes[0].headers.TTL, "14400");
-    assert.equal(pushes[0].headers.Topic, "daily");
+    assert.equal("Topic" in pushes[0].headers, false);
     const proof = readProof(pushes[0].headers.Authorization);
     assert.equal(proof.valid, true);
     assert.equal(proof.claims.aud, `https://${device.host}`);

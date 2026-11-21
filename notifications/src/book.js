@@ -105,7 +105,7 @@ export class Book {
    * service's own words are kept only with `words`: for addresses that are in
    * the book, which have taken a message before.
    */
-  async deliver(entries, message, topic, ttl, words = true) {
+  async deliver(entries, message, ttl, words = true) {
     const now = this.now();
     const proofs = new Map(); // one signed proof for each push service, shared by all its addresses
     const results = [];
@@ -130,7 +130,6 @@ export class Book {
             result = await send(entry, message, {
               authorization: await proofs.get(origin),
               ttl,
-              topic,
               fetch: this.fetch,
               refused: (status, said) => refusals.push({ host: address.hostname, status, said: words || !status ? said : "" }),
             });
@@ -214,7 +213,7 @@ export class Book {
 
     // A new address, or one whose last alert was refused: it is written to now.
     const hello = messageFor(welcome(this.settings), this.settings, "welcome");
-    const [[, , result]] = await this.deliver([[name, mine]], hello, "welcome", WELCOME_TTL, Boolean(known));
+    const [[, , result]] = await this.deliver([[name, mine]], hello, WELCOME_TTL, Boolean(known));
     if (result === "later") {
       // No clear answer. An address in the book stays there, a new one is not added.
       return known ? reply(200, { ok: true, new: false }) : reply(503, { ok: false, reason: "later" });
@@ -368,7 +367,7 @@ export class Book {
       entries = names.length ? [...(await this.storage.get(names))] : [];
     }
 
-    const results = entries.length ? await this.deliver(entries, encoder.encode(job.message), "daily", ALERT_TTL) : [];
+    const results = entries.length ? await this.deliver(entries, encoder.encode(job.message), ALERT_TTL) : [];
     // The push services that have taken a message from us in this run.
     const working = new Set(job.working);
     for (const [, entry, result] of results) {

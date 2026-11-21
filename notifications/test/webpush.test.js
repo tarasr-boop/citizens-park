@@ -148,13 +148,23 @@ function recorder(answer) {
   };
 }
 
+test("a message carries no topic, whatever the caller says", async () => {
+  // Apple's service answered 400, "BadWebPushTopic", to every daily alert,
+  // whose topic was "daily" (21 and 22 Nov 2026), so an iPhone got none. The
+  // header is optional and nothing is lost without it, so none is sent.
+  const phone = newDevice("web.push.apple.com");
+  const net = recorder(201);
+  const how = { authorization: "vapid t=a.b.c, k=d", ttl: 14400, topic: "daily", fetch: net.fetch };
+  assert.equal(await send({ endpoint: phone.endpoint, ...phone.subscription.keys }, encoder.encode("{}"), how), "sent");
+  assert.deepEqual(Object.keys(net.calls[0].options.headers).sort(), ["Authorization", "Content-Encoding", "Content-Type", "TTL", "Urgency"]);
+});
+
 test("a message goes out encrypted, with the headers the notification services expect", async () => {
   const phone = newDevice("updates.push.services.mozilla.com");
   const net = recorder(201);
   const result = await send({ endpoint: phone.endpoint, ...phone.subscription.keys }, encoder.encode('{"hello":"there"}'), {
     authorization: "vapid t=a.b.c, k=d",
     ttl: 14400,
-    topic: "daily",
     fetch: net.fetch,
   });
   assert.equal(result, "sent");
@@ -168,7 +178,6 @@ test("a message goes out encrypted, with the headers the notification services e
     "Content-Type": "application/octet-stream",
     TTL: "14400",
     Urgency: "high",
-    Topic: "daily",
   });
   // A notification service that points elsewhere is not followed there.
   assert.equal(options.redirect, "manual");
@@ -179,7 +188,7 @@ test("a message goes out encrypted, with the headers the notification services e
 test("sending reports what happened and never throws for something the other side did", async () => {
   const phone = newDevice();
   const to = { endpoint: phone.endpoint, ...phone.subscription.keys };
-  const how = (fetch) => ({ authorization: "vapid t=a.b.c, k=d", ttl: 60, topic: "daily", fetch });
+  const how = (fetch) => ({ authorization: "vapid t=a.b.c, k=d", ttl: 60, fetch });
   const message = encoder.encode("{}");
   assert.equal(await send(to, message, how(recorder(204).fetch)), "sent");
   assert.equal(await send(to, message, how(recorder(410).fetch)), "gone");
@@ -194,7 +203,7 @@ test("an address whose keys are not keys is refused without asking the notificat
   const phone = newDevice();
   const net = recorder(201);
   const told = [];
-  const how = { authorization: "vapid t=a.b.c, k=d", ttl: 60, topic: "daily", fetch: net.fetch, refused: (status, said) => told.push([status, said]) };
+  const how = { authorization: "vapid t=a.b.c, k=d", ttl: 60, fetch: net.fetch, refused: (status, said) => told.push([status, said]) };
   assert.equal(await send({ endpoint: phone.endpoint, p256dh: "not a key", auth: phone.subscription.keys.auth }, encoder.encode("{}"), how), "refused");
   assert.equal(await send({ endpoint: phone.endpoint, p256dh: toBase64Url(new Uint8Array(65)), auth: phone.subscription.keys.auth }, encoder.encode("{}"), how), "refused");
   assert.equal(net.calls.length, 0);
@@ -215,7 +224,7 @@ test("a refusal is reported with the number of the answer and the service's own 
   const to = { endpoint: phone.endpoint, ...phone.subscription.keys };
   const message = encoder.encode("{}");
   const told = [];
-  const how = (fetch) => ({ authorization: "vapid t=a.b.c, k=d", ttl: 60, topic: "daily", fetch, refused: (status, said) => told.push([status, said]) });
+  const how = (fetch) => ({ authorization: "vapid t=a.b.c, k=d", ttl: 60, fetch, refused: (status, said) => told.push([status, said]) });
   const says = (status, words) => async () => new Response(words, { status });
 
   assert.equal(await send(to, message, how(says(403, '{"reason":"BadJwtToken"}'))), "refused");
@@ -230,7 +239,7 @@ test("a refusal is reported with the number of the answer and the service's own 
   assert.equal(told.length, 2);
 
   // Without anyone to tell, a refusal is still just a refusal.
-  assert.equal(await send(to, message, { authorization: "vapid t=a.b.c, k=d", ttl: 60, topic: "daily", fetch: says(403, "no") }), "refused");
+  assert.equal(await send(to, message, { authorization: "vapid t=a.b.c, k=d", ttl: 60, fetch: says(403, "no") }), "refused");
 
   // An answer whose words cannot be read is reported by its number alone.
   const broken = async () => ({ status: 401, body: null, text: async () => Promise.reject(new Error("cut off")) });
@@ -274,7 +283,6 @@ test("a notification service that does not answer in time counts as later", asyn
   const result = await send({ endpoint: phone.endpoint, ...phone.subscription.keys }, encoder.encode("{}"), {
     authorization: "vapid t=a.b.c, k=d",
     ttl: 60,
-    topic: "daily",
     fetch: hangs,
     timeout: 30,
   });
