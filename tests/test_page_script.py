@@ -63,8 +63,10 @@ class LiveViewTest(unittest.TestCase):
         """What the script puts on the page for ``data`` when the park's clock says ``now``."""
         path = Path(self._folder.name) / "data.json"
         path.write_text(json.dumps(data), encoding="utf-8")
+        # The script's own clock stands at the same moment, so that a drawing never depends on the day the tests are run.
+        moment = datetime.fromisoformat(now).replace(tzinfo=ZoneInfo(data.get("zone") or "Australia/Melbourne"))
         result = subprocess.run(
-            ["node", str(HARNESS), str(site.WEB / "page.js"), str(path), now],
+            ["node", str(HARNESS), str(site.WEB / "page.js"), str(path), now, str(int(moment.timestamp() * 1000))],
             capture_output=True,
             text=True,
             timeout=60,
@@ -99,6 +101,15 @@ class LiveViewTest(unittest.TestCase):
         html = self.draw(data, "2026-11-20T09:20")
         self.assertIn('<p class="kicker">Last checked yesterday at 3:55 PM</p>', html)
         self.assertNotIn("9:15", html)
+
+    def test_a_page_that_has_not_been_built_for_26_hours_says_so(self):
+        data = self.data(at(FRIDAY, 9, 15))
+        warning = '<p class="stale">This page has not updated since Fri 20 Nov, 9:15 AM. The times may be out of date.</p>'
+        # Nothing is said while the page is fresh, nor a day later, when a check may only be running late.
+        self.assertNotIn('class="stale"', self.draw(data, "2026-11-20T09:20"))
+        self.assertNotIn('class="stale"', self.draw(data, "2026-11-21T11:10"))
+        self.assertIn(warning, self.draw(data, "2026-11-21T11:20"))
+        self.assertIn(warning, self.draw(data, "2026-11-23T08:00"))
 
     def test_no_claim_of_a_check_that_never_happened(self):
         html = self.draw(self.data(at(FRIDAY, 9, 15), store=CouncilStore()), "2026-11-20T09:20")
