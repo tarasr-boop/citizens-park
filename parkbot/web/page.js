@@ -801,10 +801,12 @@
   // ---- Counting visits and presses, for the stats page ----
   //
   // The backend counts how many times the page is opened, from how many
-  // different devices, and which buttons and links are pressed. What is sent
-  // is only what happened, such as "a visit, the first from this device today"
-  // or "a press of the first button": no cookie, no address, nothing about the person.
-  // This device only remembers the date of its last visit, in its own storage.
+  // different devices, how often those devices come back, how they found the
+  // page, how long they stay, and which buttons and links are pressed. What is
+  // sent is only what happened, such as "a visit, this device's 3rd, 2 days
+  // after its last one": no cookie, no number for the device, nothing about
+  // the person. This device remembers only the date of its last visit and how
+  // many visits it has made, in its own storage.
 
   // Only the real page counts, not a copy of it opened somewhere else, and not a program steering a browser.
   var counting = !!backend && !navigator.webdriver && (function () {
@@ -814,6 +816,59 @@
       return false;
     }
   })();
+
+  function remembered(key) {
+    try {
+      return window.localStorage.getItem(key);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function remember(key, value) {
+    try {
+      if (value === null) window.localStorage.removeItem(key);
+      else window.localStorage.setItem(key, value);
+    } catch (error) {
+      // nowhere to remember it
+    }
+  }
+
+  // Two markers in the address. "?qr" is in the address the QR code holds, so
+  // a visit through the code can be told apart. "?me" marks this browser as
+  // the owner's, so that its visits are counted apart ("?me=off" undoes it).
+  // Both are taken out of the address again, so that a copied link carries neither.
+  var cameBy = "";
+  var mine = remembered("statsMine") === "1";
+  (function () {
+    var search = window.location.search || "";
+    if (!/[?&](qr|me)(=[^&]*)?(&|$)/.test(search)) return;
+    var kept = [];
+    search
+      .replace(/^\?/, "")
+      .split("&")
+      .forEach(function (part) {
+        var name = part.split("=")[0];
+        var value = part.slice(name.length + 1);
+        if (name === "qr") cameBy = "qr";
+        else if (name === "me") {
+          mine = value !== "off";
+          remember("statsMine", mine ? "1" : null);
+        } else if (part) kept.push(part);
+      });
+    try {
+      window.history.replaceState(null, "", window.location.pathname + (kept.length ? "?" + kept.join("&") : "") + (window.location.hash || ""));
+    } catch (error) {
+      // the address stays as it is
+    }
+  })();
+  if (!cameBy) {
+    try {
+      cameBy = document.referrer ? new URL(document.referrer).hostname : "";
+    } catch (error) {
+      cameBy = "";
+    }
+  }
 
   function send(what) {
     if (!counting) return;
@@ -831,20 +886,48 @@
     }
   }
 
+  // The owner's own browsers send only their visits, marked as theirs.
   function count(name) {
-    send({ kind: "press", name: name });
+    if (!mine) send({ kind: "press", name: name });
   }
 
-  function countVisit() {
+  function daysBetween(earlier, later) {
+    var from = Date.UTC(Number(earlier.slice(0, 4)), Number(earlier.slice(5, 7)) - 1, Number(earlier.slice(8, 10)));
+    var to = Date.UTC(Number(later.slice(0, 4)), Number(later.slice(5, 7)) - 1, Number(later.slice(8, 10)));
+    var days = Math.round((to - from) / 86400000);
+    return days >= 0 && days <= 36500 ? days : null;
+  }
+
+  // `again` is true for a look at a tab that was left open.
+  function countVisit(again) {
     var today = parkNow().date;
-    var last = null;
-    try {
-      last = window.localStorage.getItem("lastVisit");
-      window.localStorage.setItem("lastVisit", today);
-    } catch (error) {
-      // Nowhere to remember the date, so this device counts as new.
-    }
-    send({ kind: "visit", newToday: last !== today, newThisMonth: !last || last.slice(0, 7) !== today.slice(0, 7), firstEver: !last });
+    var last = remembered("lastVisit");
+    if (last && !/^\d{4}-\d\d-\d\d$/.test(last)) last = null;
+    var nth = Math.min(1000000, (parseInt(remembered("visits"), 10) || 0) + 1);
+    remember("lastVisit", today);
+    remember("visits", String(nth));
+    // If nothing could be remembered, this device counts as new, and says nothing about earlier visits.
+    var stored = remembered("lastVisit") === today;
+    send({
+      kind: "visit",
+      newToday: last !== today,
+      newThisMonth: !last || last.slice(0, 7) !== today.slice(0, 7),
+      firstEver: !last,
+      since: last ? daysBetween(last, today) : null,
+      nth: stored ? nth : null,
+      source: again ? "" : cameBy,
+      again: !!again,
+      touch: (navigator.maxTouchPoints || 0) > 0,
+      mine: mine
+    });
+  }
+
+  // How long each look at the page lasted, sent as the page goes out of sight.
+  var shownAt = Date.now();
+  function countStay() {
+    if (!shownAt || mine) return;
+    send({ kind: "stay", seconds: Math.round((Date.now() - shownAt) / 1000) });
+    shownAt = 0;
   }
 
   // The part of the page a button or link is in, and what it is: "buttons:t.me", "share:copy", "how:open".
@@ -875,13 +958,19 @@
   }
 
   if (counting && document.addEventListener) {
-    countVisit();
+    countVisit(false);
     // Looking at the page again after half an hour away counts as another visit.
     var hiddenAt = 0;
     document.addEventListener("visibilitychange", function () {
-      if (document.hidden) hiddenAt = Date.now();
-      else if (hiddenAt && Date.now() - hiddenAt >= 30 * 60 * 1000) countVisit();
+      if (document.hidden) {
+        hiddenAt = Date.now();
+        countStay();
+      } else {
+        if (hiddenAt && Date.now() - hiddenAt >= 30 * 60 * 1000) countVisit(true);
+        shownAt = Date.now();
+      }
     });
+    if (window.addEventListener) window.addEventListener("pagehide", countStay);
     // Caught on the way down, before anything else sees the press.
     document.addEventListener(
       "click",

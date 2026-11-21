@@ -9,6 +9,10 @@ It writes assets/qr.svg (for the page), assets/qr.png (handy
 for sharing in a chat) and assets/qr-url.txt (the address the code holds, so
 the tests can tell when the code is out of date). The daily job only copies
 these files; it never needs segno.
+
+The code holds the page's address with "?qr" after it, so that the stats page
+can tell a visit through the code from others. The page takes the marker out
+of the address again as it opens, so a link copied from it does not carry it.
 """
 
 from __future__ import annotations
@@ -34,6 +38,6 @@ def make(url: str, assets: Path) -> None:
 
 
 if __name__ == "__main__":
-    address = config_module.load(ROOT / "config.toml").site_url
+    address = config_module.load(ROOT / "config.toml").site_url + "?qr"
     make(address, ROOT / "assets")
     print(f"QR code written for {address}")

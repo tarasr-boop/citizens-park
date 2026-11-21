@@ -455,20 +455,42 @@ test("from the tap on the page to the afternoon's notification", async () => {
   assert.equal(net.pushes.length, 6);
 });
 
+const PHONE_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1";
+
 test("the page counts a visit and a press, the way a browser sends them as it leaves", async () => {
   const cf = cloudflare();
   // A beacon is sent as plain text, so the browser asks nothing beforehand.
-  const headers = { "Content-Type": "text/plain;charset=UTF-8" };
-  const visit = await ask(cf, "POST", "/hit", { headers, body: JSON.stringify({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true }) });
+  const headers = { "Content-Type": "text/plain;charset=UTF-8", "User-Agent": PHONE_AGENT };
+  const visit = await ask(cf, "POST", "/hit", { headers, body: JSON.stringify({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true, nth: 1 }) });
   assert.equal(visit.status, 204);
   assert.equal(await visit.text(), "");
   assert.equal(visit.headers.get("Access-Control-Allow-Origin"), PAGE);
   const press = await ask(cf, "POST", "/hit", { headers, body: JSON.stringify({ kind: "press", name: "buttons:t.me" }) });
   assert.equal(press.status, 204);
-  assert.deepEqual(cf.statsStorage.kept.get(`day:${TODAY}`), { visits: 1, devices: 1, monthly: 1, fresh: 1, presses: { "buttons:t.me": 1 }, counted: 2 });
+  const today = cf.statsStorage.kept.get(`day:${TODAY}`);
+  assert.deepEqual([today.visits, today.devices, today.fresh, today.robots, today.counted], [1, 1, 1, 0, 2]);
+  assert.deepEqual(today.presses, { "buttons:t.me": 1 });
+  assert.deepEqual(today.systems, { iPhone: 1 });
   // One counter for everyone, near the people it serves, and the book of devices is not woken for it.
   assert.deepEqual(cf.statsAsked[0], { id: { name: "all" }, options: { locationHint: "oc" } });
   assert.equal(cf.asked.length, 0);
+});
+
+test("the counter is told the rough place and network Cloudflare found, and never the address", async () => {
+  const cf = cloudflare();
+  const request = new Request(BACKEND + "/hit", {
+    method: "POST",
+    headers: { Origin: PAGE, "User-Agent": PHONE_AGENT, "CF-Connecting-IP": "203.0.113.7", "Content-Type": "text/plain" },
+    body: JSON.stringify({ kind: "visit", newToday: true, newThisMonth: true, firstEver: true }),
+  });
+  // What Cloudflare puts on a request it hands to the worker.
+  Object.defineProperty(request, "cf", { value: { city: "Richmond", region: "Victoria", regionCode: "VIC", country: "AU", asOrganization: "Telstra Limited", asn: 1221, latitude: "-37.8", postalCode: "3121" } });
+  assert.equal((await worker.fetch(request, cf.env)).status, 204);
+  const today = cf.statsStorage.kept.get(`day:${TODAY}`);
+  assert.deepEqual(today.places, { "Richmond, Victoria": 1 });
+  assert.deepEqual(today.networks, { "Telstra Limited": 1 });
+  const kept = JSON.stringify([...cf.statsStorage.kept.values()]);
+  for (const secret of ["203.0.113.7", "-37.8", "3121", "1221"]) assert.equal(kept.includes(secret), false, secret);
 });
 
 test("only the page may count, and only what it sends is counted", async () => {
@@ -486,7 +508,7 @@ test("only the page may count, and only what it sends is counted", async () => {
 
 test("anyone may open the stats page, which runs no script and shows counts only", async () => {
   const cf = cloudflare();
-  await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true } });
+  await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true }, headers: { "User-Agent": PHONE_AGENT } });
   const page = await ask(cf, "GET", "/stats", { origin: null });
   assert.equal(page.status, 200);
   assert.equal(page.headers.get("Content-Type"), "text/html; charset=utf-8");
@@ -494,7 +516,10 @@ test("anyone may open the stats page, which runs no script and shows counts only
   assert.match(page.headers.get("Content-Security-Policy"), /^default-src 'none';.*frame-ancestors 'none'/);
   const html = await page.text();
   assert.match(html, /<strong>November 2026<\/strong>/);
-  assert.match(html, /Fri 20 <span class="muted">today<\/span><\/td><td>1</);
+  assert.match(html, /Fri 20<\/a> ·<\/td><td>1</);
+
+  const day = await (await ask(cf, "GET", "/stats?day=2026-11-20", { origin: null })).text();
+  assert.match(day, /<strong>Fri 20 November 2026<\/strong>/);
 
   const october = await (await ask(cf, "GET", "/stats?month=2026-10", { origin: null })).text();
   assert.match(october, /<strong>October 2026<\/strong>/);

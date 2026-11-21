@@ -6,9 +6,11 @@
 // The scenario says where the page is opened ("origin"), what this device
 // remembers ("stored"), whether storage works ("noStorage"), whether a
 // program steers the browser ("webdriver"), whether beacons work ("noBeacon"),
-// what is pressed ("presses", each a list of the elements from the pressed one
-// outwards, see ELEMENTS) and whether the page is looked at again after a
-// while away ("awayMinutes").
+// what is pressed ("presses", see ELEMENTS), whether the page is looked at
+// again after a while away ("awayMinutes"), the address it is opened at
+// ("search"), the page it was reached from ("referrer"), whether the screen
+// is a touch screen ("touch"), and how long it stays in sight before it is
+// left ("leaveAfterSeconds").
 "use strict";
 
 const fs = require("fs");
@@ -66,7 +68,8 @@ const ELEMENTS = {
   plain: () => chain([element("p"), element("main")]),
 };
 
-const listeners = { click: [], visibilitychange: [] };
+const listeners = { click: [], visibilitychange: [], pagehide: [] };
+const replaced = [];
 const app = { innerHTML: "", addEventListener() {} };
 const elements = { app, "park-data": { textContent: fs.readFileSync(dataPath, "utf8") } };
 
@@ -85,6 +88,9 @@ const localStorage = scenario.noStorage
       setItem(key, value) {
         stored[key] = String(value);
       },
+      removeItem(key) {
+        delete stored[key];
+      },
     };
 
 let clock = Date.parse(scenario.now || "2026-11-20T04:45:00Z");
@@ -98,7 +104,11 @@ class FixedDate extends Date {
   }
 }
 
-const navigator = { userAgent: "Mozilla/5.0 (Linux; Android 16; Pixel 9) Chrome/142.0 Mobile Safari/537.36", webdriver: Boolean(scenario.webdriver) };
+const navigator = {
+  userAgent: "Mozilla/5.0 (Linux; Android 16; Pixel 9) Chrome/142.0 Mobile Safari/537.36",
+  webdriver: Boolean(scenario.webdriver),
+  maxTouchPoints: scenario.touch ? 5 : 0,
+};
 if (!scenario.noBeacon) {
   navigator.sendBeacon = (address, text) => {
     sent.push({ how: "beacon", address, body: JSON.parse(text) });
@@ -109,6 +119,7 @@ if (!scenario.noBeacon) {
 const document = {
   hidden: false,
   title: "",
+  referrer: scenario.referrer || "",
   getElementById: (id) => elements[id] || null,
   addEventListener(type, handler, capture) {
     if (type in listeners) listeners[type].push({ handler, capture: Boolean(capture) });
@@ -117,7 +128,24 @@ const document = {
 
 const page = {
   document,
-  window: { location: { search: "", href: (scenario.origin || "https://citizensbark.example") + "/", origin: scenario.origin || "https://citizensbark.example" }, localStorage },
+  window: {
+    location: {
+      search: scenario.search || "",
+      pathname: "/",
+      hash: "",
+      href: (scenario.origin || "https://citizensbark.example") + "/" + (scenario.search || ""),
+      origin: scenario.origin || "https://citizensbark.example",
+    },
+    localStorage,
+    history: {
+      replaceState(state, title, address) {
+        replaced.push(address);
+      },
+    },
+    addEventListener(type, handler) {
+      if (type in listeners) listeners[type].push({ handler, capture: false });
+    },
+  },
   navigator,
   URL,
   Date: FixedDate,
@@ -144,6 +172,14 @@ if (scenario.awayMinutes !== undefined) {
   for (const { handler } of listeners.visibilitychange) handler();
 }
 
+if (scenario.leaveAfterSeconds !== undefined) {
+  clock += scenario.leaveAfterSeconds * 1000;
+  // Going out of sight, then leaving: the look is sent once.
+  document.hidden = true;
+  for (const { handler } of listeners.visibilitychange) handler();
+  for (const { handler } of listeners.pagehide) handler();
+}
+
 process.stdout.write(
-  JSON.stringify({ sent, stored, clickCaught: listeners.click.filter((one) => one.capture).length })
+  JSON.stringify({ sent, stored, replaced, clickCaught: listeners.click.filter((one) => one.capture).length })
 );
