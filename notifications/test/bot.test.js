@@ -5,10 +5,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BATCH, Bot, MOST_CHATS, STALE_HOURS } from "../src/bot.js";
+import { BATCH, Bot, CAPTION_MOST, MOST_CHATS, STALE_HOURS } from "../src/bot.js";
 import { BUTTONS, FULL, buttonOf, earlierDescriptions, intentOf } from "../src/botwords.js";
 import { settingsFrom } from "../src/rules.js";
-import { BOT, BOT_NAME, BOT_TOKEN, ENV, TELEGRAM, at, clock, memorySql, memoryStorage, runAlarms, world } from "./standins.js";
+import { BOT, BOT_NAME, BOT_TOKEN, ENV, SITE, TELEGRAM, at, clock, memorySql, memoryStorage, runAlarms, world } from "./standins.js";
 
 const settings = settingsFrom({ ...ENV, ...BOT });
 const MONDAY = "2026-11-23";
@@ -516,7 +516,7 @@ test("at each hour, everyone who chose it gets the words written for that hour",
   const status = await it.bot.status();
   assert.deepEqual(
     { ...status.last, startedAt: 0, finishedAt: 0 },
-    { date: MONDAY, hour: 16, about: MONDAY, kind: "weekday", how: "finished", startedAt: 0, finishedAt: 0, sent: 2, gone: 0, failed: 0 }
+    { date: MONDAY, hour: 16, about: MONDAY, kind: "weekday", how: "finished", startedAt: 0, finishedAt: 0, sent: 2, pictured: 0, gone: 0, failed: 0 }
   );
   assert.equal(status.chats, 6);
   assert.equal(status.paused, 1);
@@ -649,6 +649,117 @@ test("words that are old say so, and missing words send nothing", async () => {
   assert.equal((await none.bot.tick()).did, "started");
   await runAlarms(none.bot, none.storage, none.time);
   assert.equal(none.net.said.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// The picture with the alert
+// ---------------------------------------------------------------------------
+
+const PICTURE = "alerts/0123456789abcdef.png";
+
+/** The words of `alertWords`, with a picture for every hour. */
+function pictured(date, made = "06:17", image = PICTURE) {
+  const words = alertWords(date, made);
+  return { ...words, alerts: words.alerts.map((entry) => ({ ...entry, image })) };
+}
+
+test("the alert goes as the day's picture, with the words under it, fetched from the page only once", async () => {
+  const it = open({ start: at(MONDAY, "16:00"), words: pictured(MONDAY) });
+  await ready(it);
+  chats(it, [
+    [11, 16, 8],
+    [12, 16, 8],
+    [13, 16, 8],
+  ]);
+  // Yesterday's alert is still in the first chat.
+  it.sql.exec("UPDATE chats SET alert = 555 WHERE id = 11");
+  await it.bot.tick();
+  await runAlarms(it.bot, it.storage, it.time);
+  assert.equal(it.net.said.length, 0);
+  assert.deepEqual(
+    it.net.pictures.map((one) => [one.chat_id, one.photo]),
+    [
+      [11, `${SITE}${PICTURE}`],
+      [12, "telegram-picture-1"],
+      [13, "telegram-picture-1"],
+    ]
+  );
+  const first = it.net.pictures[0];
+  assert.equal(first.caption, `🐕 <b>Citizens Park oval</b>\n\nThe words for 16:00 about ${MONDAY}`);
+  assert.equal(first.parse_mode, "HTML");
+  // The picture takes the place of yesterday's alert, like the words did.
+  assert.deepEqual(it.net.bot.filter((call) => call.method === "deleteMessage").map((call) => call.body), [{ chat_id: 11, message_id: 555 }]);
+  assert.ok(it.sql.chats().find((chat) => chat.id === 11).alert > 1000);
+  const last = (await it.bot.status()).last;
+  assert.deepEqual([last.sent, last.pictured, last.gone, last.failed], [3, 3, 0, 0]);
+  assert.match(it.lines.at(-1), /3 sent \(3 with the picture\)/);
+});
+
+test("if Telegram cannot take the picture, the words go alone, to that chat and the rest", async () => {
+  const it = open({
+    start: at(MONDAY, "16:00"),
+    words: pictured(MONDAY),
+    telegram: (call) => {
+      if (call.method !== "sendPhoto") return null;
+      // Someone who blocked the bot is gone, as with the words alone. It says nothing about the picture.
+      if (call.body.chat_id === 11) return { status: 400, description: "Bad Request: chat not found" };
+      return { status: 400, description: "Bad Request: failed to get HTTP URL content" };
+    },
+  });
+  await ready(it);
+  chats(it, [
+    [11, 16, 8],
+    [12, 16, 8],
+    [13, 16, 8],
+  ]);
+  await it.bot.tick();
+  await runAlarms(it.bot, it.storage, it.time);
+  assert.deepEqual(it.net.pictures.map((one) => one.chat_id), [11, 12]);
+  assert.deepEqual(sentTo(it), [12, 13]);
+  assert.equal(it.net.said[0].text, `🐕 <b>Citizens Park oval</b>\n\nThe words for 16:00 about ${MONDAY}`);
+  const last = (await it.bot.status()).last;
+  assert.deepEqual([last.sent, last.pictured, last.gone, last.failed], [2, 0, 1, 0]);
+  assert.ok(it.lines.some((line) => line === "the picture for the 4 PM alerts could not be sent (Bad Request: failed to get HTTP URL content), so they go without it"));
+});
+
+test("only a picture the daily check made is sent, and words too long to go under a picture go alone", async () => {
+  for (const image of ["https://elsewhere.example/alerts/0123456789abcdef.png", "alerts/../secret.png", "alerts/0123456789ABCDEF.png", 7]) {
+    const it = open({ start: at(MONDAY, "16:00"), words: pictured(MONDAY, "06:17", image) });
+    await ready(it);
+    chats(it, [[11, 16, 8]]);
+    await it.bot.tick();
+    await runAlarms(it.bot, it.storage, it.time);
+    assert.equal(it.net.pictures.length, 0, String(image));
+    assert.equal(it.net.said.length, 1, String(image));
+  }
+
+  // Telegram counts the words under a picture without their markup.
+  const heading = "🐕 <b>Citizens Park oval</b>\n\n";
+  const fits = heading + "&amp;".repeat(10) + "a".repeat(CAPTION_MOST - "🐕 Citizens Park oval\n\n".length - 10);
+  const tooLong = fits + "!";
+  for (const [text, asPicture] of [
+    [fits, true],
+    [tooLong, false],
+  ]) {
+    const words = pictured(MONDAY);
+    words.alerts = words.alerts.map((entry) => ({ ...entry, text }));
+    const it = open({ start: at(MONDAY, "16:00"), words });
+    await ready(it);
+    chats(it, [[11, 16, 8]]);
+    await it.bot.tick();
+    await runAlarms(it.bot, it.storage, it.time);
+    assert.equal(it.net.pictures.length, asPicture ? 1 : 0);
+    assert.equal(it.net.said.length, asPicture ? 0 : 1);
+  }
+});
+
+test("old words under a picture say so too", async () => {
+  const it = open({ start: at(MONDAY, "16:00"), words: { ...pictured(MONDAY), generated: "2026-11-22T19:47+11:00", generatedText: "Sun 22 Nov, 7:47 PM" } });
+  await ready(it);
+  chats(it, [[11, 16, 8]]);
+  await it.bot.tick();
+  await runAlarms(it.bot, it.storage, it.time);
+  assert.match(it.net.pictures[0].caption, /\n\n⚠️ The page has not been updated since Sun 22 Nov, 7:47 PM, so this may be out of date\.$/);
 });
 
 test("a sending that never finishes is given up, and the next hour goes ahead", async () => {

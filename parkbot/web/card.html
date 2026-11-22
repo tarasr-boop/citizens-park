@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alert picture</title>
+<!-- The picture the Telegram bot sends with its alert: the page's own answer
+     and timeline, drawn by the page's own script and style (see picture.py).
+     Only the daily check opens this, in a browser without a window. -->
+<style>
+{{css}}
+
+@font-face {
+  font-family: "Card Inter";
+  font-weight: 100 900;
+  font-display: block;
+  src: url(data:font/woff2;base64,{{font}}) format("woff2");
+}
+
+/* The same words as on the page, in a font that is the same on every computer
+   the picture is drawn on. */
+body { font-family: "Card Inter", system-ui, sans-serif; }
+.wrap { max-width: none; padding: {{margin}}px; }
+#app > :first-child { margin-top: 0; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div id="app"></div>
+</main>
+<script id="park-data" type="application/json">{{data}}</script>
+<script>
+{{js}}
+</script>
+</body>
+</html>

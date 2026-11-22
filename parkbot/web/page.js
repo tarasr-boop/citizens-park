@@ -179,16 +179,22 @@
     return '<p class="source-row" data-sure="' + from.sure + '">' + words + "</p>";
   }
 
-  function heroHtml(day, now) {
+  // In a picture (see "A picture of the day" below) nothing can be pressed and
+  // the reader knows the rule, so the source is named only when it is a
+  // warning, in plain words.
+  function heroHtml(day, now, picture) {
     var found = answer(day, now.minute);
+    var from = source(day);
     return (
       '<section class="hero" data-state="' + found.state + '">' +
       '<p class="kicker">' + esc(checkedText(now) || day.name) + "</p>" +
       "<h1>" + esc(found.title) + "</h1>" +
       (found.sub ? '<p class="sub">' + esc(found.sub) + "</p>" : "") +
-      (found.rule ? '<p class="rule">' + esc(found.rule) + "</p>" : "") +
-      sourceHtml(day) +
-      (day.why ? '<p class="why">' + esc(day.why) + "</p>" : "") +
+      (picture
+        ? (from && from.sure === "no" ? '<p class="source-row" data-sure="no">' + esc(from.text) + "</p>" : "")
+        : (found.rule ? '<p class="rule">' + esc(found.rule) + "</p>" : "") +
+          sourceHtml(day) +
+          (day.why ? '<p class="why">' + esc(day.why) + "</p>" : "")) +
       "</section>"
     );
   }
@@ -300,8 +306,12 @@
     return mm >= 9.95 ? String(Math.round(mm)) : mm.toFixed(1);
   }
 
+  // The rain: a sentence, then the millimetres for each hour. In a picture
+  // ("live" false) only the chart, as the alert says the rest in words, and
+  // nothing at all for a dry day. A minute of -1 is a day still to come.
   function rainHtml(day, minute, live) {
     if (!day.hours) {
+      if (!live) return "";
       var total = day.rain ? day.rain.mm : null;
       if (total === null || total === undefined) return "";
       var words = total < 0.05 ? "No rain expected today." : "Rain today: " + (total < 0.75 ? "under 1" : "about " + Math.round(total)) + NBSP + "mm.";
@@ -330,7 +340,7 @@
           var title = clock(hour[0] * 60) + ": " + mmText(mm) + " mm" + (hour[1] === null ? "" : ", " + hour[1] + "% chance");
           return (
             '<span style="left:' + left.toFixed(2) + "%;width:" + width.toFixed(2) + "%;height:" + Math.max(5, (mm / full) * 100).toFixed(1) + '%"' +
-            ' title="' + esc(title) + '"' + (live && hour[0] < nowHour ? ' data-past="yes"' : "") + ">" +
+            ' title="' + esc(title) + '"' + (hour[0] < nowHour ? ' data-past="yes"' : "") + ">" +
             "<b>" + mmText(mm) + "</b></span>"
           );
         })
@@ -340,6 +350,7 @@
         '<div class="rain-chart" role="img" aria-label="' + esc(label) + '"><div class="rain-plot">' + bars + "</div></div>" +
         '<div class="ticks" aria-hidden="true">' + ticksHtml() + "</div>";
     }
+    if (!live && !most) return "";
     var caption = [];
     if (most) caption.push("Rain each hour, in millimetres.");
     if (data.rainFrom) caption.push("Forecast from " + data.rainFrom + ".");
@@ -352,13 +363,15 @@
     );
   }
 
-  function todayHtml(day, now) {
+  // Today's timeline, with a line at "now". Without "now" it is a day still to
+  // come, drawn whole for a picture: no line, and no hour of rain that has passed.
+  function todayHtml(day, now, picture) {
     var sure = day.basis === "council" ? "yes" : "no";
     var known = day.basis === "none" ? "no" : "yes";
-    var inDay = now.minute >= data.dayStart && now.minute <= dayEnd();
+    var inDay = now && now.minute >= data.dayStart && now.minute <= dayEnd();
     return (
       '<section class="card">' +
-      "<h2>Today <span>" + esc(day.name) + "</span></h2>" +
+      "<h2>" + (now ? "Today" : "Tomorrow") + " <span>" + esc(day.name) + "</span></h2>" +
       '<div class="timeline">' +
       '<div class="bar-wrap"><div class="bar" data-sure="' + sure + '" data-known="' + known + '">' + segments(day) + hourLinesHtml() + "</div>" +
       (inDay ? '<span class="now-line" style="left:' + percent(now.minute).toFixed(2) + '%" title="Now"></span>' : "") +
@@ -366,7 +379,7 @@
       '<div class="ticks" aria-hidden="true">' + ticksHtml() + "</div>" +
       "</div>" +
       '<ul class="times">' + timesHtml(day) + "</ul>" +
-      rainHtml(day, now.minute, true) +
+      rainHtml(day, now ? now.minute : -1, !picture) +
       "</section>"
     );
   }
@@ -423,6 +436,30 @@
     );
   }
 
+  // ---- A picture of the day, for the chat bot's alerts ----
+  //
+  // With "card=" and a date in the address, the script draws only the answer
+  // and that day's timeline, for the daily check to photograph (picture.py):
+  // the bot sends the picture with its alert. "now=" is the time the alert is
+  // written for. A date after it is the next day, for an alert sent the
+  // evening before: that picture is the day's timeline alone, as there is no
+  // "now" in it for the answer at the top to speak of.
+
+  function cardDate() {
+    var found = /[?&]card=(\d{4}-\d\d-\d\d)/.exec(window.location.search);
+    return found ? found[1] : "";
+  }
+
+  function cardHtml(date, now) {
+    var day = null;
+    data.days.forEach(function (one) {
+      if (one.date === date) day = one;
+    });
+    if (!day) return "";
+    if (date === now.date) return heroHtml(day, now, true) + todayHtml(day, now, true);
+    return dayBefore(date) === now.date ? todayHtml(day, null, true) : "";
+  }
+
   // ---- Putting it together ----
 
   function staleHtml() {
@@ -437,8 +474,11 @@
     data.days.forEach(function (day, i) {
       if (day.date === now.date) index = i;
     });
-    var html = staleHtml();
-    if (index === -1) {
+    var card = cardDate();
+    var html = card ? cardHtml(card, now) : staleHtml();
+    if (card) {
+      // Only the picture is drawn.
+    } else if (index === -1) {
       html +=
         '<section class="hero" data-state="unknown"><p class="kicker">' + esc(checkedText(now) || clock(now.minute)) + "</p>" +
         "<h1>No information for today</h1>" +

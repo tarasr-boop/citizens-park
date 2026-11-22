@@ -16,8 +16,10 @@
 // there. No name, no user name, nothing they wrote.
 //
 // The alert itself is written by the daily check, which publishes the words
-// for every hour in telegram.json next to the page. At each hour this sends
-// the words written for that hour to everyone who chose it.
+// for every hour in telegram.json next to the page, each with a picture of the
+// day's timeline and rain. At each hour this sends the picture, with the words
+// written for that hour under it, to everyone who chose it. Without a picture,
+// or if Telegram cannot take it, the words go alone.
 //
 // Telegram brings what people write to the bot to this backend ("webhook").
 // The bot sets that up by itself once it has its token, with a password it
@@ -37,13 +39,19 @@ const TELEGRAM = "https://api.telegram.org";
 // More chats than this are not taken on.
 export const MOST_CHATS = 5000;
 // How many alerts go out in one round. Each takes two requests to Telegram
-// (the alert, and taking away the last one), Telegram takes about 30 messages
-// a second from a bot, and Cloudflare's free plan allows 50 outgoing requests
+// (the alert, and taking away the last one), plus one in a round where the
+// picture fails and the words go alone. Telegram takes about 30 messages a
+// second from a bot, and Cloudflare's free plan allows 50 outgoing requests
 // each time this code is woken.
 export const BATCH = 20;
 const PAUSE_MS = 1000;
 // Words written longer ago than this carry a warning that they may be out of date.
 export const STALE_HOURS = 18;
+// Telegram takes at most this many letters under a picture, counted without the
+// markup. Longer words go alone, without the picture.
+export const CAPTION_MOST = 1024;
+// What Telegram says when a person has blocked the bot or their account is gone.
+const GONE = /chat not found|deactivated/i;
 // A sending that has not finished after this long is given up.
 const GIVE_UP_MS = 50 * 60 * 1000;
 // Telegram is told where to bring messages once a day, and after a no, every half hour.
@@ -67,6 +75,20 @@ function reply(status, body) {
 function cut(text, most) {
   const letters = Array.from(String(text || ""));
   return letters.length > most ? letters.slice(0, most - 1).join("") + "…" : letters.join("");
+}
+
+/** The words as Telegram counts them under a picture: without the markup, each "&amp;" and the like as one letter. */
+function shownLength(html) {
+  return String(html).replace(/<[^>]*>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "&").length;
+}
+
+/**
+ * The picture that goes with an alert, next to the page: the day's timeline
+ * and rain, drawn by the daily check (parkbot/picture.py). Only a name of the
+ * kind the check makes is taken. Null when there is none.
+ */
+function pictureOf(entry, siteUrl) {
+  return typeof entry.image === "string" && /^alerts\/[0-9a-f]{16}\.png$/.test(entry.image) ? `${siteUrl}${entry.image}` : null;
 }
 
 function escapeHtml(text) {
@@ -500,11 +522,13 @@ export class Bot {
       text += `\n\n⚠️ The page has not been updated${escapeHtml(since)}, so this may be out of date.`;
     }
     if (Array.from(text).length > 4000) return nothing(`the words for ${name} are too long for Telegram`);
+    // The picture, with the words under it. Words too long to go under a picture go alone.
+    const photo = shownLength(text) <= CAPTION_MOST ? pictureOf(entry, this.settings.siteUrl) : null;
 
     const kind = entry.weekend === true ? "weekend" : "weekday";
     await this.storage.put({
       started: key,
-      job: { date: local.date, hour, about: entry.about, kind, text, after: 0, sent: 0, gone: 0, failed: 0, startedAt: now },
+      job: { date: local.date, hour, about: entry.about, kind, text, photo, after: 0, sent: 0, pictured: 0, gone: 0, failed: 0, startedAt: now },
     });
     await this.storage.setAlarm(now);
     this.log(`the ${name} alerts started`);
@@ -527,7 +551,15 @@ export class Bot {
     let wait = PAUSE_MS;
     let slowed = false;
     for (const { id, alert } of chats) {
-      const said = await this.send(id, { text: job.text, parse_mode: "HTML", link_preview_options: { is_disabled: true } });
+      let said = job.photo ? await this.sendPicture(id, job) : null;
+      if (said && !said.ok && said.status === 400 && !GONE.test(said.description)) {
+        // Telegram could not take the picture. The words go alone, to this chat and the rest.
+        this.log(`the picture for the ${words.hourText(job.hour)} alerts could not be sent (${said.description || "no reason given"}), so they go without it`);
+        job.photo = null;
+        job.photoId = null;
+        said = null;
+      }
+      if (!said) said = await this.send(id, { text: job.text, parse_mode: "HTML", link_preview_options: { is_disabled: true } });
       if (said.status === 429) {
         // Too many at once: this chat is tried again after the wait Telegram asks for.
         wait = Math.min(Math.max(said.retryAfter * 1000, PAUSE_MS), 60000);
@@ -539,7 +571,7 @@ export class Bot {
         this.sql.exec("UPDATE chats SET last = ?, alert = ? WHERE id = ?", job.about, Bot.sentId(said), id);
         // The alert before this one is no longer true.
         await this.remove(id, alert);
-      } else if (said.status === 403 || (said.status === 400 && /chat not found|deactivated/i.test(said.description))) {
+      } else if (said.status === 403 || (said.status === 400 && GONE.test(said.description))) {
         // The person blocked the bot, or their account is gone.
         job.gone += 1;
         this.sql.exec("DELETE FROM chats WHERE id = ?", id);
@@ -556,11 +588,39 @@ export class Bot {
     }
   }
 
+  /**
+   * Send the alert as its picture, with the words under it. The first chat
+   * gets the picture from the page. Telegram then has it, and gives it a
+   * number of its own, so the other chats get it by that number, without
+   * Telegram fetching it again.
+   */
+  async sendPicture(id, job) {
+    const said = await this.telegram("sendPhoto", { chat_id: id, photo: job.photoId || job.photo, caption: job.text, parse_mode: "HTML" });
+    const sizes = said.ok && said.result && Array.isArray(said.result.photo) ? said.result.photo : [];
+    const largest = sizes[sizes.length - 1];
+    if (!job.photoId && largest && typeof largest.file_id === "string") job.photoId = largest.file_id;
+    if (said.ok) job.pictured += 1;
+    return said;
+  }
+
   async finish(job, now, how = "finished") {
-    const last = { date: job.date, hour: job.hour, about: job.about, kind: job.kind, how, startedAt: job.startedAt, finishedAt: now, sent: job.sent, gone: job.gone, failed: job.failed };
+    const pictured = job.pictured || 0;
+    const last = {
+      date: job.date,
+      hour: job.hour,
+      about: job.about,
+      kind: job.kind,
+      how,
+      startedAt: job.startedAt,
+      finishedAt: now,
+      sent: job.sent,
+      pictured,
+      gone: job.gone,
+      failed: job.failed,
+    };
     await this.storage.put("last", last);
     await this.storage.delete("job");
-    this.log(`the ${words.hourText(job.hour)} alerts ${how}: ${job.sent} sent, ${job.gone} gone, ${job.failed} failed`);
+    this.log(`the ${words.hourText(job.hour)} alerts ${how}: ${job.sent} sent (${pictured} with the picture), ${job.gone} gone, ${job.failed} failed`);
   }
 
   /** For the status page: numbers only. No chat is named, and the password is never shown. */

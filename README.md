@@ -25,7 +25,7 @@ Based on the hourly forecast, the best window to avoid the rain is 8 to 9 PM.
 Press here for the week ahead and rain by the hour
 ```
 
-The post says when the oval is booked. Dogs can use it at any other time.
+The post says when the oval is booked. Dogs can use it at any other time. The [Telegram bot](#the-telegram-bot) sends these words under a picture of the page's answer and timeline.
 
 On a rainy day the post also names the best window to stay out of the rain. It looks between 5 and 9 PM (`advice_from` and `advice_until` in `config.toml`) and only at times when the oval is not booked. When no rain is forecast for those hours it says nothing, because any time outside the bookings is as good as another.
 
@@ -44,7 +44,7 @@ A scheduled job on GitHub (the **Daily check** workflow) runs about a dozen time
 1. reads the booking table on the [council's Citizens Park page](https://www.yarracity.vic.gov.au/things-to-do/parks-reserves-and-playgrounds/citizens-park)
 2. gets the rain forecast from [Open-Meteo](https://open-meteo.com/)
 3. works out today and the next seven days
-4. rebuilds the web page and publishes it with GitHub Pages
+4. rebuilds the web page, with a picture for each of the Telegram bot's alerts, and publishes it with GitHub Pages
 5. posts to Telegram, once a day: on the first run from half an hour before the alert's time (4 PM on weekdays, 8 AM on weekends)
 6. saves what it learned in the `data/` folder
 
@@ -185,11 +185,13 @@ The chat stays tidy. It holds one message with the person's times ("Your alerts"
 
 The bot writes its own description, the words shown in an empty chat: "When is the Citizens Park oval booked, and is rain on the way? I'll send you an alert at a time you choose." If you write a different one with @BotFather, the bot leaves yours alone.
 
-The alert is what the channel used to post, written for its own time of day. At 8 AM it names every booking of the day, at 4 PM only what is left of it. An alert at 9 PM or later is about the next day, sent the evening before, and its heading says "tomorrow". Whether a person's weekday or weekend time counts follows the day the alert is about: a 9 PM alert on a Friday is about Saturday, so it goes to people whose weekend time is 9 PM.
+The alert is a picture of the top of the page, with the words the channel used to post under it. The picture shows the answer ("Booked until 5 PM") and the day's timeline, with a line at the alert's time and the rain by the hour, as the page looks at that moment, in its dark colours. The words are written for their own time of day. At 8 AM they name every booking of the day, at 4 PM only what is left of it. An alert at 9 PM or later is about the next day, sent the evening before, and its heading says "tomorrow". Its picture is that day's timeline alone, with no answer at the top and no line, as it has no "now" to speak of. Whether a person's weekday or weekend time counts follows the day the alert is about: a 9 PM alert on a Friday is about Saturday, so it goes to people whose weekend time is 9 PM.
 
 How it works:
 
 - Each Daily check writes the alert for every hour people can pick, today and tomorrow, into `telegram.json` next to the page. The bot itself knows nothing about bookings or rain.
+- The same check draws each alert's picture with the page's own script and style, in Google Chrome without a window (GitHub's runners have it), and puts it next to the page in `alerts/`. The words in it are set in Inter, a font that comes with the code (`parkbot/web/card-font.woff2`, free to share under the SIL Open Font License), so a picture looks the same wherever it is drawn. The run's log says how many it drew ("Alert pictures: 27 drawn for 33 of 33 alerts"). If they cannot be drawn, the log has a warning and the alerts go out as words alone, as before.
+- The words go under the picture as its caption, so they still say everything for someone who cannot see the picture well. Telegram takes up to 1,024 letters there. Longer words go alone, without the picture. If Telegram cannot fetch the picture, the alerts of that hour go as words alone.
 - The bot runs on the same backend as the notifications, at <https://alerts.citizensbark.com>. Telegram brings what people write to it there. The backend sets that up by itself, with a password it makes and never shows, so that only Telegram can talk to it.
 - In the first minutes of each hour, the backend sends that hour's words to everyone who picked it, about 25 a second.
 - For each chat it keeps the chat's number, the two times, whether the alerts are paused, the last day it sent an alert about, and the numbers of the bot's own messages there, so it can take them away. No name, no user name, nothing anyone wrote. Someone who blocks the bot is removed at once.
@@ -202,7 +204,7 @@ To see how the bot is doing, open <https://alerts.citizensbark.com> and read `te
 - `on` is `true` once the token has been handed over, and `name` is the bot's link name.
 - `hook` says whether Telegram took the address for messages (`ok`), how many messages are waiting (`pending`), and Telegram's last complaint about delivering them (`error`).
 - `chats` is how many people have the bot, and `paused` how many of them paused it.
-- `look` is what the bot last did, and why. `last` is how the last hour's alerts went: `sent`, `gone` (people who blocked the bot) and `failed`.
+- `look` is what the bot last did, and why. `last` is how the last hour's alerts went: `sent`, `pictured` (how many of those went with the picture), `gone` (people who blocked the bot) and `failed`.
 
 The bot gives itself its name, unless someone gave it a different one with @BotFather. Its link name, @CitizensParkDogsBot, stays as it is.
 
@@ -277,9 +279,10 @@ parkbot/
   weather.py    reads the Open-Meteo forecast and sums up the rain
   message.py    the words of the Telegram posts
   bot.py        the words of the Telegram bot's alerts, for every hour (telegram.json)
+  picture.py    draws the picture that goes with each of those alerts, in a browser without a window
   telegram.py   sends a post through the Bot API
   site.py       builds the web page
-  web/          the page's template, styles and script
+  web/          the page's template, styles and script, and the page the pictures are drawn from (card.html)
   watchdog.py   opens and closes the [watchdog] issues
   store.py      what is remembered between runs (the data/ folder)
 notifications/  the backend that sends notifications to phones (JavaScript, runs on Cloudflare)
@@ -308,7 +311,7 @@ Run the tests:
 python3 -m unittest discover -s tests -t .
 ```
 
-The tests that run the page's script need Node, and the ones for the detour need `openssl`. Without them those tests are skipped. GitHub's runners have both.
+The tests that run the page's script need Node, the ones for the detour need `openssl`, and the ones that draw the bot's pictures need Google Chrome or Chromium (`CHROME` can name it). Without them those tests are skipped. GitHub's runners have all three.
 
 Try a run on your own computer without posting anything:
 
@@ -316,7 +319,7 @@ Try a run on your own computer without posting anything:
 python3 -m parkbot run --post never --data /tmp/park/data --site /tmp/park/site
 ```
 
-Then open `/tmp/park/site/index.html`. Add `--now 2026-11-22T14:45` to pretend it is another time, or `--offline` to skip the web. `python3 -m parkbot run --help` lists every option.
+Then open `/tmp/park/site/index.html`, and the bot's pictures in `/tmp/park/site/alerts/`. Add `--now 2026-11-22T14:45` to pretend it is another time, or `--offline` to skip the web. `python3 -m parkbot run --help` lists every option.
 
 The weather service has more than one server. A run remembers the address of each one that answers (in `data/state.json`), and when the usual one says nothing it asks another by its address. To try that detour on purpose:
 
