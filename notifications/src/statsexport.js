@@ -167,3 +167,147 @@ export function statsExport(days, rows, { zone, siteUrl, now }) {
     visitors,
   };
 }
+
+// The same file as Excel sheets, for a spreadsheet program: one row per
+// month, per day, per visitor and per visit, and the day's lists in one long
+// table that a pivot table can sum.
+const HEADINGS = {
+  visits: "Visits",
+  differentDevices: "Different devices",
+  newThisMonth: "New this month",
+  firstTimeDevices: "First-time devices",
+  returningDevices: "Returning devices",
+  automatedVisits: "Automated visits",
+  ownVisits: "Own visits",
+  presses: "Buttons and links pressed",
+  visitsByHour: "Visits by hour",
+  returningVisitsByHour: "Returning visits by hour",
+  daysSinceLastVisit: "Days since last visit",
+  visitNumber: "Visit number",
+  foundBy: "Found by",
+  timeOnPage: "Time on page",
+  deviceKinds: "Device kinds",
+  systems: "Systems",
+  browsers: "Browsers",
+  places: "Places",
+  networks: "Networks",
+  automatedReasons: "Why automated",
+  automatedNetworks: "Automated networks",
+};
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function sum(list) {
+  return Object.values(list || {}).reduce((total, count) => total + count, 0);
+}
+
+function pressText(presses) {
+  return Object.entries(presses || {})
+    .map(([name, count]) => (count > 1 ? `${name} ×${count}` : name))
+    .join("; ");
+}
+
+/** Sheets for xlsx() from the file statsExport() makes. */
+export function statsSheets(file) {
+  const numbers = NUMBERS.map(([, to]) => to);
+  const lists = LISTS.map(([, to]) => to);
+  const about = [
+    ["About", "Details"],
+    ["What", file.about.what],
+    ["Exported", file.about.exported ? { date: file.about.exported } : null],
+    ["Time zone", `${file.about.timeZone} (every time in this file is local time at the park)`],
+    ["Counting since", file.about.countingSince ? { date: file.about.countingSince } : null],
+    ["Visitors listed since", { date: file.about.visitorsListedSince }],
+    ...file.about.notes.map((note) => ["Note", note]),
+    [null, null],
+    ["Sheet", "What it holds"],
+    ["Months", "Totals for each month. Device-days counts a device once for each day it came."],
+    ["Days", "One row per day."],
+    ["Visitors", "One row per device, latest visit first. Visitors are numbered by when they first came."],
+    ["Visits", "One row per visit by a listed visitor (the latest 100 per visitor are kept)."],
+    ["Breakdowns", "Each day's lists (buttons, hours, how they found the page, devices, places...) as rows of date, list, name and count."],
+    [null, null],
+    ["Field", "Meaning"],
+    ...numbers.map((to) => [HEADINGS[to], file.about.fields.day[to]]),
+    ...lists.map((to) => [HEADINGS[to], file.about.fields.day[to]]),
+    ...Object.entries(file.about.fields.visitor).map(([name, words]) => [`Visitor: ${name}`, words]),
+  ];
+  const months = [
+    ["Month", "Visits", "Device-days", ...numbers.filter((to) => to !== "visits" && to !== "differentDevices").map((to) => HEADINGS[to]), "Presses", "Days with data"],
+    ...file.totals.byMonth.map((one) => [
+      one.month,
+      one.visits,
+      one.deviceDays,
+      ...numbers.filter((to) => to !== "visits" && to !== "differentDevices").map((to) => one[to]),
+      sum(one.presses),
+      one.daysWithData,
+    ]),
+  ];
+  const days = [
+    ["Date", "Weekday", ...numbers.map((to) => HEADINGS[to]), "Presses"],
+    ...file.days.map((one) => [{ date: one.date }, WEEKDAYS[new Date(`${one.date}T00:00:00Z`).getUTCDay()], ...numbers.map((to) => one[to]), sum(one.presses)]),
+  ];
+  const visitors = [
+    [
+      "Visitor",
+      "Group",
+      "First visit",
+      "First came by",
+      "Last visit",
+      "Last came by",
+      "Visits",
+      "Days with visits",
+      "Visit number on device",
+      "Minutes on page",
+      "Looks",
+      "Presses",
+      "What it pressed",
+      "Kind",
+      "System",
+      "Browser",
+      "Place",
+      "Network",
+    ],
+    ...file.visitors.map((one) => [
+      one.visitor,
+      one.group,
+      one.firstVisit ? { date: one.firstVisit } : null,
+      one.firstCameBy,
+      one.lastVisit ? { date: one.lastVisit } : null,
+      one.lastCameBy,
+      one.visits,
+      one.daysWithVisits,
+      one.visitNumberOnDevice,
+      Math.round((one.secondsOnPage / 60) * 10) / 10,
+      one.looks,
+      sum(one.presses),
+      pressText(one.presses),
+      one.kind,
+      one.system,
+      one.browser,
+      one.place,
+      one.network,
+    ]),
+  ];
+  const visits = [["Visitor", "Group", "Visit time", "Date", "Weekday", "Hour"]];
+  for (const one of [...file.visitors].sort((a, b) => a.visitor - b.visitor)) {
+    for (const time of one.visitTimes) {
+      if (!time) continue;
+      const date = time.slice(0, 10);
+      visits.push([one.visitor, one.group, { date: time }, { date }, WEEKDAYS[new Date(`${date}T00:00:00Z`).getUTCDay()], Number(time.slice(11, 13))]);
+    }
+  }
+  const breakdowns = [["Date", "List", "Name", "Count"]];
+  for (const one of file.days) {
+    for (const to of lists) {
+      for (const [name, count] of Object.entries(one[to] || {})) breakdowns.push([{ date: one.date }, HEADINGS[to], name, count]);
+    }
+  }
+  return [
+    { name: "About", rows: about, widths: [26, 110] },
+    { name: "Months", rows: months, widths: [10, 8, 12, 15, 18, 18, 17, 11, 9, 14] },
+    { name: "Days", rows: days, widths: [12, 11, 8, 17, 15, 18, 18, 17, 11, 9] },
+    { name: "Visitors", rows: visitors, widths: [8, 11, 17, 24, 17, 24, 7, 15, 20, 15, 7, 8, 40, 10, 10, 14, 24, 24] },
+    { name: "Visits", rows: visits, widths: [8, 11, 17, 12, 11, 6] },
+    { name: "Breakdowns", rows: breakdowns, widths: [12, 24, 40, 7] },
+  ];
+}

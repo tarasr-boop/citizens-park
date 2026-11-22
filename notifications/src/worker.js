@@ -19,7 +19,8 @@ import { MOST_BYTES, corsHeaders, localTime, settingsFrom } from "./rules.js";
 import { Starter } from "./starter.js";
 import { Counter, MOST_HIT_BYTES } from "./stats.js";
 import { statsPage } from "./statspage.js";
-import { statsExport } from "./statsexport.js";
+import { statsExport, statsSheets } from "./statsexport.js";
+import { xlsx } from "./xlsx.js";
 
 // Cloudflare reads everything this file exports as something it can call: the
 // worker below and the classes for the book, the counter and the bot's chats.
@@ -152,18 +153,21 @@ export class Stats {
       // "visitors" is set by the worker only after the password was given.
       const visitors = address.searchParams.get("visitors");
       const report = await this.counter.report(address.searchParams.get("month"), address.searchParams.get("day"), { visitors: visitors === "1" });
-      return new Response(statsPage(report, this.siteUrl, { locked: visitors !== "off" }), { headers: PAGE_HEADERS });
+      // The worker's signed part of the download links (see downloadLink).
+      const download = /^until=\d{13}&key=[0-9a-f]{64}$/.test(address.searchParams.get("download") || "") ? address.searchParams.get("download") : "";
+      return new Response(statsPage(report, this.siteUrl, { locked: visitors !== "off", download }), { headers: PAGE_HEADERS });
     }
     if (request.method === "GET" && address.pathname === "/export") {
-      // Asked for by the worker only after the password was given.
+      // Asked for by the worker only after the password, or a link made with it, was given.
       const [days, rows] = await Promise.all([this.counter.allDays(), this.counter.allRows()]);
       const now = Date.now();
       const file = statsExport(days, rows, { zone: this.zone, siteUrl: this.siteUrl, now });
-      const date = localTime(now, this.zone).date;
-      return new Response(JSON.stringify(file, null, 1), {
+      const name = `citizens-bark-stats-${localTime(now, this.zone).date}`;
+      const excel = address.searchParams.get("format") === "xlsx";
+      return new Response(excel ? xlsx(statsSheets(file)) : JSON.stringify(file, null, 1), {
         headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "Content-Disposition": `attachment; filename="citizens-bark-stats-${date}.json"`,
+          "Content-Type": excel ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${name}.${excel ? "xlsx" : "json"}"`,
           "Cache-Control": "no-store",
           "X-Content-Type-Options": "nosniff",
           "Referrer-Policy": "no-referrer",
@@ -232,6 +236,44 @@ async function rightPassword(request, password) {
   return difference === 0;
 }
 
+// How long a download link from the stats page keeps working.
+const DOWNLOAD_HOURS = 12;
+
+/** The key for a download link that works until `until` (milliseconds), made with the stats password. */
+async function downloadKey(password, until) {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(String(password)), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signed = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(`stats download until ${until}`)));
+  return [...signed].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * The part of a download address that lets the signed-in page's buttons work
+ * without the browser asking for the password again: some browsers (Safari
+ * among them) do not send the password with a download. It works for
+ * DOWNLOAD_HOURS and only for the files, and changing the password ends it.
+ */
+async function downloadLink(password, now) {
+  const until = now + DOWNLOAD_HOURS * 60 * 60 * 1000;
+  return `until=${until}&key=${await downloadKey(password, until)}`;
+}
+
+async function rightLink(address, password, now) {
+  const until = address.searchParams.get("until") || "";
+  const key = address.searchParams.get("key") || "";
+  if (!/^\d{13}$/.test(until) || !/^[0-9a-f]{64}$/.test(key)) return false;
+  if (Number(until) <= now || Number(until) > now + DOWNLOAD_HOURS * 60 * 60 * 1000) return false;
+  const encoder = new TextEncoder();
+  const a = encoder.encode(await downloadKey(password, Number(until)));
+  const b = encoder.encode(key);
+  if (crypto.subtle.timingSafeEqual) return crypto.subtle.timingSafeEqual(a, b);
+  let difference = 0;
+  for (let index = 0; index < a.length; index += 1) difference |= a[index] ^ b[index];
+  return difference === 0;
+}
+
+const DOWNLOADS = { "/stats/export": "json", "/stats/export.json": "json", "/stats/export.xlsx": "xlsx" };
+
 function counter(env) {
   return env.STATS.get(env.STATS.idFromName("all"), { locationHint: "oc" });
 }
@@ -242,32 +284,42 @@ function counter(env) {
  * never reads the answer. GET /stats is the stats page (?month=2026-11 for a
  * month, ?day=2026-11-21 for a day). With the secret STATS_PASSWORD set, it
  * asks for that password and also lists the visitors. Without it, it is open
- * to anyone, like /status, and shows counts only. GET /stats/export is
- * everything kept, as one file to download, and only behind the password.
+ * to anyone, like /status, and shows counts only. GET /stats/export.xlsx and
+ * /stats/export.json are everything kept, as one file to download, only
+ * behind the password or a download link from the signed-in page.
  */
+function signIn() {
+  return new Response("This page needs the stats password.\n", {
+    status: 401,
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "WWW-Authenticate": 'Basic realm="Citizens Bark stats", charset="UTF-8"' },
+  });
+}
+
 async function stats(request, env, settings, origin, cors) {
   const address = new URL(request.url);
   try {
     if (request.method === "GET") {
+      const password = env.STATS_PASSWORD;
+      const format = DOWNLOADS[address.pathname];
+      if (format) {
+        // The files hold every visitor, so they are there only behind the
+        // password: given to the browser, or in a link the signed-in page made.
+        if (!password) return new Response("The download needs the stats password to be set (see the README).\n", { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+        if (!(await rightLink(address, password, Date.now())) && !(await rightPassword(request, password))) return signIn();
+        const file = await counter(env).fetch(`https://stats/export?format=${format}`);
+        return new Response(file.body, { status: file.status, headers: file.headers });
+      }
       // With a password set, the whole page asks for it. Without one, it
       // shows counts only, and never the list of visitors.
       let visitors = "off";
-      if (env.STATS_PASSWORD) {
-        if (!(await rightPassword(request, env.STATS_PASSWORD))) {
-          return new Response("This page needs the stats password.\n", {
-            status: 401,
-            headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "WWW-Authenticate": 'Basic realm="Citizens Bark stats", charset="UTF-8"' },
-          });
-        }
+      let download = "";
+      if (password) {
+        if (!(await rightPassword(request, password))) return signIn();
         visitors = "1";
-      }
-      if (address.pathname === "/stats/export") {
-        // The file holds every visitor, so it is there only behind the password.
-        if (visitors !== "1") return new Response("The export needs the stats password to be set (see the README).\n", { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
-        const file = await counter(env).fetch("https://stats/export");
-        return new Response(file.body, { status: file.status, headers: file.headers });
+        download = await downloadLink(password, Date.now());
       }
       const asked = new URLSearchParams({ visitors });
+      if (download) asked.set("download", download);
       for (const name of ["month", "day"]) {
         const value = address.searchParams.get(name);
         if (value) asked.set(name, value.slice(0, 20));
@@ -390,7 +442,7 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 
     const asked = `${request.method} ${new URL(request.url).pathname}`;
-    if (asked === "POST /hit" || asked === "GET /stats" || asked === "GET /stats/export") return stats(request, env, settings, origin, cors);
+    if (asked === "POST /hit" || asked === "GET /stats" || (asked.startsWith("GET ") && asked.slice(4) in DOWNLOADS)) return stats(request, env, settings, origin, cors);
     const path = ROUTES[asked];
     if (!path) return json(404, { ok: false, reason: "unknown" }, cors);
 

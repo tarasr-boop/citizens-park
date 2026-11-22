@@ -564,7 +564,7 @@ test("with a password set, the stats page asks for it and only then lists the vi
   assert.equal((await ask(cf, "GET", "/stats?visitors=1", { origin: null })).status, 401);
 });
 
-test("behind the password, the page offers one file with every day and every visitor, ready for Claude", async () => {
+test("behind the password, the page offers every day and every visitor as Excel or JSON, and its buttons need no second sign-in", async () => {
   const cf = cloudflare(WITH_PASSWORD);
   const id = "a1b2c3d4e5f60718";
   const headers = { "User-Agent": PHONE_AGENT };
@@ -576,9 +576,45 @@ test("behind the password, the page offers one file with every day and every vis
   await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true, mine: true, id: "9f8e7d6c5b4a3921" }, headers });
 
   const page = await (await ask(cf, "GET", "/stats", { origin: null, headers: signIn("correct horse battery") })).text();
-  assert.match(page, /<a class="button" href="\/stats\/export" download>Download all stats<\/a>/);
+  const links = [...page.matchAll(/<a class="button" href="(\/stats\/export\.(xlsx|json)\?until=(\d{13})&amp;key=([0-9a-f]{64}))">/g)];
+  assert.deepEqual(links.map((one) => one[2]), ["xlsx", "json"]);
+  assert.match(page, />Download as Excel</);
+  // A link works for 12 hours.
+  assert.equal(Number(links[0][3]), now + 12 * 60 * 60 * 1000);
+  const [excelLink, jsonLink] = links.map((one) => one[1].replace(/&amp;/g, "&"));
 
-  // The file asks for the password too.
+  // The page's buttons download without the browser being asked again.
+  const excel = await ask(cf, "GET", excelLink, { origin: null });
+  assert.equal(excel.status, 200);
+  assert.equal(excel.headers.get("Content-Type"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  assert.equal(excel.headers.get("Content-Disposition"), `attachment; filename="citizens-bark-stats-${TODAY}.xlsx"`);
+  assert.equal(excel.headers.get("Cache-Control"), "no-store");
+  const bytes = new Uint8Array(await excel.arrayBuffer());
+  assert.deepEqual([...bytes.slice(0, 4)], [0x50, 0x4b, 0x03, 0x04]);
+  const inside = new TextDecoder().decode(bytes);
+  for (const sheet of ["About", "Months", "Days", "Visitors", "Visits", "Breakdowns"]) assert.match(inside, new RegExp(`<sheet name="${sheet}"`));
+  assert.match(inside, /Telegram button \(custom alerts\)/);
+  assert.equal(inside.includes(id), false);
+  assert.equal((await ask(cf, "GET", jsonLink, { origin: null })).headers.get("Content-Type"), "application/json; charset=utf-8");
+
+  // A changed key, a link for longer than 12 hours, or one that has run out does not.
+  const [, , until, key] = links[0];
+  const wrongKey = `/stats/export.xlsx?until=${until}&key=${key.slice(0, -1)}${key.endsWith("0") ? "1" : "0"}`;
+  const longer = `/stats/export.xlsx?until=${Number(until) + 1}&key=${key}`;
+  for (const path of [wrongKey, longer, "/stats/export.xlsx?until=&key=", "/stats/export.xlsx?until=9999999999999&key=" + "0".repeat(64)]) {
+    assert.equal((await ask(cf, "GET", path, { origin: null })).status, 401, path);
+  }
+  // It opens the files only, never the page.
+  assert.equal((await ask(cf, "GET", `/stats?until=${until}&key=${key}`, { origin: null })).status, 401);
+  const before = now;
+  now += 12 * 60 * 60 * 1000;
+  assert.equal((await ask(cf, "GET", excelLink, { origin: null })).status, 401);
+  now = before;
+  // A new password ends the old links.
+  const renamed = cloudflare({ ...WITH_PASSWORD, STATS_PASSWORD: "a different one" });
+  assert.equal((await ask(renamed, "GET", excelLink, { origin: null })).status, 401);
+
+  // With the password itself, the files download too.
   assert.equal((await ask(cf, "GET", "/stats/export", { origin: null })).status, 401);
   assert.equal((await ask(cf, "GET", "/stats/export", { origin: null, headers: signIn("wrong") })).status, 401);
   const answer = await ask(cf, "GET", "/stats/export", { origin: null, headers: signIn("correct horse battery") });
@@ -651,6 +687,7 @@ test("without a password set, there is no file to download and no button for it"
   assert.equal(refused.status, 403);
   assert.equal((await refused.text()).includes("a1b2c3d4e5f60718"), false);
   assert.equal((await (await ask(cf, "GET", "/stats", { origin: null })).text()).includes("/stats/export"), false);
+  for (const path of ["/stats/export.xlsx", "/stats/export.json"]) assert.equal((await ask(cf, "GET", path, { origin: null })).status, 403);
   assert.equal((await ask(cf, "POST", "/stats/export", { body: {} })).status, 404);
 });
 
