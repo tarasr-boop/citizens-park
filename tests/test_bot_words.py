@@ -42,6 +42,14 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual(made["generated"], "2026-10-23T06:17+11:00")
         self.assertEqual(made["generatedText"], "Fri 23 Oct, 6:17 AM")
 
+    def test_under_a_picture_goes_only_the_link_to_the_page(self):
+        made = self.alerts(at(FRIDAY, 6, 17))
+        link = '<a href="https://example.org/park/">Press here for the week ahead and rain by the hour</a>'
+        self.assertEqual(made["caption"], link)
+        # The words for an alert without a picture end with the same link.
+        for entry in made["alerts"]:
+            self.assertTrue(entry["text"].endswith("\n\n" + link), entry["text"])
+
     def test_the_current_hour_is_kept_and_written_for_now(self):
         made = self.alerts(at(FRIDAY, 17, 47))
         self.assertEqual(made["alerts"][0]["hour"], 17)

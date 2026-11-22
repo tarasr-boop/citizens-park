@@ -656,14 +656,15 @@ test("words that are old say so, and missing words send nothing", async () => {
 // ---------------------------------------------------------------------------
 
 const PICTURE = "alerts/0123456789abcdef.png";
+const LINK = `<a href="${SITE}">Press here for the week ahead and rain by the hour</a>`;
 
-/** The words of `alertWords`, with a picture for every hour. */
+/** The words of `alertWords`, with a picture for every hour and the link to go under it. */
 function pictured(date, made = "06:17", image = PICTURE) {
   const words = alertWords(date, made);
-  return { ...words, alerts: words.alerts.map((entry) => ({ ...entry, image })) };
+  return { ...words, caption: LINK, alerts: words.alerts.map((entry) => ({ ...entry, image })) };
 }
 
-test("the alert goes as the day's picture, with the words under it, fetched from the page only once", async () => {
+test("the alert goes as the day's picture, with only the link to the page under it, fetched from the page only once", async () => {
   const it = open({ start: at(MONDAY, "16:00"), words: pictured(MONDAY) });
   await ready(it);
   chats(it, [
@@ -685,7 +686,7 @@ test("the alert goes as the day's picture, with the words under it, fetched from
     ]
   );
   const first = it.net.pictures[0];
-  assert.equal(first.caption, `🐕 <b>Citizens Park oval</b>\n\nThe words for 16:00 about ${MONDAY}`);
+  assert.equal(first.caption, LINK);
   assert.equal(first.parse_mode, "HTML");
   // The picture takes the place of yesterday's alert, like the words did.
   assert.deepEqual(it.net.bot.filter((call) => call.method === "deleteMessage").map((call) => call.body), [{ chat_id: 11, message_id: 555 }]);
@@ -716,13 +717,14 @@ test("if Telegram cannot take the picture, the words go alone, to that chat and 
   await runAlarms(it.bot, it.storage, it.time);
   assert.deepEqual(it.net.pictures.map((one) => one.chat_id), [11, 12]);
   assert.deepEqual(sentTo(it), [12, 13]);
+  // Without the picture, all the words go: the link alone would say nothing.
   assert.equal(it.net.said[0].text, `🐕 <b>Citizens Park oval</b>\n\nThe words for 16:00 about ${MONDAY}`);
   const last = (await it.bot.status()).last;
   assert.deepEqual([last.sent, last.pictured, last.gone, last.failed], [2, 0, 1, 0]);
   assert.ok(it.lines.some((line) => line === "the picture for the 4 PM alerts could not be sent (Bad Request: failed to get HTTP URL content), so they go without it"));
 });
 
-test("only a picture the daily check made is sent, and words too long to go under a picture go alone", async () => {
+test("only a picture the daily check made is sent, and with a caption too long to go under a picture the words go alone", async () => {
   for (const image of ["https://elsewhere.example/alerts/0123456789abcdef.png", "alerts/../secret.png", "alerts/0123456789ABCDEF.png", 7]) {
     const it = open({ start: at(MONDAY, "16:00"), words: pictured(MONDAY, "06:17", image) });
     await ready(it);
@@ -737,29 +739,39 @@ test("only a picture the daily check made is sent, and words too long to go unde
   const heading = "🐕 <b>Citizens Park oval</b>\n\n";
   const fits = heading + "&amp;".repeat(10) + "a".repeat(CAPTION_MOST - "🐕 Citizens Park oval\n\n".length - 10);
   const tooLong = fits + "!";
-  for (const [text, asPicture] of [
+  for (const [caption, asPicture] of [
     [fits, true],
     [tooLong, false],
   ]) {
-    const words = pictured(MONDAY);
-    words.alerts = words.alerts.map((entry) => ({ ...entry, text }));
-    const it = open({ start: at(MONDAY, "16:00"), words });
+    const it = open({ start: at(MONDAY, "16:00"), words: { ...pictured(MONDAY), caption } });
     await ready(it);
     chats(it, [[11, 16, 8]]);
     await it.bot.tick();
     await runAlarms(it.bot, it.storage, it.time);
     assert.equal(it.net.pictures.length, asPicture ? 1 : 0);
     assert.equal(it.net.said.length, asPicture ? 0 : 1);
+    if (!asPicture) assert.equal(it.net.said[0].text, `🐕 <b>Citizens Park oval</b>\n\nThe words for 16:00 about ${MONDAY}`);
   }
 });
 
-test("old words under a picture say so too", async () => {
+test("a telegram.json made before there was a caption has the words go under the picture", async () => {
+  for (const caption of [undefined, "", 7]) {
+    const it = open({ start: at(MONDAY, "16:00"), words: { ...pictured(MONDAY), caption } });
+    await ready(it);
+    chats(it, [[11, 16, 8]]);
+    await it.bot.tick();
+    await runAlarms(it.bot, it.storage, it.time);
+    assert.equal(it.net.pictures[0].caption, `🐕 <b>Citizens Park oval</b>\n\nThe words for 16:00 about ${MONDAY}`, String(caption));
+  }
+});
+
+test("an old picture says so under it, after the link", async () => {
   const it = open({ start: at(MONDAY, "16:00"), words: { ...pictured(MONDAY), generated: "2026-11-22T19:47+11:00", generatedText: "Sun 22 Nov, 7:47 PM" } });
   await ready(it);
   chats(it, [[11, 16, 8]]);
   await it.bot.tick();
   await runAlarms(it.bot, it.storage, it.time);
-  assert.match(it.net.pictures[0].caption, /\n\n⚠️ The page has not been updated since Sun 22 Nov, 7:47 PM, so this may be out of date\.$/);
+  assert.equal(it.net.pictures[0].caption, `${LINK}\n\n⚠️ The page has not been updated since Sun 22 Nov, 7:47 PM, so this may be out of date.`);
 });
 
 test("a sending that never finishes is given up, and the next hour goes ahead", async () => {
