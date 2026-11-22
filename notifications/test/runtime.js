@@ -99,11 +99,11 @@ async function outbound(request) {
 }
 
 // The worker's own files, as modules. A bundle made by wrangler is one file.
-// The files in src/ are the worker and the nine it imports.
+// The files in src/ are the worker and the ten it imports.
 async function modules() {
   const names =
     path.basename(path.dirname(scriptPath)) === "src"
-      ? ["worker.js", "book.js", "bot.js", "botwords.js", "rules.js", "starter.js", "stats.js", "statsexport.js", "statspage.js", "webpush.js"]
+      ? ["worker.js", "book.js", "bot.js", "botwords.js", "rules.js", "starter.js", "stats.js", "statsexport.js", "statspage.js", "webpush.js", "xlsx.js"]
       : [path.basename(scriptPath)];
   const found = {};
   for (const name of names) {
@@ -515,9 +515,15 @@ try {
     // The phone has a row of its own: two visits, one press, 45 seconds.
     assert.equal((html.match(/<details class="visitor">/g) || []).length, 1);
     assert.match(html, /2 visits/);
-    // And everything comes as one file to download.
-    assert.equal((await mf.dispatchFetch(`${BACKEND}/stats/export`)).status, 401);
-    const file = await mf.dispatchFetch(`${BACKEND}/stats/export`, { headers: { Authorization: `Basic ${btoa(`me:${STATS_PASSWORD}`)}` } });
+    // And everything comes as one file to download, from the page's own
+    // buttons without signing in again.
+    assert.equal((await mf.dispatchFetch(`${BACKEND}/stats/export.json`)).status, 401);
+    const [excelLink, jsonLink] = [...html.matchAll(/<a class="button" href="([^"]+)">/g)].map((one) => one[1].replace(/&amp;/g, "&"));
+    assert.match(excelLink, /^\/stats\/export\.xlsx\?until=\d{13}&key=[0-9a-f]{64}$/);
+    const excel = await mf.dispatchFetch(`${BACKEND}${excelLink}`);
+    assert.equal(excel.status, 200);
+    assert.deepEqual([...new Uint8Array(await excel.arrayBuffer()).slice(0, 2)], [0x50, 0x4b]);
+    const file = await mf.dispatchFetch(`${BACKEND}${jsonLink}`);
     assert.equal(file.status, 200);
     assert.match(file.headers.get("content-disposition"), /^attachment; filename="citizens-bark-stats-\d{4}-\d{2}-\d{2}\.json"$/);
     const all = await file.json();

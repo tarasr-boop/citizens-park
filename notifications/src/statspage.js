@@ -211,8 +211,20 @@ function visitorsHtml(visitors, period, locked) {
   return [group("People", people, true), group("Your own devices", yours, false), group("Look automated", robots, false)].filter(Boolean).join("\n");
 }
 
+/**
+ * The download buttons. `download` is the signed part of their addresses,
+ * so that the browser need not be asked for the password again.
+ */
+function downloadHtml(download) {
+  const query = download ? `?${esc(download)}` : "";
+  return (
+    `<p class="export small"><a class="button" href="/stats/export.xlsx${query}">Download as Excel</a><a class="button" href="/stats/export.json${query}">Download for Claude (JSON)</a><br>` +
+    `<span class="muted">Every day and every visitor since counting began, in one file. Either file can be uploaded to Claude for a closer look. The buttons work for 12 hours; reload the page for new ones.</span></p>\n`
+  );
+}
+
 /** The whole page for the counter's report (see Counter.report). */
-export function statsPage(report, siteUrl, { locked = false } = {}) {
+export function statsPage(report, siteUrl, { locked = false, download = "" } = {}) {
   const { month, day, thisMonth, first, days, totals, months, total } = report;
   const period = day ? "day" : "month";
   const before = shift(month, -1);
@@ -268,7 +280,7 @@ export function statsPage(report, siteUrl, { locked = false } = {}) {
 <main>
 <h1>Citizens Bark stats</h1>
 <p class="muted">Visits to <a href="${esc(siteUrl)}">${esc(siteUrl.replace(/^https:\/\//, "").replace(/\/$/, ""))}</a> and what visitors do there. Times are Melbourne time.</p>
-${locked ? `<p class="export small"><a class="button" href="/stats/export" download>Download all stats</a> <span class="muted">One file with every day and every visitor since counting began, ready to upload to Claude for a closer look.</span></p>\n` : ""}<nav>${nav}</nav>
+${locked ? downloadHtml(download) : ""}<nav>${nav}</nav>
 <p class="jump small">${[
     ["overview", "Overview"],
     ["visitors", "Visitors"],

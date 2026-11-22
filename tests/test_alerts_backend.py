@@ -584,11 +584,13 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn("run: |", hand_over)
         self.assertEqual(self.text.count("${{ secrets.STATS_PASSWORD }}"), 1)
         self.assertEqual(self.text.count('"$STATS_PASSWORD"'), 1)
-        # The backend only compares it with what a browser sends, and never shows or sends it.
+        # The backend only compares it with what a browser sends, or signs
+        # download links with it, and never shows or sends it.
         worker = (BACKEND / "src" / "worker.js").read_text(encoding="utf-8")
-        self.assertEqual(worker.count("env.STATS_PASSWORD"), 2)
-        self.assertIn("if (env.STATS_PASSWORD) {", worker)
-        self.assertIn("await rightPassword(request, env.STATS_PASSWORD)", worker)
+        self.assertEqual(worker.count("env.STATS_PASSWORD"), 1)
+        self.assertIn("const password = env.STATS_PASSWORD;", worker)
+        # Where it goes: only into the comparison and the signing.
+        self.assertEqual(sorted(set(re.findall(r"(\w+)\([^()\"]*\bpassword[,)]", worker))), ["String", "downloadKey", "downloadLink", "rightLink", "rightPassword"])
 
     def test_the_run_checks_that_the_second_timer_switched_on(self):
         ask = [step for step in self.steps(self.deploy_job) if step.startswith("      - name: Ask the backend how things are")][0]
