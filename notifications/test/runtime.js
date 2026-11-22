@@ -99,11 +99,11 @@ async function outbound(request) {
 }
 
 // The worker's own files, as modules. A bundle made by wrangler is one file.
-// The files in src/ are the worker and the eight it imports.
+// The files in src/ are the worker and the nine it imports.
 async function modules() {
   const names =
     path.basename(path.dirname(scriptPath)) === "src"
-      ? ["worker.js", "book.js", "bot.js", "botwords.js", "rules.js", "starter.js", "stats.js", "statspage.js", "webpush.js"]
+      ? ["worker.js", "book.js", "bot.js", "botwords.js", "rules.js", "starter.js", "stats.js", "statsexport.js", "statspage.js", "webpush.js"]
       : [path.basename(scriptPath)];
   const found = {};
   for (const name of names) {
@@ -515,6 +515,16 @@ try {
     // The phone has a row of its own: two visits, one press, 45 seconds.
     assert.equal((html.match(/<details class="visitor">/g) || []).length, 1);
     assert.match(html, /2 visits/);
+    // And everything comes as one file to download.
+    assert.equal((await mf.dispatchFetch(`${BACKEND}/stats/export`)).status, 401);
+    const file = await mf.dispatchFetch(`${BACKEND}/stats/export`, { headers: { Authorization: `Basic ${btoa(`me:${STATS_PASSWORD}`)}` } });
+    assert.equal(file.status, 200);
+    assert.match(file.headers.get("content-disposition"), /^attachment; filename="citizens-bark-stats-\d{4}-\d{2}-\d{2}\.json"$/);
+    const all = await file.json();
+    assert.equal(all.days.length, 1);
+    assert.equal(all.days[0].visits, 2);
+    assert.deepEqual(all.days[0].places, { "Richmond, Victoria": 1 });
+    assert.deepEqual(all.visitors.map((one) => [one.group, one.visits, one.secondsOnPage]), [["person", 2, 45]]);
   });
 
   await check("the bot's chats are still there after a restart", async () => {

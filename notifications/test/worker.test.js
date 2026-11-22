@@ -564,6 +564,96 @@ test("with a password set, the stats page asks for it and only then lists the vi
   assert.equal((await ask(cf, "GET", "/stats?visitors=1", { origin: null })).status, 401);
 });
 
+test("behind the password, the page offers one file with every day and every visitor, ready for Claude", async () => {
+  const cf = cloudflare(WITH_PASSWORD);
+  const id = "a1b2c3d4e5f60718";
+  const headers = { "User-Agent": PHONE_AGENT };
+  await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true, nth: 1, source: "qr", id }, headers });
+  await ask(cf, "POST", "/hit", { body: { kind: "press", name: "buttons:t.me", id }, headers });
+  await ask(cf, "POST", "/hit", { body: { kind: "stay", seconds: 42, id }, headers });
+  now += 3 * 60 * 60 * 1000;
+  await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: false, newThisMonth: false, firstEver: false, since: 0, nth: 2, id }, headers });
+  await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true, mine: true, id: "9f8e7d6c5b4a3921" }, headers });
+
+  const page = await (await ask(cf, "GET", "/stats", { origin: null, headers: signIn("correct horse battery") })).text();
+  assert.match(page, /<a class="button" href="\/stats\/export" download>Download all stats<\/a>/);
+
+  // The file asks for the password too.
+  assert.equal((await ask(cf, "GET", "/stats/export", { origin: null })).status, 401);
+  assert.equal((await ask(cf, "GET", "/stats/export", { origin: null, headers: signIn("wrong") })).status, 401);
+  const answer = await ask(cf, "GET", "/stats/export", { origin: null, headers: signIn("correct horse battery") });
+  assert.equal(answer.status, 200);
+  assert.equal(answer.headers.get("Content-Type"), "application/json; charset=utf-8");
+  assert.equal(answer.headers.get("Content-Disposition"), `attachment; filename="citizens-bark-stats-${TODAY}.json"`);
+  assert.equal(answer.headers.get("Cache-Control"), "no-store");
+  const text = await answer.text();
+  // The devices' own numbers stay in the counter.
+  assert.equal(text.includes(id), false);
+  const file = JSON.parse(text);
+
+  assert.equal(file.about.timeZone, "Australia/Melbourne");
+  assert.equal(file.about.exported, `${TODAY} 13:00`);
+  assert.equal(file.about.countingSince, TODAY);
+  assert.ok(file.about.fields.visitor.visitTimes);
+  assert.ok(file.about.fields.day.firstTimeDevices);
+
+  assert.equal(file.days.length, 1);
+  const [day] = file.days;
+  assert.deepEqual(
+    [day.date, day.visits, day.differentDevices, day.firstTimeDevices, day.returningDevices, day.automatedVisits, day.ownVisits],
+    [TODAY, 2, 1, 1, 0, 0, 1]
+  );
+  assert.deepEqual(day.presses, { "Telegram button (custom alerts)": 1 });
+  assert.deepEqual(day.foundBy, { "QR code": 1, "no link (typed, a bookmark or an app)": 1 });
+  assert.deepEqual(day.timeOnPage, { "30 seconds to 2 minutes": 1 });
+  assert.deepEqual(day.systems, { iPhone: 1 });
+  assert.equal("counted" in day, false);
+
+  assert.deepEqual([file.totals.allTime.visits, file.totals.allTime.deviceDays, file.totals.allTime.daysWithData], [2, 1, 1]);
+  assert.deepEqual(file.totals.byMonth.map((one) => [one.month, one.visits]), [["2026-11", 2]]);
+
+  // Latest visit first; numbered by when each first came.
+  assert.deepEqual(
+    file.visitors.map((one) => [one.visitor, one.group, one.visits]),
+    [
+      [1, "person", 2],
+      [2, "own device", 1],
+    ]
+  );
+  const [person] = file.visitors;
+  assert.deepEqual(person, {
+    visitor: 1,
+    group: "person",
+    firstVisit: `${TODAY} 10:00`,
+    firstCameBy: "QR code",
+    lastVisit: `${TODAY} 13:00`,
+    lastCameBy: "no link (typed, a bookmark or an app)",
+    visits: 2,
+    daysWithVisits: 1,
+    visitNumberOnDevice: 2,
+    visitTimes: [`${TODAY} 10:00`, `${TODAY} 13:00`],
+    secondsOnPage: 42,
+    looks: 1,
+    presses: { "Telegram button (custom alerts)": 1 },
+    kind: person.kind,
+    system: "iPhone",
+    browser: person.browser,
+    place: person.place,
+    network: person.network,
+  });
+  assert.ok(person.kind);
+});
+
+test("without a password set, there is no file to download and no button for it", async () => {
+  const cf = cloudflare();
+  await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true, id: "a1b2c3d4e5f60718" } });
+  const refused = await ask(cf, "GET", "/stats/export", { origin: null, headers: signIn("anything") });
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.text()).includes("a1b2c3d4e5f60718"), false);
+  assert.equal((await (await ask(cf, "GET", "/stats", { origin: null })).text()).includes("/stats/export"), false);
+  assert.equal((await ask(cf, "POST", "/stats/export", { body: {} })).status, 404);
+});
+
 test("without a password set, the visitors are never listed, whatever the address says", async () => {
   const cf = cloudflare();
   await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true, nth: 1, id: "a1b2c3d4e5f60718" }, headers: { "User-Agent": PHONE_AGENT } });

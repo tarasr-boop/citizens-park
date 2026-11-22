@@ -15,10 +15,11 @@
 
 import { Book } from "./book.js";
 import { Bot } from "./bot.js";
-import { MOST_BYTES, corsHeaders, settingsFrom } from "./rules.js";
+import { MOST_BYTES, corsHeaders, localTime, settingsFrom } from "./rules.js";
 import { Starter } from "./starter.js";
 import { Counter, MOST_HIT_BYTES } from "./stats.js";
 import { statsPage } from "./statspage.js";
+import { statsExport } from "./statsexport.js";
 
 // Cloudflare reads everything this file exports as something it can call: the
 // worker below and the classes for the book, the counter and the bot's chats.
@@ -132,6 +133,7 @@ export class Stats {
     const settings = settingsFrom(env);
     this.counter = new Counter({ storage: state.storage, now: () => Date.now(), settings });
     this.siteUrl = settings.siteUrl;
+    this.zone = settings.zone;
   }
 
   async fetch(request) {
@@ -151,6 +153,22 @@ export class Stats {
       const visitors = address.searchParams.get("visitors");
       const report = await this.counter.report(address.searchParams.get("month"), address.searchParams.get("day"), { visitors: visitors === "1" });
       return new Response(statsPage(report, this.siteUrl, { locked: visitors !== "off" }), { headers: PAGE_HEADERS });
+    }
+    if (request.method === "GET" && address.pathname === "/export") {
+      // Asked for by the worker only after the password was given.
+      const [days, rows] = await Promise.all([this.counter.allDays(), this.counter.allRows()]);
+      const now = Date.now();
+      const file = statsExport(days, rows, { zone: this.zone, siteUrl: this.siteUrl, now });
+      const date = localTime(now, this.zone).date;
+      return new Response(JSON.stringify(file, null, 1), {
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="citizens-bark-stats-${date}.json"`,
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
+          "Referrer-Policy": "no-referrer",
+        },
+      });
     }
     return json(404, { ok: false, reason: "unknown" });
   }
@@ -224,7 +242,8 @@ function counter(env) {
  * never reads the answer. GET /stats is the stats page (?month=2026-11 for a
  * month, ?day=2026-11-21 for a day). With the secret STATS_PASSWORD set, it
  * asks for that password and also lists the visitors. Without it, it is open
- * to anyone, like /status, and shows counts only.
+ * to anyone, like /status, and shows counts only. GET /stats/export is
+ * everything kept, as one file to download, and only behind the password.
  */
 async function stats(request, env, settings, origin, cors) {
   const address = new URL(request.url);
@@ -241,6 +260,12 @@ async function stats(request, env, settings, origin, cors) {
           });
         }
         visitors = "1";
+      }
+      if (address.pathname === "/stats/export") {
+        // The file holds every visitor, so it is there only behind the password.
+        if (visitors !== "1") return new Response("The export needs the stats password to be set (see the README).\n", { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+        const file = await counter(env).fetch("https://stats/export");
+        return new Response(file.body, { status: file.status, headers: file.headers });
       }
       const asked = new URLSearchParams({ visitors });
       for (const name of ["month", "day"]) {
@@ -365,7 +390,7 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 
     const asked = `${request.method} ${new URL(request.url).pathname}`;
-    if (asked === "POST /hit" || asked === "GET /stats") return stats(request, env, settings, origin, cors);
+    if (asked === "POST /hit" || asked === "GET /stats" || asked === "GET /stats/export") return stats(request, env, settings, origin, cors);
     const path = ROUTES[asked];
     if (!path) return json(404, { ok: false, reason: "unknown" }, cors);
 

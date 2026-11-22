@@ -233,6 +233,8 @@ The list of visitors comes close to a profile of each device, so it is shown onl
 2. Run **Alerts backend** (or merge any change to `notifications/`). The deploy hands the password to Cloudflare.
 3. Open <https://alerts.citizensbark.com/stats>. The browser asks for a name and a password: any name will do, the password is the one you chose.
 
+Behind the password, **Download all stats** at the top of the page gives one JSON file with everything kept: totals for all time and for each month, every day's numbers and lists, and every visitor (numbered by when they first came, without the device's random number). Its `about` part explains each field, so the file can be uploaded to Claude as it is and asked about.
+
 To change the password, change the secret and run **Alerts backend** again. Without the secret, the page is open to anyone who knows its address and shows totals only, never the list. Devices are listed from 22 November 2026; earlier days have totals only. Each device keeps its row for good, like the daily totals; at most 500 new devices are added a day and 20,000 in all.
 
 ## Setting it up from scratch
