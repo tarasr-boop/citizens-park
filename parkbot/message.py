@@ -143,8 +143,17 @@ def daily(plan: DayPlan, forecast: Forecast | None, now: datetime, config: Confi
     lines += [_text(line) for line in booked]
     lines.append("")
     lines += [_text(line) for line in rest]
-    lines += ["", f'<a href="{escape(config.site_url)}">Press here for the week ahead and rain by the hour</a>']
+    lines += ["", page_link(config)]
     return "\n".join(lines)
+
+
+def page_link(config: Config) -> str:
+    """The link to the page at the end of the daily post.
+
+    It is also all the Telegram bot writes under an alert's picture, as the
+    picture shows the rest.
+    """
+    return f'<a href="{escape(config.site_url)}">Press here for the week ahead and rain by the hour</a>'
 
 
 def notice(plan: DayPlan, forecast: Forecast | None, now_minute: int, config: Config, saved_at: str = "") -> dict[str, str]:

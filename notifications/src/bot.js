@@ -17,9 +17,10 @@
 //
 // The alert itself is written by the daily check, which publishes the words
 // for every hour in telegram.json next to the page, each with a picture of the
-// day's timeline and rain. At each hour this sends the picture, with the words
-// written for that hour under it, to everyone who chose it. Without a picture,
-// or if Telegram cannot take it, the words go alone.
+// day's timeline and rain. At each hour this sends the picture to everyone who
+// chose it, with only a link to the page under it (the "caption" in
+// telegram.json), as the picture says the rest. Without a picture, or if
+// Telegram cannot take it, the words written for that hour go alone.
 //
 // Telegram brings what people write to the bot to this backend ("webhook").
 // The bot sets that up by itself once it has its token, with a password it
@@ -48,7 +49,7 @@ const PAUSE_MS = 1000;
 // Words written longer ago than this carry a warning that they may be out of date.
 export const STALE_HOURS = 18;
 // Telegram takes at most this many letters under a picture, counted without the
-// markup. Longer words go alone, without the picture.
+// markup. If what would go under it is longer, the words go alone, without the picture.
 export const CAPTION_MOST = 1024;
 // What Telegram says when a person has blocked the bot or their account is gone.
 const GONE = /chat not found|deactivated/i;
@@ -515,20 +516,23 @@ export class Bot {
       (one) => one && one.date === local.date && one.hour === hour && typeof one.text === "string" && one.text && /^\d{4}-\d\d-\d\d$/.test(String(one.about))
     );
     if (!entry) return nothing(`telegram.json has no words for ${name} today`);
-    let text = entry.text;
+    let warning = "";
     const made = Date.parse(data.generated);
     if (Number.isNaN(made) || now - made > STALE_HOURS * 3600 * 1000) {
       const since = typeof data.generatedText === "string" && data.generatedText ? ` since ${cut(data.generatedText, 40)}` : "";
-      text += `\n\n⚠️ The page has not been updated${escapeHtml(since)}, so this may be out of date.`;
+      warning = `\n\n⚠️ The page has not been updated${escapeHtml(since)}, so this may be out of date.`;
     }
+    const text = entry.text + warning;
     if (Array.from(text).length > 4000) return nothing(`the words for ${name} are too long for Telegram`);
-    // The picture, with the words under it. Words too long to go under a picture go alone.
-    const photo = shownLength(text) <= CAPTION_MOST ? pictureOf(entry, this.settings.siteUrl) : null;
+    // The picture, with only the link to the page under it. A telegram.json made
+    // before there was a caption has the words go under the picture instead.
+    const caption = (typeof data.caption === "string" && data.caption ? data.caption : entry.text) + warning;
+    const photo = shownLength(caption) <= CAPTION_MOST ? pictureOf(entry, this.settings.siteUrl) : null;
 
     const kind = entry.weekend === true ? "weekend" : "weekday";
     await this.storage.put({
       started: key,
-      job: { date: local.date, hour, about: entry.about, kind, text, photo, after: 0, sent: 0, pictured: 0, gone: 0, failed: 0, startedAt: now },
+      job: { date: local.date, hour, about: entry.about, kind, text, caption, photo, after: 0, sent: 0, pictured: 0, gone: 0, failed: 0, startedAt: now },
     });
     await this.storage.setAlarm(now);
     this.log(`the ${name} alerts started`);
@@ -589,13 +593,13 @@ export class Bot {
   }
 
   /**
-   * Send the alert as its picture, with the words under it. The first chat
-   * gets the picture from the page. Telegram then has it, and gives it a
-   * number of its own, so the other chats get it by that number, without
+   * Send the alert as its picture, with the link to the page under it. The
+   * first chat gets the picture from the page. Telegram then has it, and gives
+   * it a number of its own, so the other chats get it by that number, without
    * Telegram fetching it again.
    */
   async sendPicture(id, job) {
-    const said = await this.telegram("sendPhoto", { chat_id: id, photo: job.photoId || job.photo, caption: job.text, parse_mode: "HTML" });
+    const said = await this.telegram("sendPhoto", { chat_id: id, photo: job.photoId || job.photo, caption: job.caption || job.text, parse_mode: "HTML" });
     const sizes = said.ok && said.result && Array.isArray(said.result.photo) ? said.result.photo : [];
     const largest = sizes[sizes.length - 1];
     if (!job.photoId && largest && typeof largest.file_id === "string") job.photoId = largest.file_id;
