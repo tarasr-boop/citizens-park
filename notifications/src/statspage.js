@@ -92,6 +92,8 @@ th { font-weight: 600; color: var(--muted); font-size: .85rem; }
 tr:last-child td { border-bottom: 0; }
 .small { font-size: .85rem; }
 h3 { font-size: .95rem; margin: 1rem 0 .4rem; }
+.export { margin: .75rem 0 0; }
+.button { display: inline-block; padding: .35rem .8rem; margin: 0 .4rem .25rem 0; border: 1px solid var(--link); border-radius: 999px; text-decoration: none; font-weight: 600; }
 .jump { line-height: 1.9; margin: -.25rem 0 1rem; }
 .visitor { border-top: 1px solid var(--line); padding: .5rem 0; }
 .visitor summary { cursor: pointer; list-style-position: outside; margin-left: 1rem; }
@@ -266,7 +268,7 @@ export function statsPage(report, siteUrl, { locked = false } = {}) {
 <main>
 <h1>Citizens Bark stats</h1>
 <p class="muted">Visits to <a href="${esc(siteUrl)}">${esc(siteUrl.replace(/^https:\/\//, "").replace(/\/$/, ""))}</a> and what visitors do there. Times are Melbourne time.</p>
-<nav>${nav}</nav>
+${locked ? `<p class="export small"><a class="button" href="/stats/export" download>Download all stats</a> <span class="muted">One file with every day and every visitor since counting began, ready to upload to Claude for a closer look.</span></p>\n` : ""}<nav>${nav}</nav>
 <p class="jump small">${[
     ["overview", "Overview"],
     ["visitors", "Visitors"],
