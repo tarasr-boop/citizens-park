@@ -506,7 +506,7 @@ test("only the page may count, and only what it sends is counted", async () => {
   assert.equal(cf.statsStorage.writes, 0);
 });
 
-test("anyone may open the stats page, which runs no script and shows counts only", async () => {
+test("without a password set, anyone may open the stats page, which runs no script and shows counts only", async () => {
   const cf = cloudflare();
   await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true }, headers: { "User-Agent": PHONE_AGENT } });
   const page = await ask(cf, "GET", "/stats", { origin: null });
@@ -525,6 +525,55 @@ test("anyone may open the stats page, which runs no script and shows counts only
   assert.match(october, /<strong>October 2026<\/strong>/);
   const odd = await (await ask(cf, "GET", "/stats?month=%3Cb%3E", { origin: null })).text();
   assert.match(odd, /<strong>November 2026<\/strong>/);
+});
+
+const WITH_PASSWORD = { ...ENV, STATS_PASSWORD: "correct horse battery" };
+const signIn = (password, name = "taras") => ({ Authorization: `Basic ${btoa(`${name}:${password}`)}` });
+
+test("with a password set, the stats page asks for it and only then lists the visitors", async () => {
+  const cf = cloudflare(WITH_PASSWORD);
+  const id = "a1b2c3d4e5f60718";
+  await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true, nth: 1, id }, headers: { "User-Agent": PHONE_AGENT } });
+
+  // Without it, or with a wrong one, the browser is asked for it and sees nothing else.
+  for (const headers of [{}, signIn("wrong"), signIn(""), { Authorization: "Basic !!!" }, { Authorization: "Bearer correct horse battery" }, { Authorization: `Basic ${btoa("no colon")}` }]) {
+    const refused = await ask(cf, "GET", "/stats", { origin: null, headers });
+    assert.equal(refused.status, 401, JSON.stringify(headers));
+    assert.equal(refused.headers.get("WWW-Authenticate"), 'Basic realm="Citizens Bark stats", charset="UTF-8"');
+    assert.equal(refused.headers.get("Cache-Control"), "no-store");
+    const text = await refused.text();
+    assert.equal(text.includes("Visitors"), false);
+    assert.equal(text.includes("iPhone"), false);
+  }
+  // The counter is not even asked.
+  assert.equal(cf.statsAsked.length, 1);
+
+  // With it (any name will do), the visitors are listed.
+  for (const name of ["taras", ""]) {
+    const page = await ask(cf, "GET", "/stats", { origin: null, headers: signIn("correct horse battery", name) });
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /<details class="visitor">/);
+    assert.match(html, /iPhone/);
+    // The device's own id stays in the counter.
+    assert.equal(html.includes(id), false);
+  }
+  // A day view lists that day's visitors, and the address cannot unlock the list by itself.
+  const day = await (await ask(cf, "GET", "/stats?day=2026-11-20", { origin: null, headers: signIn("correct horse battery") })).text();
+  assert.match(day, /<details class="visitor">/);
+  assert.equal((await ask(cf, "GET", "/stats?visitors=1", { origin: null })).status, 401);
+});
+
+test("without a password set, the visitors are never listed, whatever the address says", async () => {
+  const cf = cloudflare();
+  await ask(cf, "POST", "/hit", { body: { kind: "visit", newToday: true, newThisMonth: true, firstEver: true, nth: 1, id: "a1b2c3d4e5f60718" }, headers: { "User-Agent": PHONE_AGENT } });
+  for (const path of ["/stats", "/stats?visitors=1", "/stats?day=2026-11-20&visitors=1"]) {
+    const html = await (await ask(cf, "GET", path, { origin: null, headers: signIn("anything") })).text();
+    assert.equal(html.includes('class="visitor"'), false, path);
+    assert.match(html, /once the stats password is set/);
+  }
+  // Each device is still kept as a row, ready for when the password is set.
+  assert.equal(cf.statsStorage.kept.has("dev:a1b2c3d4e5f60718"), true);
 });
 
 // ---------------------------------------------------------------------------

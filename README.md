@@ -217,14 +217,23 @@ The bot gives itself its name, unless someone gave it a different one with @BotF
 - the kind of device, its system and browser, its rough place and its network
 - which buttons and links were pressed
 - visits that look automated (a program that says so, or a request from a data centre), kept out of all the other numbers
+- a list of visitors (once the page has a password, see below): one fold per device, latest first, with when it first came and how, each of its visits in the month or day, how long it stayed in all, what it pressed, and its device, rough place and network
 
 The arrows at the top go to earlier months, and each day in "Each day" opens on its own. Every day is kept for good.
 
-The page counts for itself, through the same backend as the notifications, so it needs no outside service and no cookies. It sends only what happened ("a visit, this device's 3rd, 2 days after its last one", or "the first button was pressed"), never anything about the person. A device knows it has been here before only because its browser remembers the date of its last visit and how many visits it has made. The backend adds the browser's own description of itself and the rough place and network Cloudflare works out from the internet address; the address itself is never kept. Each list is a separate count for the day, so the counts cannot be joined into a picture of one visitor. A private window, or a browser whose history was cleared, counts as a new device. Programs that do not run the page's script, such as link previews in chat apps, are not counted at all.
+The page counts for itself, through the same backend as the notifications, so it needs no outside service and no cookies. It sends only what happened ("a visit, this device's 3rd, 2 days after its last one", or "the first button was pressed"), never anything about the person. A device knows it has been here before only because its browser remembers the date of its last visit, how many visits it has made, and a random number it picked the first time (16 hexadecimal digits, made on the device and tied to nothing else). That number is what lets the list of visitors put one device's visits together. The backend adds the browser's own description of itself and the rough place and network Cloudflare works out from the internet address; the address itself is never kept. A private window, or a browser whose history was cleared, counts as a new device. Programs that do not run the page's script, such as link previews in chat apps, are not counted at all.
 
 The QR code holds the address with `?qr` after it, so visits through it can be told apart. To leave your own phone or computer out of the numbers, open <https://citizensbark.com/?me> once in each browser you use (`?me=off` undoes it). Both markers are taken out of the address as the page opens.
 
-The stats page is open to anyone who knows its address, like the backend's own numbers. It shows counts only.
+### The stats password
+
+The list of visitors comes close to a profile of each device, so it is shown only behind a password:
+
+1. In the repository's **Settings**, **Secrets and variables**, **Actions**, add a secret named `STATS_PASSWORD` with a long password of your choosing.
+2. Run **Alerts backend** (or merge any change to `notifications/`). The deploy hands the password to Cloudflare.
+3. Open <https://alerts.citizensbark.com/stats>. The browser asks for a name and a password: any name will do, the password is the one you chose.
+
+To change the password, change the secret and run **Alerts backend** again. Without the secret, the page is open to anyone who knows its address and shows totals only, never the list. Devices are listed from 22 November 2026; earlier days have totals only. Each device keeps its row for good, like the daily totals; at most 500 new devices are added a day and 20,000 in all.
 
 ## Setting it up from scratch
 

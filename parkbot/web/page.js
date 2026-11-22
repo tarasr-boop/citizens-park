@@ -803,10 +803,11 @@
   // The backend counts how many times the page is opened, from how many
   // different devices, how often those devices come back, how they found the
   // page, how long they stay, and which buttons and links are pressed. What is
-  // sent is only what happened, such as "a visit, this device's 3rd, 2 days
-  // after its last one": no cookie, no number for the device, nothing about
-  // the person. This device remembers only the date of its last visit and how
-  // many visits it has made, in its own storage.
+  // sent is what happened, such as "a visit, this device's 3rd, 2 days after
+  // its last one", with a random number this device makes up for itself, so
+  // that its visits can be told apart from others'. No cookie, and nothing
+  // about the person. This device remembers, in its own storage, only that
+  // number, the date of its last visit and how many visits it has made.
 
   // Only the real page counts, not a copy of it opened somewhere else, and not a program steering a browser.
   var counting = !!backend && !navigator.webdriver && (function () {
@@ -870,8 +871,26 @@
     }
   }
 
+  // This device's random number: 16 hexadecimal digits, made once and kept.
+  // Empty if nothing can be kept here, so that a browser that forgets does
+  // not look like a new visitor on every visit.
+  var deviceId = remembered("deviceId") || "";
+  if (counting && !/^[0-9a-f]{16}$/.test(deviceId)) {
+    var digits = "";
+    try {
+      var bytes = new Uint8Array(8);
+      window.crypto.getRandomValues(bytes);
+      for (var byte = 0; byte < bytes.length; byte += 1) digits += (bytes[byte] < 16 ? "0" : "") + bytes[byte].toString(16);
+    } catch (error) {
+      for (var place = 0; place < 16; place += 1) digits += Math.floor(Math.random() * 16).toString(16);
+    }
+    remember("deviceId", digits);
+    deviceId = remembered("deviceId") === digits ? digits : "";
+  }
+
   function send(what) {
     if (!counting) return;
+    if (deviceId) what.id = deviceId;
     var text = JSON.stringify(what);
     // A beacon still goes out when the press takes the reader to another page.
     try {

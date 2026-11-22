@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Counter, MOST_A_DAY, MOST_NAMES, describeAgent, describePlace, readDay, readHit, readMonth, sourceOf } from "../src/stats.js";
+import { Counter, MOST_A_DAY, MOST_NAMES, MOST_NEW_ROWS_A_DAY, MOST_VISITS_KEPT, describeAgent, describePlace, readDay, readHit, readMonth, sourceOf } from "../src/stats.js";
 import { label, statsPage } from "../src/statspage.js";
 import { SITE, at, clock, memoryStorage, settings } from "./standins.js";
 
@@ -30,11 +30,11 @@ const AGAIN = { kind: "visit", newToday: false, newThisMonth: false, firstEver: 
 const day = (storage, date = "2026-11-21") => storage.kept.get(`day:${date}`);
 
 test("only a visit, a press with a plain name, or a stay is taken", () => {
-  assert.deepEqual(readHit(VISIT), { ...VISIT, again: false, touch: false, mine: false });
-  const odd = readHit({ kind: "visit", newToday: "yes", since: -1, nth: 0.5, source: "  T.ME\n" });
-  assert.deepEqual(odd, { kind: "visit", newToday: false, newThisMonth: false, firstEver: false, since: null, nth: null, source: "t.me", again: false, touch: false, mine: false });
-  assert.deepEqual(readHit({ kind: "press", name: "buttons:t.me" }), { kind: "press", name: "buttons:t.me" });
-  assert.deepEqual(readHit({ kind: "stay", seconds: 12.5 }), { kind: "stay", seconds: 12.5 });
+  assert.deepEqual(readHit(VISIT), { ...VISIT, again: false, touch: false, mine: false, id: "" });
+  const odd = readHit({ kind: "visit", newToday: "yes", since: -1, nth: 0.5, source: "  T.ME\n", id: "NOT-AN-ID" });
+  assert.deepEqual(odd, { kind: "visit", newToday: false, newThisMonth: false, firstEver: false, since: null, nth: null, source: "t.me", again: false, touch: false, mine: false, id: "" });
+  assert.deepEqual(readHit({ kind: "press", name: "buttons:t.me", id: "a1b2c3d4e5f60718" }), { kind: "press", name: "buttons:t.me", id: "a1b2c3d4e5f60718" });
+  assert.deepEqual(readHit({ kind: "stay", seconds: 12.5 }), { kind: "stay", seconds: 12.5, id: "" });
   for (const bad of [null, "visit", {}, { kind: "other" }, { kind: "press" }, { kind: "press", name: "Buttons" }, { kind: "press", name: "<b>" }, { kind: "press", name: "a".repeat(65) }, { kind: "stay", seconds: -1 }, { kind: "stay", seconds: "5" }]) {
     assert.equal(readHit(bad), null, JSON.stringify(bad));
   }
@@ -303,4 +303,121 @@ test("the page for a month with nothing in it says so", async () => {
   assert.match(html, /Nothing pressed this month yet/);
   assert.match(html, /Nothing counted yet/);
   assert.doesNotMatch(html, /When people visit/);
+});
+
+// ---------------------------------------------------------------------------
+// One row per visitor
+// ---------------------------------------------------------------------------
+
+const ID = "a1b2c3d4e5f60718";
+const OTHER = "9f8e7d6c5b4a3921";
+
+test("each device with a number gets a row: what it is, where, how it came, when, how often, how long and what it pressed", async () => {
+  const { storage, time, counter: it } = counter(at("2026-11-21", "09:00"));
+  await it.hit({ ...VISIT, id: ID, source: "qr" }, PHONE);
+  await it.hit({ kind: "stay", seconds: 40.4, id: ID }, PHONE);
+  await it.hit({ kind: "press", name: "buttons:t.me", id: ID }, PHONE);
+  await it.hit({ kind: "press", name: "buttons:t.me", id: ID }, PHONE);
+  time.set(at("2026-11-21", "18:00"));
+  await it.hit({ ...AGAIN, id: ID, source: "t.me" }, PHONE);
+  time.set(at("2026-11-23", "08:00"));
+  await it.hit({ ...AGAIN, newToday: true, since: 2, nth: 3, id: ID }, { ...PHONE, city: "Melbourne" });
+  const row = storage.kept.get(`dev:${ID}`);
+  assert.deepEqual(
+    { ...row, times: row.times.length },
+    {
+      firstAt: at("2026-11-21", "09:00"),
+      came: "QR code",
+      lastCame: "no link (typed, a bookmark or an app)",
+      visits: 3,
+      days: 2,
+      lastDate: "2026-11-23",
+      lastAt: at("2026-11-23", "08:00"),
+      times: 3,
+      nth: 3,
+      seconds: 40,
+      looks: 1,
+      presses: { "buttons:t.me": 2 },
+      kind: "phone",
+      system: "iPhone",
+      browser: "Safari (or an app's browser)",
+      place: "Melbourne, Victoria",
+      network: "Telstra Limited",
+      robot: false,
+      mine: false,
+    }
+  );
+  assert.equal(storage.kept.get("rows"), 1);
+});
+
+test("a press or a stay alone does not start a row, and nothing without a number does", async () => {
+  const { storage, counter: it } = counter();
+  await it.hit({ kind: "press", name: "buttons:t.me", id: ID }, PHONE);
+  await it.hit({ kind: "stay", seconds: 3, id: ID }, PHONE);
+  await it.hit(VISIT, PHONE);
+  assert.equal([...storage.kept.keys()].some((key) => key.startsWith("dev:")), false);
+});
+
+test("a row keeps only its latest visits, and new rows stop at the day's limit", async () => {
+  const { storage, time, counter: it } = counter();
+  for (let index = 0; index < MOST_VISITS_KEPT + 5; index += 1) {
+    await it.hit({ ...AGAIN, id: ID }, PHONE);
+    time.forward(60000);
+  }
+  const row = storage.kept.get(`dev:${ID}`);
+  assert.equal(row.visits, MOST_VISITS_KEPT + 5);
+  assert.equal(row.times.length, MOST_VISITS_KEPT);
+  storage.kept.set("day:2026-11-21", { ...storage.kept.get("day:2026-11-21"), newRows: MOST_NEW_ROWS_A_DAY });
+  await it.hit({ ...VISIT, id: OTHER }, PHONE);
+  assert.equal(storage.kept.has(`dev:${OTHER}`), false);
+  // A row that exists is still kept up to date.
+  await it.hit({ ...AGAIN, id: ID }, PHONE);
+  assert.equal(storage.kept.get(`dev:${ID}`).visits, MOST_VISITS_KEPT + 6);
+});
+
+test("the visitors of a month or a day are listed, the latest first, with their visits in that period", async () => {
+  const { time, counter: it } = counter(at("2026-11-21", "09:00"));
+  await it.hit({ ...VISIT, id: ID }, PHONE);
+  time.set(at("2026-11-22", "10:00"));
+  await it.hit({ ...VISIT, id: OTHER }, SERVER);
+  time.set(at("2026-11-22", "11:00"));
+  await it.hit({ ...AGAIN, newToday: true, since: 1, id: ID }, PHONE);
+  // Without being asked for, there is no list.
+  assert.equal((await it.report()).visitors, null);
+  const month = (await it.report(null, null, { visitors: true })).visitors;
+  assert.deepEqual(
+    month.map((one) => [one.id, one.inPeriod.length, one.robot]),
+    [
+      [ID, 2, false],
+      [OTHER, 1, true],
+    ]
+  );
+  assert.deepEqual(month[0].firstSeen, { date: "2026-11-21", minute: 540 });
+  assert.deepEqual(month[0].inPeriod.map((one) => one.minute), [660, 540]);
+  const first = (await it.report(null, "2026-11-21", { visitors: true })).visitors;
+  assert.deepEqual(first.map((one) => [one.id, one.inPeriod.length]), [[ID, 1]]);
+});
+
+test("the page lists people, the owner's devices and programs apart, but only when it is locked", async () => {
+  const { counter: it } = counter(at("2026-11-21", "09:00"));
+  await it.hit({ ...VISIT, id: ID, source: "qr" }, PHONE);
+  await it.hit({ kind: "stay", seconds: 200, id: ID }, PHONE);
+  await it.hit({ kind: "press", name: "buttons:t.me", id: ID }, PHONE);
+  await it.hit({ ...VISIT, id: OTHER }, { ...SERVER, asOrganization: "<i>Amazon</i>" });
+  await it.hit({ ...VISIT, id: "0011223344556677", mine: true }, PHONE);
+  const report = await it.report(null, null, { visitors: true });
+  const html = statsPage(report, SITE, { locked: true });
+  assert.match(html, /<h3>People <span class="muted">\(1\)<\/span><\/h3>/);
+  assert.match(html, /<h3>Your own devices <span class="muted">\(1\)<\/span><\/h3>/);
+  assert.match(html, /<h3>Look automated <span class="muted">\(1\)<\/span><\/h3>/);
+  assert.match(html, /<b>Visitor a1b2<\/b> · phone, iPhone, Safari \(or an app&#39;s browser\)/);
+  assert.match(html, /Richmond, Victoria · Telstra Limited/);
+  assert.match(html, /Last Sat 21 Nov, 9:00 AM · 1 visit this month/);
+  assert.match(html, /First came by QR code\. On the page for 3 minutes in all\. Pressed Telegram button \(custom alerts\)\./);
+  assert.match(html, /&lt;i&gt;Amazon&lt;\/i&gt;/);
+  assert.doesNotMatch(html, /<i>Amazon/);
+  // Open, the page never lists anyone, even if it was handed the list.
+  const open = statsPage(report, SITE, { locked: false });
+  assert.doesNotMatch(open, /Visitor a1b2/);
+  assert.match(open, /The list of visitors appears here once the stats password is set/);
 });

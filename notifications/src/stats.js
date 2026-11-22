@@ -3,18 +3,17 @@
 // devices they are, roughly where they are, how they found the page, how long
 // they stay, and which buttons and links they press.
 //
-// Nothing here can tell one person from another. The page sends only what
-// happened ("a visit, this device's 3rd, 2 days after its last one", or "the
-// Telegram button was pressed"), never a name or a number for the device. A
-// device knows those things only because it remembers, in its own browser,
-// the date of its last visit and how many visits it has made. No cookies.
+// The page sends what happened ("a visit, this device's 3rd, 2 days after its
+// last one", or "the Telegram button was pressed"), with a random number that
+// the device made up for itself and keeps in its own browser. That number is
+// how the owner can see one row per visitor on the stats page, which is
+// locked with a password for that reason. It says nothing about who the
+// person is, and clearing the browser makes a new one. No cookies.
 //
 // The backend adds what it can see of the request itself: the kind of browser
 // (from the browser's own description of itself), and the rough place and the
 // network it came from (Cloudflare works these out from the address). The
-// address itself is never kept. Each of these is counted on its own, as a
-// total for the day, so the counts cannot be put back together into a
-// description of one visitor.
+// address itself is never kept.
 //
 // Visits that look automated (a program that says so, or a request from a
 // data centre rather than a home or a phone network) and visits from the
@@ -39,6 +38,17 @@ export const MOST_A_DAY = 20000;
 // At most this many different names in one list for one day (buttons, places,
 // networks and so on). Any more go under "other".
 export const MOST_NAMES = 60;
+// Visitors' rows: filed under "dev:" plus the device's random number.
+const DEVICE = "dev:";
+// What a device's random number looks like: 16 hexadecimal digits.
+const DEVICE_ID = /^[0-9a-f]{16}$/;
+// At most this many new visitors' rows a day, and in all. Real visitors are a
+// few dozen a day. A program that makes up a new number on every visit fills
+// these, and then simply is not given a row.
+export const MOST_NEW_ROWS_A_DAY = 500;
+export const MOST_ROWS = 20000;
+// A visitor's row keeps the times of its last this-many visits.
+export const MOST_VISITS_KEPT = 100;
 // What a button's or link's name may look like: "buttons:t.me", "share:copy".
 const NAME = /^[a-z0-9][a-z0-9.:_-]{0,63}$/;
 
@@ -80,11 +90,18 @@ function whole(value, low, high) {
 
 /**
  * What the page sent, checked. Returns one of
- * `{ kind: "visit", newToday, newThisMonth, firstEver, since, nth, source, again, touch }`,
- * `{ kind: "press", name }` or `{ kind: "stay", seconds }`, or null.
+ * `{ kind: "visit", newToday, newThisMonth, firstEver, since, nth, source, again, touch, mine }`,
+ * `{ kind: "press", name }` or `{ kind: "stay", seconds }`, each with the
+ * device's random number as `id` ("" if it sent none), or null.
  */
 export function readHit(given) {
   if (!given || typeof given !== "object") return null;
+  const hit = readKind(given);
+  if (hit) hit.id = typeof given.id === "string" && DEVICE_ID.test(given.id) ? given.id : "";
+  return hit;
+}
+
+function readKind(given) {
   if (given.kind === "visit") {
     return {
       kind: "visit",
@@ -341,8 +358,91 @@ export class Counter {
       if (hit.kind === "press") bump(day.presses, hit.name);
       else bump(day.stays, stayText(hit.seconds));
     }
-    await this.storage.put(key, day);
+    const changed = { [key]: day };
+    const row = await this.visitorRow(hit, day, { agent, where, robot, source: sourceOf(hit.kind === "visit" && hit.again ? "again" : hit.source, new URL(this.settings.siteUrl).hostname) });
+    if (row) changed[DEVICE + hit.id] = row;
+    if (row && row.isNew) {
+      delete row.isNew;
+      changed.rows = ((await this.storage.get("rows")) || 0) + 1;
+    }
+    await this.storage.put(changed);
     return reply(200, { ok: true });
+  }
+
+  /**
+   * The visitor's own row, brought up to date with this hit, or null if there
+   * is nothing to keep: no number was sent, or a new row would be one too many.
+   */
+  async visitorRow(hit, day, { agent, where, robot, source }) {
+    if (!hit.id) return null;
+    const now = this.now();
+    const local = this.today();
+    let row = await this.storage.get(DEVICE + hit.id);
+    if (!row) {
+      // Only a visit starts a row.
+      if (hit.kind !== "visit") return null;
+      if ((day.newRows || 0) >= MOST_NEW_ROWS_A_DAY || ((await this.storage.get("rows")) || 0) >= MOST_ROWS) return null;
+      day.newRows = (day.newRows || 0) + 1;
+      row = { firstAt: now, came: source, visits: 0, days: 0, lastDate: "", times: [], seconds: 0, looks: 0, presses: {}, isNew: true };
+    }
+    if (hit.kind === "visit") {
+      row.visits += 1;
+      if (row.lastDate !== local.date) row.days += 1;
+      row.lastDate = local.date;
+      row.lastAt = now;
+      row.times = [...(row.times || []), now].slice(-MOST_VISITS_KEPT);
+      if (hit.nth !== null) row.nth = hit.nth;
+      row.kind = agent.kind;
+      row.system = agent.system;
+      row.browser = agent.browser;
+      row.place = where.place;
+      row.network = where.network;
+      row.robot = robot;
+      row.mine = hit.mine;
+      if (!hit.again) row.lastCame = source;
+    } else if (hit.kind === "press") {
+      row.presses = { ...(row.presses || {}) };
+      bump(row.presses, hit.name);
+    } else {
+      row.seconds = Math.min(10000000, (row.seconds || 0) + Math.round(hit.seconds));
+      row.looks = (row.looks || 0) + 1;
+    }
+    return row;
+  }
+
+  /** Every visitor's row, as `{ id, ...row }`. */
+  async allRows() {
+    const rows = [];
+    let after = DEVICE;
+    for (;;) {
+      const page = await this.storage.list({ startAfter: after, end: "dev;", limit: 1000 });
+      for (const [key, row] of page) rows.push({ id: key.slice(DEVICE.length), ...row });
+      if (page.size < 1000) break;
+      after = [...page.keys()].pop();
+    }
+    return rows;
+  }
+
+  /**
+   * The visitors seen in a period (dates from `start` to `end`, both
+   * included), each with the times of its visits in that period, the latest first.
+   */
+  async visitors(start, end) {
+    const found = [];
+    for (const row of await this.allRows()) {
+      const times = (row.times || []).filter((at) => {
+        const date = localTime(at, this.settings.zone).date;
+        return date >= start && date <= end;
+      });
+      if (times.length) {
+        found.push({
+          ...row,
+          firstSeen: localTime(row.firstAt, this.settings.zone),
+          inPeriod: times.reverse().map((at) => ({ at, ...localTime(at, this.settings.zone) })),
+        });
+      }
+    }
+    return found.sort((a, b) => b.inPeriod[0].at - a.inPeriod[0].at);
   }
 
   /** Every day kept, as pairs of date and numbers, oldest first. */
@@ -364,7 +464,7 @@ export class Counter {
    * alone, with the totals and lists for the month or the day, and the totals
    * of every month kept.
    */
-  async report(month, day) {
+  async report(month, day, { visitors = false } = {}) {
     const today = this.today().date;
     const thisMonth = today.slice(0, 7);
     const chosenDay = readDay(day) && readDay(day) <= today ? readDay(day) : null;
@@ -407,7 +507,10 @@ export class Counter {
       totals.devices = (kept.get(chosenDay) || emptyDay()).devices;
     }
 
+    const start = chosenDay || `${chosen}-01`;
+    const end = chosenDay || `${chosen}-31`;
     return {
+      visitors: visitors ? await this.visitors(start, end) : null,
       today,
       month: chosen,
       day: chosenDay,

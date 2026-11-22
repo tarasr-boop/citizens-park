@@ -28,6 +28,8 @@ PAGE = "https://citizensbark.example"
 TESTS = Path(__file__).parent
 # 3:45 PM on Friday 20 November at the park.
 NOW = "2026-11-20T04:45:00Z"
+# The id a new device picks with the stand-in's random numbers.
+DEVICE = "ab" * 8
 
 
 def page_data() -> dict:
@@ -85,11 +87,31 @@ class CountingTest(unittest.TestCase):
                         "again": False,
                         "touch": False,
                         "mine": False,
+                        "id": DEVICE,
                     },
                 }
             ],
         )
-        self.assertEqual(result["stored"], {"lastVisit": "2026-11-20", "visits": "1"})
+        self.assertEqual(result["stored"], {"lastVisit": "2026-11-20", "visits": "1", "deviceId": DEVICE})
+
+    def test_each_device_keeps_one_random_id_and_sends_it_with_everything(self):
+        result = self.run_page(stored={"lastVisit": "2026-11-20", "deviceId": "0123456789abcdef"}, presses=["telegram"], leaveAfterSeconds=10)
+        self.assertEqual([body["id"] for body in self.bodies(result)], ["0123456789abcdef"] * 3)
+        self.assertEqual(result["stored"]["deviceId"], "0123456789abcdef")
+        # Anything else in its place is replaced with a new random one.
+        result = self.run_page(stored={"deviceId": "<script>"})
+        self.assertEqual(result["stored"]["deviceId"], DEVICE)
+        self.assertEqual(self.visits(result)[0]["id"], DEVICE)
+
+    def test_without_storage_no_id_is_sent_so_each_look_is_not_made_up_into_a_visitor(self):
+        result = self.run_page(noStorage=True, presses=["telegram"])
+        self.assertTrue(result["sent"])
+        for body in self.bodies(result):
+            self.assertNotIn("id", body)
+
+    def test_no_id_is_made_where_nothing_is_counted(self):
+        self.assertNotIn("deviceId", self.run_page(origin="https://example.org")["stored"])
+        self.assertNotIn("deviceId", self.run_page(webdriver=True)["stored"])
 
     def test_a_device_that_was_here_earlier_today_is_not_new_and_says_which_visit_this_is(self):
         result = self.run_page(stored={"lastVisit": "2026-11-20", "visits": "4"})
@@ -143,7 +165,7 @@ class CountingTest(unittest.TestCase):
     def test_how_long_a_look_lasted_is_sent_once_as_the_page_goes_out_of_sight(self):
         result = self.run_page(leaveAfterSeconds=42)
         stays = [body for body in self.bodies(result) if body["kind"] == "stay"]
-        self.assertEqual(stays, [{"kind": "stay", "seconds": 42}])
+        self.assertEqual(stays, [{"kind": "stay", "seconds": 42, "id": DEVICE}])
 
     def test_presses_are_named_by_where_they_are_and_what_they_are(self):
         presses = ["telegram", "notify", "label", "instagram", "shareOpen", "copy", "feedback", "mail", "council", "odd", "plain"]
