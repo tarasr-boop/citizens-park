@@ -15,7 +15,7 @@ day the alert is about.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 from . import message
 from .config import Config
@@ -24,6 +24,17 @@ from .timeparse import clock
 from .weather import Forecast
 
 FILE = "telegram.json"
+
+
+def written_at(sent_on: date, hour: int, ahead: bool, now: datetime) -> datetime:
+    """The moment an alert sent at ``hour`` on ``sent_on`` is written for.
+
+    That is its hour, or ``now`` for an hour of today that has already begun:
+    the words never look back at a time that has passed. An alert about the
+    next day (``ahead``) covers the whole of that day either way.
+    """
+    written = datetime.combine(sent_on, time(hour), tzinfo=now.tzinfo)
+    return now if not ahead and written < now else written
 
 
 def alerts(config: Config, plans: list[DayPlan], forecast: Forecast | None, now: datetime) -> dict:
@@ -41,9 +52,7 @@ def alerts(config: Config, plans: list[DayPlan], forecast: Forecast | None, now:
             plan = by_day.get(about)
             if plan is None:
                 continue
-            written = datetime.combine(sent_on, time(minute // 60), tzinfo=now.tzinfo)
-            if not ahead and written < now:
-                written = now  # the words never look back at a time that has already passed
+            written = written_at(sent_on, minute // 60, ahead, now)
             entries.append(
                 {
                     "date": sent_on.isoformat(),

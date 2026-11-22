@@ -59,14 +59,17 @@ class LiveViewTest(unittest.TestCase):
         # The page as it is set up for the real park: a timeline from 7 AM to 9 PM.
         self.config = load_config(day_start=7 * 60, day_end=21 * 60)
 
-    def draw(self, data: dict, now: str) -> str:
-        """What the script puts on the page for ``data`` when the park's clock says ``now``."""
+    def draw(self, data: dict, now: str, more: str = "") -> str:
+        """What the script puts on the page for ``data`` when the park's clock says ``now``.
+
+        ``more`` goes after ``now`` in the page's address, such as ``&card=2026-11-20``.
+        """
         path = Path(self._folder.name) / "data.json"
         path.write_text(json.dumps(data), encoding="utf-8")
         # The script's own clock stands at the same moment, so that a drawing never depends on the day the tests are run.
         moment = datetime.fromisoformat(now).replace(tzinfo=ZoneInfo(data.get("zone") or "Australia/Melbourne"))
         result = subprocess.run(
-            ["node", str(HARNESS), str(site.WEB / "page.js"), str(path), now, str(int(moment.timestamp() * 1000))],
+            ["node", str(HARNESS), str(site.WEB / "page.js"), str(path), now, str(int(moment.timestamp() * 1000)), more],
             capture_output=True,
             text=True,
             timeout=60,
@@ -334,6 +337,66 @@ class LiveViewTest(unittest.TestCase):
         html = self.draw(self.data(at(date(2026, 12, 2), 9)), "2026-12-02T09:05")
         self.assertIn('<p class="legend-note">These are the usual times, not yet confirmed by the council.</p>', html)
 
+    # ---- the picture for the Telegram bot ----
+
+    def test_a_picture_of_today_is_the_answer_and_the_timeline_and_nothing_else(self):
+        html = self.draw(self.friday(), "2026-11-20T16:51", "&card=2026-11-20")
+        self.assertTrue(html.startswith('<section class="hero" data-state="booked"><p class="kicker">Last checked today at 1:47 PM</p>'))
+        self.assertIn("<h1>Booked until 8 PM</h1>", html)
+        self.assertIn("<h2>Today <span>Fri 20 Nov</span></h2>", html)
+        self.assertIn('<span class="now-line" style="left:70.36%" title="Now"></span>', html)
+        self.assertNotIn("The week ahead", html)
+        self.assertNotIn('class="stale"', html)
+        # Nothing in a picture can be pressed, and the reader knows the rule.
+        self.assertNotIn("<a ", html)
+        self.assertNotIn("From the council", html)
+        self.assertNotIn('class="rule"', html)
+        # The rain is the chart alone: the alert's words say the rest. Hours gone by
+        # are drawn fainter: 12, 1 and 3 PM, but not 4 PM, which is still going.
+        self.assertNotIn("rain-text", html)
+        self.assertIn('<p class="rain-caption">Rain each hour, in millimetres.</p>', html)
+        self.assertEqual(len(re.findall(r'title="(?:12|1|3) PM: [^"]*" data-past="yes"', html)), 3)
+        self.assertEqual(html.count('data-past="yes"'), 3)
+
+    def test_a_picture_of_a_day_the_council_has_not_listed_says_so_in_plain_words(self):
+        data = self.data(at(date(2026, 12, 2), 9))
+        html = self.draw(data, "2026-12-02T16:00", "&card=2026-12-02")
+        self.assertIn("<h1>Probably free until 4:15 PM</h1>", html)
+        self.assertIn('<p class="source-row" data-sure="no">Usual pattern, not confirmed</p>', html)
+        self.assertNotIn("<a ", html)
+        self.assertNotIn('class="why"', html)
+
+    def test_a_picture_of_tomorrow_is_the_whole_day_without_a_now(self):
+        html = self.draw(self.friday(), "2026-11-20T21:00", "&card=2026-11-21")
+        # No answer at the top: it would speak of a "now" the picture does not have.
+        self.assertTrue(html.startswith('<section class="card"><h2>Tomorrow <span>Sat 21 Nov</span></h2>'))
+        self.assertNotIn("hero", html)
+        self.assertNotIn("now-line", html)
+        self.assertIn('<ul class="times"><li><span class="key booked"></span>Booked 10 AM to 6 PM</li></ul>', html)
+        # Saturday is dry: no rain, and no empty rain section.
+        self.assertNotIn("rain", html)
+
+        # Rain the next day is drawn, with no hour of it gone by. (The page has rain
+        # by the hour for today and tomorrow, so this page is built on Saturday.)
+        forecast = weather.parse(forecast_json(FRIDAY, 8, chance=lambda day, hour: 60, mm=friday_rain))
+        sunday = self.draw(self.data(at(FRIDAY + timedelta(days=1), 19, 47), forecast=forecast), "2026-11-21T21:00", "&card=2026-11-22")
+        self.assertIn('<p class="rain-caption">Rain each hour, in millimetres.</p>', sunday)
+        self.assertEqual(len(re.findall(r"<b>1\.5</b>", sunday)), 4)
+        self.assertNotIn("data-past", sunday)
+
+    def test_a_picture_of_a_day_the_page_does_not_have_is_empty(self):
+        data = self.friday()
+        self.assertEqual(self.draw(data, "2026-11-20T14:00", "&card=2026-12-25"), "")
+        # Only today or tomorrow: a day further on has no picture.
+        self.assertEqual(self.draw(data, "2026-11-20T21:00", "&card=2026-11-22"), "")
+        self.assertEqual(self.draw(data, "2026-11-21T09:00", "&card=2026-11-20"), "")
+
+    def test_a_dry_day_in_a_picture_has_no_rain_section(self):
+        dry = weather.parse(forecast_json(FRIDAY, 8, chance=lambda day, hour: 5))
+        html = self.draw(self.data(at(FRIDAY, 10), forecast=dry), "2026-11-20T10:05", "&card=2026-11-20")
+        self.assertIn("<h2>Today <span>Fri 20 Nov</span></h2>", html)
+        self.assertNotIn("rain", html)
+
     # ---- safety ----
 
     def test_words_from_outside_are_never_drawn_as_markup(self):
@@ -349,9 +412,19 @@ class LiveViewTest(unittest.TestCase):
         data["council"]["lastReadText"] = nasty
         for day in data["days"]:
             day["name"] = "Fri " + nasty
-        for now in ("2026-11-20T10:30", "2026-11-20T12:00", "2026-11-21T12:00", "2026-11-22T12:00", "2026-12-25T12:00"):
-            with self.subTest(now=now):
-                html = self.draw(data, now)
+        for now, more in [
+            ("2026-11-20T10:30", ""),
+            ("2026-11-20T12:00", ""),
+            ("2026-11-21T12:00", ""),
+            ("2026-11-22T12:00", ""),
+            ("2026-12-25T12:00", ""),
+            # The pictures for the Telegram bot: today, and tomorrow.
+            ("2026-11-20T10:30", "&card=2026-11-20"),
+            ("2026-11-20T21:00", "&card=2026-11-21"),
+            ("2026-11-21T21:00", "&card=2026-11-22"),
+        ]:
+            with self.subTest(now=now, more=more):
+                html = self.draw(data, now, more)
                 self.assertNotIn("<img", html)
                 self.assertNotIn("<script", html)
                 self.assertNotIn('onerror="', html)

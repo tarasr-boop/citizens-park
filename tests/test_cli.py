@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from parkbot import cli, fetch, telegram
+from parkbot import cli, fetch, picture, telegram
 from parkbot.store import State
 
 from .helpers import CONFIG_FILE, EAST, ROOT, SCHEDULE_FILE, WEST, forecast_json, october_html
@@ -32,6 +32,8 @@ class FakeWorld:
         self.asked_directly: list[str] = []
         self.send_error: Exception | None = None
         self.sent: list[dict] = []
+        self.draw_error: Exception | None = None
+        self.drawn: list[Path] = []
         self.lines: list[str] = []
         self.alerts: list = []
         self.environ: dict[str, str] = {"TELEGRAM_BOT_TOKEN": "123:test-token"}
@@ -66,12 +68,20 @@ class FakeWorld:
         self.alerts = alerts
         return []
 
+    def draw(self, site_dir, environ):
+        """Stands in for the pictures of the bot's alerts: no browser is started."""
+        self.drawn.append(Path(site_dir))
+        if self.draw_error:
+            raise self.draw_error
+        return "2 drawn for 3 of 3 alerts"
+
     def tools(self) -> cli.Tools:
         return cli.Tools(
             fetch=self.fetch,
             fetch_at=self.fetch_at,
             send=self.send,
             sync_issues=self.sync_issues,
+            draw=self.draw,
             lookup=lambda url: list(self.addresses),  # never look anything up on the real network
             environ=self.environ,
             say=self.lines.append,
@@ -538,6 +548,32 @@ class RunTest(unittest.TestCase):
         text = summary.read_text(encoding="utf-8")
         self.assertIn("Telegram: posted to @ExampleParkDogs", text)
         self.assertIn("Council page: read, covers up to 31 October", text)
+
+    def test_the_bot_alerts_get_their_pictures_once_the_page_is_built(self):
+        output = Path(self._folder.name) / "github_output"
+        summary = Path(self._folder.name) / "summary.md"
+        self.world.environ.update({"GITHUB_ACTIONS": "true", "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)})
+        self.assertEqual(self.world.run("2026-11-20T14:45"), 0)
+        self.assertEqual(self.world.drawn, [Path(self._folder.name) / "site"])
+        self.assertIn("Alert pictures: 2 drawn for 3 of 3 alerts", self.world.said())
+        self.assertIn("- Alert pictures: 2 drawn for 3 of 3 alerts", summary.read_text(encoding="utf-8"))
+
+    def test_pictures_that_cannot_be_drawn_hold_up_nothing(self):
+        output = Path(self._folder.name) / "github_output"
+        self.world.environ.update({"GITHUB_ACTIONS": "true", "GITHUB_OUTPUT": str(output)})
+        self.world.draw_error = picture.PictureError("the browser stopped")
+        self.assertEqual(self.world.run("2026-11-20T14:45"), 0)
+        self.assertIn("::warning::Alert pictures: not drawn, the browser stopped", self.world.lines)
+        self.assertNotIn("Traceback", self.world.said())
+        # The page is published and the post goes out as usual.
+        self.assertEqual(output.read_text(), "page=ready\n")
+        self.assertEqual(len(self.world.sent), 1)
+
+        # Something unexpected also shows where it came from.
+        self.world.draw_error = RuntimeError("something new")
+        self.assertEqual(self.world.run("2026-11-20T15:15"), 0)
+        self.assertIn("::warning::Alert pictures: not drawn, something new", self.world.lines)
+        self.assertIn("RuntimeError: something new", self.world.said())
 
     def test_the_token_never_reaches_the_log(self):
         self.world.send_error = telegram.TelegramError("Unauthorized")

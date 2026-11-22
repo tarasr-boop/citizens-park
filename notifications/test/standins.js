@@ -280,6 +280,10 @@ export function world({ page = null, words = null, answer = () => 201, pause = 0
     get said() {
       return it.bot.filter((call) => call.method === "sendMessage").map((call) => call.body);
     },
+    /** The pictures the bot sent, as `{ chat_id, photo, caption, ... }`. */
+    get pictures() {
+      return it.bot.filter((call) => call.method === "sendPhoto").map((call) => call.body);
+    },
     pushesTo(device) {
       return it.pushes.filter((call) => call.url === device.endpoint);
     },
@@ -306,6 +310,11 @@ export function world({ page = null, words = null, answer = () => 201, pause = 0
           getMyName: { name: "Citizens Park Dogs" },
           // Message numbers of their own, well away from the numbers of the messages people write.
           sendMessage: call.method === "sendMessage" ? { message_id: (call.sent = 1000 + (it.sent = (it.sent || 0) + 1)) } : null,
+          // A picture comes back in a few sizes, the largest last, each with Telegram's number for it.
+          sendPhoto:
+            call.method === "sendPhoto"
+              ? { message_id: (call.sent = 1000 + (it.sent = (it.sent || 0) + 1)), photo: [{ file_id: "small-one", width: 320 }, { file_id: "telegram-picture-1", width: 840 }] }
+              : null,
         };
         const status = (said && said.status) || 200;
         const body = status === 200

@@ -5,7 +5,7 @@ One run does everything, in this order:
 1. read the council's page (keeping the last good copy if that fails)
 2. get the rain forecast (falling back to the last one that loaded)
 3. work out today and the week ahead
-4. build the public page
+4. build the public page, with a picture for each of the Telegram bot's alerts
 5. post to Telegram, if a channel is set, it is time and today's post has not gone out yet
    (or, once the channel has moved to the bot, its one last post)
 6. save what it learned, and raise or clear watchdog issues
@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import council, fetch, message, site, telegram, watchdog, weather
+from . import council, fetch, message, picture, site, telegram, watchdog, weather
 from .config import ConfigError, load as load_config
 from .pattern import ScheduleError, load_seasons
 from .status import long_date, plan_days, short_date
@@ -61,6 +61,7 @@ class Tools:
     fetch: Callable[..., str] = fetch.get
     send: Callable[..., int] = telegram.send
     sync_issues: Callable[[list[watchdog.Alert]], list[str]] = watchdog.sync
+    draw: Callable[..., str] = picture.add
     environ: Mapping[str, str] = field(default_factory=lambda: os.environ)
     say: Callable[[str], None] = print
 
@@ -295,6 +296,17 @@ def run(options: argparse.Namespace, tools: Tools | None = None) -> int:
     else:
         say(f"Page: built in {out}/")
         summary.append("- Page: built")
+        # The pictures for the Telegram bot's alerts. Without them the alerts go as words alone.
+        try:
+            drawn = tools.draw(out, tools.environ)
+        except Exception as error:  # noqa: BLE001 - the page and the alerts go out without pictures
+            if not isinstance(error, picture.PictureError):
+                trace()
+            warn(f"Alert pictures: not drawn, {error}")
+            summary.append(f"- Alert pictures: **not drawn**, {error}")
+        else:
+            say(f"Alert pictures: {drawn}")
+            summary.append(f"- Alert pictures: {drawn}")
         _append(tools.environ.get("GITHUB_OUTPUT"), "page=ready\n")
 
     # ---- 5. Telegram ----
