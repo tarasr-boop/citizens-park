@@ -657,14 +657,15 @@ test("words that are old say so, and missing words send nothing", async () => {
 
 const PICTURE = "alerts/0123456789abcdef.png";
 const LINK = `<a href="${SITE}">Press here for the week ahead and rain by the hour</a>`;
+const captionFor = (hour) => `<b>🔴 Citizens Park oval booked until ${hour - 11} PM</b>\n${LINK}`;
 
-/** The words of `alertWords`, with a picture for every hour and the link to go under it. */
+/** The words of `alertWords`, with a picture for every hour and a caption to go under it. */
 function pictured(date, made = "06:17", image = PICTURE) {
   const words = alertWords(date, made);
-  return { ...words, caption: LINK, alerts: words.alerts.map((entry) => ({ ...entry, image })) };
+  return { ...words, alerts: words.alerts.map((entry) => ({ ...entry, image, caption: captionFor(entry.hour) })) };
 }
 
-test("the alert goes as the day's picture, with only the link to the page under it, fetched from the page only once", async () => {
+test("the alert goes as the day's picture, with its caption under it, fetched from the page only once", async () => {
   const it = open({ start: at(MONDAY, "16:00"), words: pictured(MONDAY) });
   await ready(it);
   chats(it, [
@@ -686,7 +687,7 @@ test("the alert goes as the day's picture, with only the link to the page under 
     ]
   );
   const first = it.net.pictures[0];
-  assert.equal(first.caption, LINK);
+  assert.equal(first.caption, `<b>🔴 Citizens Park oval booked until 5 PM</b>\n${LINK}`);
   assert.equal(first.parse_mode, "HTML");
   // The picture takes the place of yesterday's alert, like the words did.
   assert.deepEqual(it.net.bot.filter((call) => call.method === "deleteMessage").map((call) => call.body), [{ chat_id: 11, message_id: 555 }]);
@@ -743,7 +744,9 @@ test("only a picture the daily check made is sent, and with a caption too long t
     [fits, true],
     [tooLong, false],
   ]) {
-    const it = open({ start: at(MONDAY, "16:00"), words: { ...pictured(MONDAY), caption } });
+    const words = pictured(MONDAY);
+    words.alerts = words.alerts.map((entry) => ({ ...entry, caption }));
+    const it = open({ start: at(MONDAY, "16:00"), words });
     await ready(it);
     chats(it, [[11, 16, 8]]);
     await it.bot.tick();
@@ -754,9 +757,12 @@ test("only a picture the daily check made is sent, and with a caption too long t
   }
 });
 
-test("a telegram.json made before there was a caption has the words go under the picture", async () => {
+test("a telegram.json made before there were captions has the words go under the picture", async () => {
   for (const caption of [undefined, "", 7]) {
-    const it = open({ start: at(MONDAY, "16:00"), words: { ...pictured(MONDAY), caption } });
+    const words = pictured(MONDAY);
+    words.alerts = words.alerts.map((entry) => ({ ...entry, caption }));
+    // The one caption for all hours that the check put at the top of the file for a while is not used.
+    const it = open({ start: at(MONDAY, "16:00"), words: { ...words, caption: LINK } });
     await ready(it);
     chats(it, [[11, 16, 8]]);
     await it.bot.tick();
@@ -765,13 +771,13 @@ test("a telegram.json made before there was a caption has the words go under the
   }
 });
 
-test("an old picture says so under it, after the link", async () => {
+test("an old picture says so under it, after the caption", async () => {
   const it = open({ start: at(MONDAY, "16:00"), words: { ...pictured(MONDAY), generated: "2026-11-22T19:47+11:00", generatedText: "Sun 22 Nov, 7:47 PM" } });
   await ready(it);
   chats(it, [[11, 16, 8]]);
   await it.bot.tick();
   await runAlarms(it.bot, it.storage, it.time);
-  assert.equal(it.net.pictures[0].caption, `${LINK}\n\n⚠️ The page has not been updated since Sun 22 Nov, 7:47 PM, so this may be out of date.`);
+  assert.equal(it.net.pictures[0].caption, `${captionFor(16)}\n\n⚠️ The page has not been updated since Sun 22 Nov, 7:47 PM, so this may be out of date.`);
 });
 
 test("a sending that never finishes is given up, and the next hour goes ahead", async () => {

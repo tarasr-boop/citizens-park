@@ -5,8 +5,8 @@ weekends (see notifications/src/bot.js). The bot runs on the alerts backend,
 which knows nothing about bookings or rain. So each check writes the alert for
 every hour people can pick, today and tomorrow, into ``telegram.json`` next to
 the page. At each hour the bot sends the picture drawn for that hour
-(parkbot/picture.py) with only a link to the page under it, the "caption".
-Without a picture it sends the words written for that hour.
+(parkbot/picture.py) with the "caption" under it: one line on the bookings and
+a link to the page. Without a picture it sends the words written for that hour.
 
 An alert is the same post the channel gets, written for its own time of day:
 at 8 AM it names every booking of the day, at 4 PM only what is left. An alert
@@ -62,12 +62,12 @@ def alerts(config: Config, plans: list[DayPlan], forecast: Forecast | None, now:
                     "about": about.isoformat(),
                     "weekend": about.weekday() >= 5,
                     "text": message.daily(plan, forecast, written, config, ahead=ahead),
+                    # What goes under the alert's picture. Without a picture the words go.
+                    "caption": message.caption(plan, written, config, ahead=ahead),
                 }
             )
     return {
         "generated": now.isoformat(timespec="minutes"),
         "generatedText": f"{short_date(now.date())}, {clock(now_minute)}",
-        # What goes under an alert's picture: only the link to the page. An alert without a picture is its words.
-        "caption": message.page_link(config),
         "alerts": entries,
     }

@@ -42,13 +42,22 @@ class AlertsTest(unittest.TestCase):
         self.assertEqual(made["generated"], "2026-10-23T06:17+11:00")
         self.assertEqual(made["generatedText"], "Fri 23 Oct, 6:17 AM")
 
-    def test_under_a_picture_goes_only_the_link_to_the_page(self):
+    def test_under_a_picture_goes_one_line_on_the_bookings_and_the_link(self):
         made = self.alerts(at(FRIDAY, 6, 17))
         link = '<a href="https://example.org/park/">Press here for the week ahead and rain by the hour</a>'
-        self.assertEqual(made["caption"], link)
+        captions = {(entry["date"], entry["hour"]): entry["caption"] for entry in made["alerts"]}
+        self.assertEqual(captions[("2026-10-23", 8)], f"<b>🔴 Citizens Park oval booked 4 to 8 PM</b>\n{link}")
+        self.assertEqual(captions[("2026-10-23", 17)], f"<b>🔴 Citizens Park oval booked until 8 PM</b>\n{link}")
+        self.assertEqual(captions[("2026-10-23", 20)], f"<b>🟢 Today's bookings at Citizens Park oval have finished</b>\n{link}")
+        # From the evening hour, about the whole of the next day.
+        self.assertEqual(captions[("2026-10-23", 21)], f"<b>🔴 Citizens Park oval booked 10 AM to 6 PM tomorrow</b>\n{link}")
+        # The hour that has begun is written for the moment the check runs, like its words.
+        later = self.alerts(at(FRIDAY, 16, 47))
+        self.assertEqual(later["alerts"][0]["caption"], f"<b>🔴 Citizens Park oval booked until 8 PM</b>\n{link}")
         # The words for an alert without a picture end with the same link.
         for entry in made["alerts"]:
             self.assertTrue(entry["text"].endswith("\n\n" + link), entry["text"])
+        self.assertNotIn("caption", made)
 
     def test_the_current_hour_is_kept_and_written_for_now(self):
         made = self.alerts(at(FRIDAY, 17, 47))

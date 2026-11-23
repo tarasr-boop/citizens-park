@@ -147,12 +147,39 @@ def daily(plan: DayPlan, forecast: Forecast | None, now: datetime, config: Confi
     return "\n".join(lines)
 
 
-def page_link(config: Config) -> str:
-    """The link to the page at the end of the daily post.
+def caption(plan: DayPlan, now: datetime, config: Config, ahead: bool = False) -> str:
+    """What the Telegram bot writes under an alert's picture, written at ``now``.
 
-    It is also all the Telegram bot writes under an alert's picture, as the
-    picture shows the rest.
+    One line on the bookings, with the park's name, so that it shows in a
+    phone's notification ("🔴 Citizens Park oval booked until 8 PM"), and the
+    link to the page. The picture shows the rest. With ``ahead`` the line is
+    about the whole of ``plan``'s day, tomorrow.
     """
+    return f"<b>{_text(_headline(plan, 0 if ahead else now.hour * 60 + now.minute, config.park_name, ahead))}</b>\n{page_link(config)}"
+
+
+def _headline(plan: DayPlan, now_minute: int, name: str, ahead: bool) -> str:
+    """The bookings for the rest of the day in one line, worded like ``_booking_lines``: only what is booked is named."""
+    day = "tomorrow" if ahead else "today"
+    if plan.closed:
+        return f"⛔ {name} closed {day}"
+    if not plan.known:
+        return f"❔ No booking information for {name} {day}"
+    sure = plan.confirmed
+    if not plan.slots:
+        if plan.label:
+            return f"⚠️ {name} may be closed {day} ({plan.label})"
+        return f"🟢 No bookings at {name} {day}" if sure else f"🟢 Usually no bookings at {name} on {plan.day:%A}s"
+    remaining = [slot for slot in plan.slots if slot.end > now_minute]
+    if not remaining:
+        return f"🟢 Today's bookings at {name} have finished" if sure else f"🟢 The usual booking time at {name} has passed"
+    booked = ", then ".join(f"until {clock(slot.end)}" if slot.start <= now_minute else span(slot) for slot in remaining)
+    when = f"{booked} tomorrow" if ahead else booked
+    return f"🔴 {name} booked {when}" if sure else f"🟠 {name} usually booked {when}"
+
+
+def page_link(config: Config) -> str:
+    """The link to the page: at the end of the daily post, and under the Telegram bot's alert picture."""
     return f'<a href="{escape(config.site_url)}">Press here for the week ahead and rain by the hour</a>'
 
 
