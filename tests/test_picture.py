@@ -83,10 +83,10 @@ class CardPageTest(SiteTest):
         # Words from outside cannot end the data block early.
         self.assertNotIn("</script><script>alert(1)", page)
         self.assertEqual(page.count("<script"), 2)
-        # The picture talks to nothing: no backend for notifications, so nothing is counted either.
+        # The picture talks to nothing: no backend, so nothing is counted.
         block = page[page.index('<script id="park-data" type="application/json">') :]
         drawn_data = json.loads(block[block.index(">") + 1 : block.index("</script>")])
-        self.assertIsNone(drawn_data["push"])
+        self.assertIsNone(drawn_data["backend"])
         self.assertEqual(drawn_data["days"], data["days"])
 
     def test_the_font_comes_with_its_licence(self):

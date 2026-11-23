@@ -4,10 +4,11 @@
 // The names the page sends for its buttons and links are "where:what". These
 // are the words shown for them. A name not listed here is shown as it is sent.
 const LABELS = {
-  "alerts:on": "Alerts turned on",
-  "alerts:off": "Alerts turned off",
-  "buttons:notify": "“Alerts on this phone” button",
-  "buttons:t.me": "Telegram button (custom alerts)",
+  // The browser notifications, until they were taken off the page on 23 November 2026.
+  "alerts:on": "Notifications turned on (until 23 Nov)",
+  "alerts:off": "Notifications turned off (until 23 Nov)",
+  "buttons:notify": "“Alerts on this phone” button (until 23 Nov)",
+  "buttons:t.me": "Telegram button",
   "buttons:feedback": "Feedback button",
   "share:open": "Opened “Share this page”",
   "share:copy": "“Copy the link” button",

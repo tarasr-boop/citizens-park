@@ -1,8 +1,8 @@
-"""The words of the Telegram posts, and of the notification a phone shows.
+"""The words of the Telegram posts.
 
 Telegram's HTML mode is used for the bold heading and the link, so anything
 that comes from outside (such as a label from the council's page) is escaped
-before it goes into a post. A notification is plain text and needs none.
+before it goes into a post.
 """
 
 from __future__ import annotations
@@ -181,20 +181,6 @@ def _headline(plan: DayPlan, now_minute: int, name: str, ahead: bool) -> str:
 def page_link(config: Config) -> str:
     """The link to the page: at the end of the daily post, and under the Telegram bot's alert picture."""
     return f'<a href="{escape(config.site_url)}">Press here for the week ahead and rain by the hour</a>'
-
-
-def notice(plan: DayPlan, forecast: Forecast | None, now_minute: int, config: Config, saved_at: str = "") -> dict[str, str]:
-    """The same news as the daily post, as a notification for a phone: a title and a few lines under it.
-
-    ``now_minute`` is the time of day the words are written for. The page's data
-    carries a notice for each coming day, written for the time the alert goes
-    out, so that one is ready even on a day when no check ran before the alert.
-    """
-    booked, rest = _news(plan, forecast, now_minute, config, saved_at)
-    title = booked[0]
-    if title.endswith(".") and ". " not in title:
-        title = title[:-1]  # a title of one sentence reads better without its full stop
-    return {"title": title, "body": "\n".join(booked[1:] + rest)}
 
 
 def _day_words(plan: DayPlan) -> str:

@@ -28,11 +28,10 @@
 // itself is a secret of the backend on Cloudflare: it is sent to Telegram's
 // API and nowhere else, and never written down or put in the log.
 //
-// Like book.js, this file knows nothing about Cloudflare. It is given a
+// Like starter.js, this file knows nothing about Cloudflare. It is given a
 // SQLite database, a place to keep a few notes, a way to fetch, and a clock.
 
-import { localTime } from "./rules.js";
-import { toBase64Url } from "./webpush.js";
+import { localTime, toBase64Url } from "./rules.js";
 import * as words from "./botwords.js";
 
 const TELEGRAM = "https://api.telegram.org";
@@ -128,7 +127,7 @@ export class Bot {
   /**
    * `sql` is a Durable Object's SQLite database (exec), `storage` its other
    * storage (get, put, delete, setAlarm, getAlarm). `fetch`, `now`,
-   * `settings` and `log` are what a Book is given. `token` is the bot's
+   * `settings` and `log` are what a Starter is given. `token` is the bot's
    * token from Telegram, or "" while there is none.
    */
   constructor({ sql, storage, fetch, now, settings, log, token }) {

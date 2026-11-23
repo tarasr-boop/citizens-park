@@ -35,10 +35,10 @@ advice_until = "21:00"
 
 [alerts]
 # When the daily alert goes out, in Melbourne time: the post in the Telegram
-# channel and the notification on phones. One time for Monday to Friday and one
-# for Saturday and Sunday. The page tells people these times.
+# channel (now retired). One time for Monday to Friday and one for Saturday and
+# Sunday. The daily check runs a little before each of these times.
 # If you change them, change the run times in .github/workflows/daily.yml and
-# the times in notifications/wrangler.jsonc too. The tests say what to change.
+# CHECK_TIMES in notifications/wrangler.jsonc too. The tests say what to change.
 weekdays = "16:00"
 weekends = "08:00"
 # An alert that could not go out by this time is left out for the day.
@@ -86,8 +86,8 @@ text = "Hi, I'm Sofia, a dog trainer. I work at the Lost Dogs' Home shelter, run
 link = "https://www.instagram.com/gentle_woof"
 link_text = "@gentle_woof on Instagram"
 
-[notifications]
-# The address of the notifications backend (the small Cloudflare program in the
-# notifications/ folder). Make it empty ("") to take the button for
-# notifications off the page.
+[backend]
+# The address of the alerts backend (the small Cloudflare program in the
+# notifications/ folder). It runs the Telegram bot and counts visits for the
+# stats page. Make it empty ("") and the page counts nothing.
 url = "https://alerts.citizensbark.com"

@@ -80,8 +80,8 @@ def find_browser(environ: Mapping[str, str]) -> str | None:
 
 def card_page(data: dict) -> str:
     """The page the pictures are taken of: the page's own style and script, the page's data, and the font."""
-    # The picture must not talk to anything: no backend for notifications, so nothing is sent or counted.
-    data = {**data, "push": None}
+    # The picture must not talk to anything: no backend, so nothing is counted.
+    data = {**data, "backend": None}
     template = (WEB / "card.html").read_text(encoding="utf-8")
     values = {
         "css": (WEB / "page.css").read_text(encoding="utf-8"),

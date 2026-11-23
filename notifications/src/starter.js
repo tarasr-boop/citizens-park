@@ -15,8 +15,8 @@
 // the number of GitHub's answer about it, and eight letters made from it that
 // tell one token from the next.
 //
-// Like book.js, this file knows nothing about Cloudflare. It is given a place
-// to keep things, a way to fetch, a way to read the page's data, and a clock.
+// This file knows nothing about Cloudflare. It is given a place to keep
+// things, a way to fetch, a way to read the page's data, and a clock.
 
 import { clockText, localTime } from "./rules.js";
 
@@ -66,6 +66,18 @@ function hhmm(minute) {
 
 const took = (answer) => answer >= 200 && answer < 300;
 
+/** The page's data.json, read fresh with `fetch` from the page at `siteUrl`. Throws if it cannot be read. */
+export async function pageData(fetch, siteUrl, now) {
+  const response = await fetch(`${siteUrl}data.json?t=${now}`, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) throw new Error(`the page's data answered ${response.status}`);
+  const data = await response.json();
+  if (!data || typeof data !== "object") throw new Error("the page's data is not what was expected");
+  return data;
+}
+
 /**
  * Eight letters made from the token, to tell one token from the next. They
  * are kept with GitHub's answer about the token, so that a new token is not
@@ -79,9 +91,10 @@ async function markOf(token) {
 
 export class Starter {
   /**
-   * `storage`, `fetch`, `now`, `settings` and `log` are what a Book is given.
-   * `page` reads the page's data, given the time. `token` is the token from
-   * GitHub, or "" while there is none.
+   * `storage` is a Durable Object's storage (get and put). `fetch` is how to
+   * reach the outside. `now` gives the time in milliseconds. `settings` comes
+   * from `settingsFrom`. `log` takes one line. `page` reads the page's data,
+   * given the time. `token` is the token from GitHub, or "" while there is none.
    */
   constructor({ storage, fetch, page, now, settings, log, token }) {
     this.storage = storage;

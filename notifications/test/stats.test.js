@@ -284,7 +284,7 @@ test("the page shows the numbers and the lists, names the presses in words and e
   assert.match(html, /2 to 7 days<\/td><td>1</);
   assert.match(html, /30 seconds to 2 minutes<\/td><td>1</);
   assert.match(html, /Richmond, Victoria<\/td><td>1</);
-  assert.match(html, /Telegram button \(custom alerts\)<\/td><td>1</);
+  assert.match(html, /Telegram button<\/td><td>1</);
   assert.match(html, /how:example\.org<\/td><td>1</);
   assert.match(html, /&lt;b&gt;Evil&lt;\/b&gt; Hosting \(Amazon\)<\/td><td>1</);
   assert.doesNotMatch(html, /<b>Evil/);
@@ -413,7 +413,7 @@ test("the page lists people, the owner's devices and programs apart, but only wh
   assert.match(html, /<b>Visitor a1b2<\/b> · phone, iPhone, Safari \(or an app&#39;s browser\)/);
   assert.match(html, /Richmond, Victoria · Telstra Limited/);
   assert.match(html, /Last Sat 21 Nov, 9:00 AM · 1 visit this month/);
-  assert.match(html, /First came by QR code\. On the page for 3 minutes in all\. Pressed Telegram button \(custom alerts\)\./);
+  assert.match(html, /First came by QR code\. On the page for 3 minutes in all\. Pressed Telegram button\./);
   assert.match(html, /&lt;i&gt;Amazon&lt;\/i&gt;/);
   assert.doesNotMatch(html, /<i>Amazon/);
   // Open, the page never lists anyone, even if it was handed the list.

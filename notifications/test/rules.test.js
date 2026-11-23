@@ -1,33 +1,15 @@
-// The small decisions: the time at the park, which addresses are taken, what
-// a notification says, and the settings.
+// The small decisions: the time at the park, who may talk to the backend from
+// a browser, and the settings.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import {
-  ALERT_LEAD,
-  GRACE_MINUTES,
-  Refusal,
-  alertFrom,
-  alertTimes,
-  checkSubscription,
-  clockText,
-  corsHeaders,
-  isFresh,
-  isWeekend,
-  localTime,
-  messageFor,
-  noticeFor,
-  settingsFrom,
-  tidyEndpoint,
-  welcome,
-} from "../src/rules.js";
-import { LARGEST_MESSAGE } from "../src/webpush.js";
-import { BOT, CHECK, ENV, SITE, at, day, newDevice, pageData, readJsonc, settings } from "./standins.js";
+import { clockText, corsHeaders, localTime, settingsFrom, toBase64Url } from "../src/rules.js";
+import { BOT, CHECK, ENV, SITE, at, readJsonc, settings } from "./standins.js";
 
 test("the settings are read and tidied", () => {
-  assert.deepEqual(settings, { siteUrl: SITE, origin: "https://citizensbark.example", zone: "Australia/Melbourne", weekdays: 900, weekends: 480, until: 1140, check: null, bot: null });
+  assert.deepEqual(settings, { siteUrl: SITE, origin: "https://citizensbark.example", zone: "Australia/Melbourne", check: null, bot: null });
   // An address without its last slash gets one, so that file names can be added to it.
   assert.equal(settingsFrom({ ...ENV, SITE_URL: "https://example.org/park" }).siteUrl, "https://example.org/park/");
   assert.equal(settingsFrom({ ...ENV, SITE_URL: "https://example.org/park" }).origin, "https://example.org");
@@ -40,20 +22,6 @@ test("settings that make no sense are turned down with a plain reason", () => {
     [{ SITE_URL: "http://citizensbark.example/" }, /https/],
     [{ TIMEZONE: "Australia/Richmond" }, /TIMEZONE/],
     [{ TIMEZONE: undefined }, /TIMEZONE/],
-    [{ ALERT_WEEKDAYS: "3 PM" }, /ALERT_WEEKDAYS/],
-    [{ ALERT_WEEKDAYS: "24:00" }, /ALERT_WEEKDAYS/],
-    [{ ALERT_WEEKDAYS: undefined }, /ALERT_WEEKDAYS/],
-    [{ ALERT_WEEKENDS: "8" }, /ALERT_WEEKENDS/],
-    [{ ALERT_WEEKENDS: undefined }, /ALERT_WEEKENDS/],
-    [{ ALERT_UNTIL: "19:60" }, /ALERT_UNTIL/],
-    [{ ALERT_UNTIL: undefined }, /ALERT_UNTIL/],
-    [{ ALERT_WEEKDAYS: "19:00" }, /ALERT_WEEKDAYS should be earlier than ALERT_UNTIL/],
-    [{ ALERT_WEEKENDS: "19:30" }, /ALERT_WEEKENDS should be earlier than ALERT_UNTIL/],
-    [{ ALERT_UNTIL: "08:00" }, /earlier/],
-    // The alert may go out half an hour early, and that must still be the same day.
-    [{ ALERT_WEEKENDS: "00:29" }, /ALERT_WEEKENDS should be 30 minutes after midnight or later/],
-    // The names the two times had before. A deploy with only those must fail, not guess.
-    [{ ALERT_WEEKDAYS: undefined, ALERT_WEEKENDS: undefined, ALERT_FROM: "14:30" }, /ALERT_WEEKDAYS/],
   ];
   for (const [change, reason] of wrong) {
     assert.throws(() => settingsFrom({ ...ENV, ...change }), reason, JSON.stringify(change));
@@ -113,16 +81,11 @@ test("the settings in wrangler.jsonc are ones the backend takes", () => {
   const file = readJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
   const real = settingsFrom(file.vars);
   assert.equal(real.siteUrl.startsWith("https://"), true);
-  // Taras asked for the alert at 4 PM on weekdays and at 8 AM on weekends.
-  assert.deepEqual([real.weekdays, real.weekends], [16 * 60, 8 * 60]);
-  assert.equal(real.weekdays < real.until && real.weekends < real.until, true);
   // The second timer has a handful of times of day there. Without any, it is switched off on purpose.
   if (real.check) assert.ok(real.check.times.length >= 3 && real.check.times.length <= 24);
   assert.equal(settingsFrom({ ...file.vars, CHECK_TIMES: "" }).check, null);
+  // The times of the browser notifications went with them (23 November 2026).
   assert.deepEqual(Object.keys(file.vars).sort(), [
-    "ALERT_UNTIL",
-    "ALERT_WEEKDAYS",
-    "ALERT_WEEKENDS",
     "BACKEND_URL",
     "BOT_EVENING",
     "BOT_FIRST",
@@ -219,249 +182,6 @@ test("times are written the way the page writes them", () => {
   assert.equal(clockText(23 * 60 + 59), "11:59 PM");
 });
 
-test("Saturday and Sunday are the weekend, by the date at the park", () => {
-  // Monday 16 to Sunday 22 November 2026.
-  const week = ["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20", "2026-11-21", "2026-11-22"];
-  assert.deepEqual(week.map(isWeekend), [false, false, false, false, false, true, true]);
-  // The days around a new year and a leap day.
-  assert.deepEqual(["2026-12-31", "2027-01-01", "2027-01-02", "2028-02-29"].map(isWeekend), [false, false, true, false]);
-  // Early on Saturday at the park it is still Friday in UTC. The date at the park decides.
-  const early = localTime(Date.parse("2026-11-20T20:35:00Z"), "Australia/Melbourne");
-  assert.deepEqual(early, { date: "2026-11-21", minute: 455 });
-  assert.equal(isWeekend(early.date), true);
-});
-
-test("the alert may go out from half an hour before its time, which differs at the weekend", () => {
-  assert.equal(ALERT_LEAD, 30);
-  assert.equal(alertFrom(settings, "2026-11-20"), 14 * 60 + 30);
-  assert.equal(alertFrom(settings, "2026-11-21"), 7 * 60 + 30);
-  assert.equal(alertFrom(settings, "2026-11-22"), 7 * 60 + 30);
-  assert.equal(alertFrom(settings, "2026-11-23"), 14 * 60 + 30);
-  // Without a fresh check it goes out a quarter of an hour after its time.
-  assert.equal(GRACE_MINUTES - ALERT_LEAD, 15);
-});
-
-test("people are told both times to expect the alert, or the one time if they are the same", () => {
-  assert.equal(alertTimes(settings), "3 PM on weekdays and 8 AM on weekends");
-  assert.equal(alertTimes({ ...settings, weekdays: 16 * 60 }), "4 PM on weekdays and 8 AM on weekends");
-  assert.equal(alertTimes({ ...settings, weekdays: 9 * 60 + 30, weekends: 9 * 60 + 30 }), "9:30 AM");
-});
-
-test("an address at one of the browsers' notification services is taken", () => {
-  const hosts = [
-    "fcm.googleapis.com",
-    "jmt17.google.com",
-    "updates.push.services.mozilla.com",
-    "web.push.apple.com",
-    "api.push.apple.com",
-    "wns2-sg2p.notify.windows.com",
-    "db5p.notify.windows.com",
-    "autopush.stage.push.services.mozilla.com",
-  ];
-  for (const host of hosts) {
-    const phone = newDevice(host);
-    assert.deepEqual(checkSubscription(phone.subscription), { endpoint: phone.endpoint, ...phone.subscription.keys }, host);
-  }
-});
-
-test("keys in plain base64 are taken and filed as base64url", () => {
-  const phone = newDevice();
-  const plain = (text) => Buffer.from(text, "base64url").toString("base64");
-  const tidied = checkSubscription({ endpoint: phone.endpoint, keys: { p256dh: plain(phone.subscription.keys.p256dh), auth: plain(phone.subscription.keys.auth) } });
-  assert.deepEqual(tidied, { endpoint: phone.endpoint, ...phone.subscription.keys });
-});
-
-test("an address anywhere else is turned down, and its host is named", () => {
-  const hosts = [
-    "example.org",
-    "fcm.googleapis.com.example.org",
-    "evilfcm.googleapis.com",
-    "notfcm.googleapis.com",
-    "push.apple.com",
-    "evilpush.apple.com",
-    "notify.windows.com",
-    "evilnotify.windows.com",
-    "localhost",
-    "127.0.0.1",
-    "169.254.169.254",
-    "citizensbark.example",
-  ];
-  for (const host of hosts) {
-    const phone = newDevice(host);
-    assert.throws(
-      () => checkSubscription(phone.subscription),
-      (error) => error instanceof Refusal && error.status === 400 && error.reason === "host" && error.host === host,
-      host
-    );
-  }
-});
-
-test("an address that is not a plain https address is turned down", () => {
-  const phone = newDevice();
-  const keys = phone.subscription.keys;
-  const wrong = [
-    "http://fcm.googleapis.com/send/abc",
-    "https://fcm.googleapis.com:8443/send/abc",
-    "https://someone@fcm.googleapis.com/send/abc",
-    "https://someone:secret@fcm.googleapis.com/send/abc",
-    "ftp://fcm.googleapis.com/send/abc",
-    "fcm.googleapis.com/send/abc",
-    "",
-    `https://fcm.googleapis.com/send/${"a".repeat(2000)}`,
-  ];
-  for (const endpoint of wrong) {
-    assert.throws(
-      () => checkSubscription({ endpoint, keys }),
-      (error) => error instanceof Refusal && error.status === 400 && error.reason === "bad" && error.host === "",
-      endpoint.slice(0, 60)
-    );
-  }
-});
-
-test("what is not an address with two keys is turned down", () => {
-  const phone = newDevice();
-  const { endpoint, keys } = phone.subscription;
-  const short = Buffer.alloc(15).toString("base64url");
-  const compressed = Buffer.concat([Buffer.of(2), Buffer.alloc(32, 1)]).toString("base64url");
-  const notStartingWith4 = Buffer.concat([Buffer.of(5), Buffer.alloc(64, 1)]).toString("base64url");
-  const wrong = [
-    null,
-    undefined,
-    "text",
-    42,
-    [],
-    {},
-    { endpoint },
-    { endpoint, keys: null },
-    { endpoint, keys: "keys" },
-    { endpoint: 42, keys },
-    { endpoint, keys: { p256dh: keys.p256dh } },
-    { endpoint, keys: { auth: keys.auth } },
-    { endpoint, keys: { p256dh: keys.p256dh, auth: short } },
-    { endpoint, keys: { p256dh: compressed, auth: keys.auth } },
-    { endpoint, keys: { p256dh: notStartingWith4, auth: keys.auth } },
-    { endpoint, keys: { p256dh: "not base64!", auth: keys.auth } },
-    { endpoint, keys: { p256dh: 5, auth: keys.auth } },
-  ];
-  for (const given of wrong) {
-    assert.throws(
-      () => checkSubscription(given),
-      (error) => error instanceof Refusal && error.status === 400 && error.reason === "bad",
-      JSON.stringify(given)
-    );
-  }
-});
-
-test("an address is filed the same way however it was written", () => {
-  assert.equal(tidyEndpoint("https://FCM.googleapis.com/send/abc"), "https://fcm.googleapis.com/send/abc");
-  const phone = newDevice();
-  assert.equal(tidyEndpoint(phone.endpoint), checkSubscription(phone.subscription).endpoint);
-  for (const wrong of [null, undefined, 42, {}, "not an address", "a".repeat(2001)]) {
-    assert.throws(() => tidyEndpoint(wrong), (error) => error instanceof Refusal && error.reason === "bad");
-  }
-});
-
-test("the page's data is fresh once a check has run today at or after the time the alert may go out", () => {
-  const local = { date: "2026-11-20", minute: 905 };
-  const fresh = (generated) => isFresh({ generated }, local, settings);
-  assert.equal(fresh("2026-11-20T14:30:00+11:00"), true);
-  assert.equal(fresh("2026-11-20T15:04:10+11:00"), true);
-  assert.equal(fresh("2026-11-20T03:30:00Z"), true);
-  // The morning's check does not count, nor does yesterday's afternoon check.
-  assert.equal(fresh("2026-11-20T14:29:59+11:00"), false);
-  assert.equal(fresh("2026-11-20T11:47:00+11:00"), false);
-  assert.equal(fresh("2026-11-19T15:00:00+11:00"), false);
-  // At the weekend the alert is a morning one, so the morning's check is the one that counts.
-  const saturday = { date: "2026-11-21", minute: 480 };
-  assert.equal(isFresh({ generated: "2026-11-21T07:30:00+11:00" }, saturday, settings), true);
-  assert.equal(isFresh({ generated: "2026-11-21T07:56:00+11:00" }, saturday, settings), true);
-  assert.equal(isFresh({ generated: "2026-11-21T07:29:00+11:00" }, saturday, settings), false);
-  assert.equal(isFresh({ generated: "2026-11-21T06:35:00+11:00" }, saturday, settings), false);
-  assert.equal(isFresh({ generated: "2026-11-20T15:56:00+11:00" }, saturday, settings), false);
-  assert.equal(fresh("not a time"), false);
-  assert.equal(fresh(undefined), false);
-  assert.equal(isFresh(null, local, settings), false);
-  assert.equal(isFresh("text", local, settings), false);
-});
-
-test("today's notice is taken from the page's data", () => {
-  const local = { date: "2026-11-20", minute: 905 };
-  const data = pageData({
-    generated: "2026-11-20T15:01:00+11:00",
-    days: [day("2026-11-19", "Yesterday"), day("2026-11-20", "  Booked 5 PM to 7:30 PM  ", "Cricket training.\nRain likely between 3 PM and 8 PM."), day("2026-11-21", "Tomorrow")],
-  });
-  assert.deepEqual(noticeFor(data, local, settings), { title: "Booked 5 PM to 7:30 PM", body: "Cricket training.\nRain likely between 3 PM and 8 PM." });
-});
-
-test("data made earlier today is used as it is, and data from another day says that it may be out of date", () => {
-  const local = { date: "2026-11-20", minute: 915 };
-  const days = [day("2026-11-20", "No bookings today", "")];
-  const morning = pageData({ generated: "2026-11-20T11:47:00+11:00", generatedText: "11:47 AM", days });
-  assert.deepEqual(noticeFor(morning, local, settings), { title: "No bookings today", body: "" });
-
-  const yesterday = pageData({ generated: "2026-11-19T19:47:00+11:00", generatedText: "Thu 19 Nov, 7:47 PM", days });
-  assert.deepEqual(noticeFor(yesterday, local, settings), {
-    title: "No bookings today",
-    body: "⚠️ The page has not been updated since Thu 19 Nov, 7:47 PM, so this may be out of date.",
-  });
-
-  const withWords = pageData({ generated: "2026-11-19T19:47:00+11:00", generatedText: "", days: [day("2026-11-20", "Booked 5 PM to 7 PM", "Cricket.")] });
-  assert.equal(noticeFor(withWords, local, settings).body, "Cricket.\n⚠️ The page has not been updated today, so this may be out of date.");
-
-  const noTime = { days: [day("2026-11-20", "Booked 5 PM to 7 PM", "Cricket.")] };
-  assert.match(noticeFor(noTime, local, settings).body, /has not been updated today/);
-});
-
-test("data without a notice for today gives none", () => {
-  const local = { date: "2026-11-20", minute: 915 };
-  const generated = "2026-11-20T15:01:00+11:00";
-  assert.equal(noticeFor(pageData({ generated, days: [day("2026-11-19"), day("2026-11-21")] }), local, settings), null);
-  assert.equal(noticeFor(pageData({ generated, days: [] }), local, settings), null);
-  assert.equal(noticeFor(pageData({ generated, days: [{ date: "2026-11-20" }] }), local, settings), null);
-  assert.equal(noticeFor(pageData({ generated, days: [{ date: "2026-11-20", notice: { title: "   ", body: "words" } }] }), local, settings), null);
-  assert.equal(noticeFor(pageData({ generated, days: [{ date: "2026-11-20", notice: { title: 5 } }] }), local, settings), null);
-  assert.equal(noticeFor(pageData({ generated, days: [null, "text", 5] }), local, settings), null);
-  assert.equal(noticeFor({ days: "none" }, local, settings), null);
-  assert.equal(noticeFor(null, local, settings), null);
-});
-
-test("a notice that is far too long is cut, and still fits in one notification", () => {
-  const local = { date: "2026-11-20", minute: 915 };
-  const data = pageData({ generated: "2026-11-20T15:01:00+11:00", days: [day("2026-11-20", "🐕".repeat(500), "⚠️".repeat(3000))] });
-  const notice = noticeFor(data, local, settings);
-  assert.equal(Array.from(notice.title).length, 120);
-  assert.equal(Array.from(notice.body).length, 600);
-  assert.ok(notice.title.endsWith("…"));
-  assert.ok(notice.body.endsWith("…"));
-  // Cut between characters, never through the middle of one.
-  assert.equal(notice.title, "🐕".repeat(119) + "…");
-  assert.ok(messageFor(notice, settings, "daily").length <= LARGEST_MESSAGE);
-});
-
-test("a notification is written in the shape that iPhones show by themselves", () => {
-  const bytes = messageFor({ title: "Booked 5 PM to 7:30 PM", body: "Cricket training." }, settings, "daily");
-  assert.ok(bytes instanceof Uint8Array);
-  assert.deepEqual(JSON.parse(new TextDecoder().decode(bytes)), {
-    web_push: 8030,
-    notification: {
-      title: "Booked 5 PM to 7:30 PM",
-      body: "Cricket training.",
-      navigate: SITE,
-      tag: "daily",
-      renotify: true,
-      lang: "en-AU",
-      badge: `${SITE}badge.png`,
-    },
-  });
-});
-
-test("the first notification says when to expect the alert", () => {
-  assert.deepEqual(welcome(settings), {
-    title: "Alerts are on",
-    body: "You'll get one notification a day, at about 3 PM on weekdays and 8 AM on weekends, saying when the oval is booked.",
-  });
-});
-
 test("only the page itself is allowed to talk to the backend from a browser", () => {
   assert.deepEqual(corsHeaders("https://citizensbark.example", settings), {
     Vary: "Origin",
@@ -477,4 +197,10 @@ test("only the page itself is allowed to talk to the backend from a browser", ()
 
 test("the moments used in these tests are what they say", () => {
   assert.deepEqual(localTime(at("2026-11-20", "15:00"), "Australia/Melbourne"), { date: "2026-11-20", minute: 900 });
+});
+
+test("bytes are written as base64url, without padding", () => {
+  assert.equal(toBase64Url(new Uint8Array([])), "");
+  assert.equal(toBase64Url(new Uint8Array([251, 255, 191])), "-_-_");
+  assert.equal(toBase64Url(new Uint8Array([104, 105]).buffer), "aGk");
 });

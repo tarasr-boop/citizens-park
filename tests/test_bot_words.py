@@ -124,14 +124,22 @@ class ButtonTest(unittest.TestCase):
 
     def test_with_the_bots_name_the_telegram_button_opens_a_chat_with_the_bot(self):
         page = self.page(bot_name="ExampleParkBot")
-        self.assertIn('<a class="button" href="https://t.me/ExampleParkBot" rel="noopener">Get custom alerts on Telegram</a>', page)
-        self.assertNotIn(">Get alerts on Telegram<", page)
+        # The one way to get the alert, so the filled button, and the channel's button gives way to it.
+        self.assertIn('<a class="button primary" href="https://t.me/ExampleParkBot" rel="noopener">Get alerts on Telegram</a>', page)
+        self.assertIn('<p class="button-note">One alert a day, at a time you choose.</p>', page)
+        self.assertEqual(page.count(">Get alerts on Telegram<"), 1)
+        # While the channel still posts, "How this works" names both.
+        self.assertIn('The <a href="https://t.me/ExampleParkBot" rel="noopener">Citizens Park bot</a> sends the same alert at a time you choose.', page)
 
     def test_once_the_channel_has_moved_to_the_bot_the_page_names_only_the_bot(self):
         page = self.page(bot_name="ExampleParkBot", channel_retired=True)
-        self.assertIn(">Get custom alerts on Telegram</a>", page)
+        self.assertIn(">Get alerts on Telegram</a>", page)
         self.assertNotIn("t.me/ExampleParkDogs", page)
-        self.assertIn('On Telegram, the <a href="https://t.me/ExampleParkBot" rel="noopener">Citizens Park bot</a> sends the same alert at a time you choose.', page)
+        self.assertIn(
+            '<p>The <a href="https://t.me/ExampleParkBot" rel="noopener">Citizens Park bot</a> on Telegram sends a free alert once a day, '
+            "at a time you choose: one for weekdays and one for weekends.</p>",
+            page,
+        )
         # Without the bot's name, a retired channel leaves no Telegram button at all.
         self.assertNotIn("Telegram</a>", self.page(channel_retired=True, bot_name="").split("How this works")[0])
 

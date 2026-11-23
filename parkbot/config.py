@@ -15,8 +15,7 @@ from .timeparse import parse_hhmm
 # The daily alert may go out from this many minutes before its stated time.
 # The check that sends it is asked for a little before that time (see
 # .github/workflows/daily.yml), so that the alert arrives on the hour and not
-# after it. The alerts backend has the same number: ALERT_LEAD in
-# notifications/src/rules.js.
+# after it.
 ALERT_LEAD = 30
 
 
@@ -52,7 +51,7 @@ class Config:
     about_text: str
     about_link: str
     about_link_text: str
-    push_url: str  # the notifications backend, without a closing "/"; while empty the page offers no notifications
+    backend_url: str  # the alerts backend, without a closing "/"; while empty the page counts nothing
     # The Telegram bot's custom alerts (the [bot] section). Times are minutes after midnight, each on the hour.
     bot_name: str = ""  # the bot's link name, without "@"; while empty the page's Telegram button leads to the channel
     bot_first: int = 4 * 60  # the earliest time people can choose
@@ -146,7 +145,7 @@ def load(path: str | Path = "config.toml") -> Config:
         park, council, telegram, site = raw["park"], raw["council"], raw["telegram"], raw["site"]
         alerts = raw.get("alerts", {})  # optional
         about = raw.get("about", {})  # optional
-        notifications = raw.get("notifications", {})  # optional
+        backend = raw.get("backend", {})  # optional
         bot = raw.get("bot", {})  # optional
         sections = (
             ("park", park),
@@ -155,14 +154,20 @@ def load(path: str | Path = "config.toml") -> Config:
             ("alerts", alerts),
             ("site", site),
             ("about", about),
-            ("notifications", notifications),
+            ("backend", backend),
             ("bot", bot),
         )
         for name, section in sections:
             if not isinstance(section, dict):
                 raise ConfigError(f"{path}: {name} should be a section that starts with a [{name}] line")
-        # Where the alert's time used to be set. Said out loud, so that an old
-        # setting is never quietly ignored.
+        # The browser notifications are gone, and their backend's address moved
+        # to [backend]. Said out loud, so that an old setting is never quietly ignored.
+        if "notifications" in raw:
+            raise ConfigError(
+                "[notifications] is no longer used: the page has no notifications any more. "
+                "The backend's address goes under [backend], as url"
+            )
+        # Where the alert's time used to be set.
         for old in ("post_from", "post_until"):
             if old in telegram:
                 raise ConfigError(
@@ -211,7 +216,7 @@ def load(path: str | Path = "config.toml") -> Config:
             about_link=about_link,
             # With no words of its own, the link shows its address without the "https://".
             about_link_text=str(about.get("link_text", "")).strip() or about_link.removeprefix("https://").rstrip("/"),
-            push_url=_web_address(str(notifications.get("url", "")), "notifications.url").rstrip("/"),
+            backend_url=_web_address(str(backend.get("url", "")), "backend.url").rstrip("/"),
             bot_name=_link_name(str(bot.get("name", "")), "bot.name"),
             bot_first=_on_the_hour(bot.get("first", "04:00"), "bot.first"),
             bot_last=_on_the_hour(bot.get("last", "23:00"), "bot.last"),

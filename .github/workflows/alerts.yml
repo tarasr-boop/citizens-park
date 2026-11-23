@@ -1,8 +1,8 @@
 name: Alerts backend
 
 # Puts the alerts backend (the notifications/ folder) on Cloudflare. That is
-# the small program that keeps the devices that asked for the daily alert and
-# sends it to them.
+# the small program that runs the Telegram bot, starts the daily check when
+# GitHub's own timer has not, and counts visits for the stats page.
 #
 # It runs when that folder changes on the main branch, and when it is started
 # by hand (Actions, "Alerts backend", "Run workflow"). To deploy, it needs two

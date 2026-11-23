@@ -119,9 +119,6 @@ class SettingsTest(unittest.TestCase):
         hint = "notifications/wrangler.jsonc and config.toml no longer agree"
         self.assertEqual(told["SITE_URL"], self.config.site_url, hint)
         self.assertEqual(told["TIMEZONE"], self.config.timezone_name, hint)
-        self.assertEqual(told["ALERT_WEEKDAYS"], hhmm(self.config.alert_weekdays), hint)
-        self.assertEqual(told["ALERT_WEEKENDS"], hhmm(self.config.alert_weekends), hint)
-        self.assertEqual(told["ALERT_UNTIL"], hhmm(self.config.alert_until), hint)
         # The Telegram bot's hours, and its name for the park.
         self.assertEqual(told["BOT_FIRST"], hhmm(self.config.bot_first), hint)
         self.assertEqual(told["BOT_LAST"], hhmm(self.config.bot_last), hint)
@@ -130,14 +127,11 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(told["BOT_WEEKEND"], hhmm(self.config.bot_weekend), hint)
         self.assertEqual(told["PARK_NAME"], self.config.park_name, hint)
         # Telegram is told to bring messages to the backend's own address, the one the page uses.
-        self.assertEqual(told["BACKEND_URL"], self.config.push_url, hint)
+        self.assertEqual(told["BACKEND_URL"], self.config.backend_url, hint)
         self.assertEqual(told["BACKEND_URL"], "https://" + self.settings["routes"][0]["pattern"])
         self.assertEqual(
             sorted(told),
             [
-                "ALERT_UNTIL",
-                "ALERT_WEEKDAYS",
-                "ALERT_WEEKENDS",
                 "BACKEND_URL",
                 "BOT_EVENING",
                 "BOT_FIRST",
@@ -155,38 +149,6 @@ class SettingsTest(unittest.TestCase):
                 "TIMEZONE",
             ],
         )
-
-    def test_the_backend_and_the_daily_check_open_the_alerts_window_at_the_same_time(self):
-        # Both let the alert go out a little before its stated time, and by the same number of minutes.
-        rules = (BACKEND / "src" / "rules.js").read_text(encoding="utf-8")
-        lead = int(re.search(r"^export const ALERT_LEAD = (\d+);$", rules, flags=re.MULTILINE).group(1))
-        self.assertEqual(lead, config_module.ALERT_LEAD, "ALERT_LEAD in notifications/src/rules.js and in parkbot/config.py no longer agree")
-
-    def test_the_timer_covers_the_alert_window_in_summer_and_in_winter(self):
-        crons = self.settings["triggers"]["crons"]
-        # Cloudflare's free plan allows five timers for a whole account.
-        self.assertLessEqual(len(crons), 5)
-        fires = set().union(*(utc_minutes(cron) for cron in crons))
-        zone = ZoneInfo(self.config.timezone_name)
-        # A Friday and a Saturday in summer, the same in winter, and the two Sundays on which the clocks change.
-        days = (date(2027, 1, 15), date(2027, 1, 16), date(2027, 7, 16), date(2027, 7, 17), date(2026, 10, 4), date(2027, 4, 4))
-        self.assertEqual([day.weekday() for day in days], [4, 5, 4, 5, 6, 6])
-        for day in days:
-            with self.subTest(day=day.isoformat()):
-                opens, closes = self.config.alert_from(day), self.config.alert_until
-                looks = []
-                for minute in range(opens, closes):
-                    moment = datetime.combine(day, time(minute // 60, minute % 60), tzinfo=zone)
-                    utc = moment.astimezone(ZoneInfo("UTC"))
-                    if utc.hour * 60 + utc.minute in fires:
-                        looks.append(minute)
-                self.assertTrue(looks, "the timer never looks inside the alert window")
-                # It looks within five minutes of the window opening, every five
-                # minutes after that, and within five minutes of it closing.
-                self.assertLessEqual(looks[0], opens + 5)
-                self.assertGreaterEqual(looks[-1], closes - 5)
-                gaps = [later - earlier for earlier, later in zip(looks, looks[1:])]
-                self.assertLessEqual(max(gaps), 5)
 
     def test_the_timer_looks_early_in_every_hour_the_bot_sends_in_summer_and_in_winter(self):
         fires = set().union(*(utc_minutes(cron) for cron in self.settings["triggers"]["crons"]))
@@ -215,29 +177,33 @@ class SettingsTest(unittest.TestCase):
                 moment = datetime.combine(day, time(minute // 60, minute % 60), tzinfo=zone).astimezone(ZoneInfo("UTC"))
                 self.assertNotIn(moment.hour * 60 + moment.minute, fires, f"{day} {hhmm(minute)}")
 
-    def test_the_book_and_the_counter_are_set_up_the_way_the_free_plan_needs(self):
+    def test_the_timer_the_counter_and_the_bot_are_set_up_the_way_the_free_plan_needs(self):
         self.assertEqual(
             self.settings["durable_objects"],
             {
                 "bindings": [
-                    {"name": "SUBSCRIBERS", "class_name": "Subscribers"},
+                    {"name": "TIMER", "class_name": "Timer"},
                     {"name": "STATS", "class_name": "Stats"},
                     {"name": "CHATS", "class_name": "Chats"},
                 ]
             },
         )
         # On the free plan a Durable Object must keep its things in SQLite. A
-        # migration that has been deployed is never changed: a new class gets a new one.
+        # migration that has been deployed is never changed: a new class, or a
+        # new name for one, gets a new one. The first object held the browser
+        # notifications too; renamed, it keeps the second timer's notes.
         self.assertEqual(
             self.settings["migrations"],
             [
                 {"tag": "v1", "new_sqlite_classes": ["Subscribers"]},
                 {"tag": "v2", "new_sqlite_classes": ["Stats"]},
                 {"tag": "v3", "new_sqlite_classes": ["Chats"]},
+                {"tag": "v4", "renamed_classes": [{"from": "Subscribers", "to": "Timer"}]},
             ],
         )
         worker = (BACKEND / self.settings["main"]).read_text(encoding="utf-8")
-        for name, binding in (("Subscribers", "SUBSCRIBERS"), ("Stats", "STATS"), ("Chats", "CHATS")):
+        self.assertNotIn("export class Subscribers", worker)
+        for name, binding in (("Timer", "TIMER"), ("Stats", "STATS"), ("Chats", "CHATS")):
             self.assertIn(f"export class {name}", worker)
             self.assertIn(f"env.{binding}", worker)
 
@@ -257,8 +223,8 @@ class SettingsTest(unittest.TestCase):
 
     def test_the_page_points_at_the_backend_or_at_nothing(self):
         # Empty until the backend is live. After that, it must be the backend's address.
-        if self.config.push_url:
-            self.assertEqual(self.config.push_url, "https://" + self.settings["routes"][0]["pattern"])
+        if self.config.backend_url:
+            self.assertEqual(self.config.backend_url, "https://" + self.settings["routes"][0]["pattern"])
 
     def test_the_date_of_the_runtime_rules_is_a_real_date_in_the_past(self):
         chosen = date.fromisoformat(self.settings["compatibility_date"])
@@ -336,31 +302,10 @@ class SecondTimerTest(unittest.TestCase):
                     self.assertGreaterEqual(looks[-1], last - 5)
                     self.assertLessEqual(max(later - earlier for earlier, later in zip(looks, looks[1:])), 5)
 
-    def test_one_set_time_falls_due_early_in_the_posting_window(self):
-        # If only the second timer works, the post still goes out near its
-        # usual time: some check falls due after the window opens and before
-        # the alert stops waiting for a fresh check. That holds for a weekday
-        # and for a weekend day, which have different alert times.
-        rules = (BACKEND / "src" / "rules.js").read_text(encoding="utf-8")
-        grace = int(re.search(r"^export const GRACE_MINUTES = (\d+);$", rules, flags=re.MULTILINE).group(1))
-        early_enough = self.number("EARLY_ENOUGH")
-        if not self.set_times():
-            return  # switched off on purpose
-        due = [set_time + self.number("START_AFTER") for set_time in self.set_times()]
-        for name, day in (("weekdays", date(2026, 11, 20)), ("weekends", date(2026, 11, 21))):
-            with self.subTest(name):
-                opens = self.config.alert_from(day)
-                in_time = [minute for minute in due if opens <= minute < opens + grace]
-                self.assertTrue(in_time, "no set time falls due between the window opening and the alert going out without a fresh check")
-                # A run from just before the window opened would not post, so it must not count for that set time.
-                for set_time in self.set_times():
-                    if opens <= set_time + self.number("START_AFTER") < opens + grace:
-                        self.assertGreaterEqual(set_time - early_enough, opens)
-
     def test_the_post_run_is_started_just_before_the_alerts_time(self):
-        # People are told a time on the hour. Started by the second timer in the
-        # ten minutes before it, the check has posted and published the page by
-        # then, and the backend sends the notification at its next look.
+        # The bot's alerts start at these times for a new chat. Started by the
+        # second timer in the ten minutes before, the check has published the
+        # page and the bot's words by then, so the alert on the hour is fresh.
         if not self.set_times():
             return  # switched off on purpose
         due = [set_time + self.number("START_AFTER") for set_time in self.set_times()]
@@ -384,7 +329,6 @@ class SecondTimerTest(unittest.TestCase):
         self.assertEqual(self.set_times(), [])
         self.test_its_times_are_the_times_github_is_asked_to_run_the_check()
         self.test_the_timer_looks_after_every_set_time_in_summer_and_in_winter()
-        self.test_one_set_time_falls_due_early_in_the_posting_window()
         self.test_the_post_run_is_started_just_before_the_alerts_time()
         self.test_set_times_are_far_enough_apart_for_one_check_to_finish()
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -602,7 +546,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("""grep -q '"telegram":{"on":true'""", ask)
         self.assertRegex((BACKEND / "src" / "bot.js").read_text(encoding="utf-8"), r"return \{\n      on: true,\n")
         worker = (BACKEND / "src" / "worker.js").read_text(encoding="utf-8")
-        self.assertIn("{ ...answer.body, starter: await this.starter.status() }", worker)
+        self.assertIn("json(200, { ok: true, starter: await this.starter.status() })", worker)
         starter = (BACKEND / "src" / "starter.js").read_text(encoding="utf-8")
         self.assertRegex(starter, r"return \{\n      on: true,\n")
         # Switched off on purpose is not a fault.
@@ -665,7 +609,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn("\n  alerts:\n    name: Alerts backend\n", tests)
         self.assertIn("run: npm test", tests)
         self.assertIn("run: npm run runtime", tests)
-        self.assertIn("node --check parkbot/web/sw.js", tests)
+        self.assertIn("node --check parkbot/web/page.js", tests)
         self.assertEqual(secrets_named(tests), [])
         self.assertNotIn("wrangler deploy\n", tests)
 
@@ -675,56 +619,27 @@ class TogetherTest(unittest.TestCase):
 
     def setUp(self):
         self.page = (ROOT / "parkbot" / "web" / "page.js").read_text(encoding="utf-8")
-        self.shower = (ROOT / "parkbot" / "web" / "sw.js").read_text(encoding="utf-8")
         self.worker = (BACKEND / "src" / "worker.js").read_text(encoding="utf-8")
-        self.book = (BACKEND / "src" / "book.js").read_text(encoding="utf-8")
-        self.rules = (BACKEND / "src" / "rules.js").read_text(encoding="utf-8")
+        self.starter = (BACKEND / "src" / "starter.js").read_text(encoding="utf-8")
 
-    def test_the_page_asks_for_paths_the_backend_answers(self):
-        routes = re.search(r"const ROUTES = \{(.*?)\};", self.worker).group(1)
-        self.assertEqual(sorted(re.findall(r'"([A-Z]+ /[a-z]*)"', routes)), ["GET /", "GET /key", "GET /status", "POST /subscribe", "POST /unsubscribe"])
-        self.assertIn('ask("/key")', self.page)
-        self.assertIn('ask("/subscribe", { subscription: mine.toJSON() })', self.page)
-        self.assertIn('ask("/unsubscribe", { endpoint: endpoint })', self.page)
-        self.assertIn('tell(backend, "/subscribe", { subscription: subscription.toJSON() })', self.shower)
-        self.assertIn('tell(backend, "/unsubscribe", { endpoint: old.endpoint })', self.shower)
-        self.assertIn("checkSubscription(given && given.subscription)", self.book)
-        self.assertIn("tidyEndpoint(given && given.endpoint)", self.book)
+    def test_the_page_sends_its_counts_where_the_backend_takes_them(self):
+        self.assertIn('backend + "/hit"', self.page)
+        self.assertIn('asked === "POST /hit"', self.worker)
+        # And it reads the backend's address from the page's data, under the name the build gives it.
+        self.assertIn("data.backend", self.page)
+        self.assertIn('"backend": config.backend_url or None', (ROOT / "parkbot" / "site.py").read_text(encoding="utf-8"))
 
-    def test_the_page_knows_every_reason_the_backend_gives(self):
-        given = set(re.findall(r'reason: "([a-z]+)"', self.worker + self.book)) | set(re.findall(r'new Refusal\(\d+, "([a-z]+)"', self.rules))
-        # "secret" is only ever said to Telegram, which brings messages to the bot. The page never hears it.
-        self.assertEqual(given, {"bad", "full", "gone", "host", "later", "origin", "secret", "settings", "unknown"})
-        # These three get words of their own on the page. Every other one means "try again later".
-        for reason in ("full", "gone", "host"):
-            self.assertIn(f'reply.reason === "{reason}"', self.page)
+    def test_the_page_asks_the_backend_for_nothing_the_notifications_used(self):
+        for path in ("/key", "/subscribe", "/unsubscribe"):
+            with self.subTest(path=path):
+                self.assertNotIn(f'"{path}"', self.page)
+                self.assertNotIn(f"{path}\"", self.worker)
 
-    def test_the_notification_is_written_the_way_the_pages_script_reads_it(self):
-        for name in ("title", "body", "navigate", "tag"):
-            with self.subTest(part=name):
-                self.assertRegex(self.rules, rf"\n        {name}[,:]")
-                self.assertIn(f"notice.{name}", self.shower)
-        self.assertIn("sent && sent.notification", self.shower)
-        self.assertIn("web_push: 8030", self.rules)
-        # The one picture a notification names, the small mark for the status bar,
-        # is published with the page: everything in assets/ is, apart from the
-        # files the build keeps back. The page's icon is not named any more.
-        self.assertIn('settings.siteUrl + "badge.png"', self.rules)
-        self.assertTrue((ROOT / "assets" / "badge.png").is_file(), "the picture is missing from assets/")
-        self.assertNotIn("icon", self.rules.split("export function messageFor", 1)[1].split("\n}\n", 1)[0].replace("notification", ""))
-        # The script beside the page names one more on Android phones, a picture with nothing on it.
-        self.assertIn('"blank.png"', self.shower)
-        self.assertTrue((ROOT / "assets" / "blank.png").is_file(), "the picture is missing from assets/")
-
-    def test_the_backend_reads_the_data_the_page_publishes(self):
+    def test_the_second_timer_reads_the_data_the_page_publishes(self):
         site = (ROOT / "parkbot" / "site.py").read_text(encoding="utf-8")
-        self.assertIn("${this.settings.siteUrl}data.json", self.book)
-        for name in ("generated", "generatedText", "days"):
-            with self.subTest(part=name):
-                self.assertTrue(f'"{name}"' in site, "the page's data no longer has this part")
-                self.assertTrue(re.search(rf"data\.{name}\b", self.rules), "the backend no longer reads this part")
-        self.assertTrue('"notice": message.notice(' in site)
-        self.assertTrue("day.notice" in self.rules)
+        self.assertIn("${siteUrl}data.json", self.starter)
+        self.assertTrue('"generated"' in site, "the page's data no longer has this part")
+        self.assertTrue(re.search(r"data && data\.generated\b", self.starter), "the second timer no longer reads this part")
 
 
 if __name__ == "__main__":
