@@ -22,7 +22,7 @@
 // Every day is kept for good, one entry per day, so any month can be looked
 // at later. A year is about 365 small entries.
 //
-// Like book.js, this file knows nothing about Cloudflare. It is given a place
+// Like starter.js, this file knows nothing about Cloudflare. It is given a place
 // to keep things and a clock, so the tests can stand in for both.
 
 import { localTime } from "./rules.js";

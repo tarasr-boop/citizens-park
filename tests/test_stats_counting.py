@@ -37,7 +37,7 @@ def page_data() -> dict:
     store = CouncilStore()
     html = (FIXTURES / "council_november_2026.html").read_text(encoding="utf-8")
     store.update(parse(html, built.date(), MELBOURNE), built.date(), built)
-    config = load_config(push_url=BACKEND, site_url=PAGE + "/")
+    config = load_config(backend_url=BACKEND, site_url=PAGE + "/")
     plans = plan_days(built.date(), 8, store, seasons(), config.day_start, config.lights_off)
     return site.page_data(config, plans, None, store, built)
 
@@ -168,14 +168,13 @@ class CountingTest(unittest.TestCase):
         self.assertEqual(stays, [{"kind": "stay", "seconds": 42, "id": DEVICE}])
 
     def test_presses_are_named_by_where_they_are_and_what_they_are(self):
-        presses = ["telegram", "notify", "label", "instagram", "shareOpen", "copy", "feedback", "mail", "council", "odd", "plain"]
+        presses = ["telegram", "label", "instagram", "shareOpen", "copy", "feedback", "mail", "council", "odd", "plain"]
         result = self.run_page(stored={"lastVisit": "2026-11-20"}, presses=presses)
         names = [body["name"] for body in self.bodies(result)[1:]]
         self.assertEqual(
             names,
             [
                 "buttons:t.me",
-                "buttons:notify",
                 "status:to-how",
                 "about:instagram.com",
                 "share:open",
@@ -207,7 +206,7 @@ class CountingTest(unittest.TestCase):
     def test_nothing_is_counted_on_a_copy_of_the_page_elsewhere_or_by_a_steered_browser_or_without_a_backend(self):
         self.assertEqual(self.run_page(origin="https://example.org", presses=["telegram"])["sent"], [])
         self.assertEqual(self.run_page(webdriver=True, presses=["telegram"])["sent"], [])
-        self.assertEqual(self.run_page(dict(self.data, push=None), presses=["telegram"], leaveAfterSeconds=5)["sent"], [])
+        self.assertEqual(self.run_page(dict(self.data, backend=None), presses=["telegram"], leaveAfterSeconds=5)["sent"], [])
 
 
 if __name__ == "__main__":

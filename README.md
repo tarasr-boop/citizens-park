@@ -2,13 +2,12 @@
 
 Is the oval at Citizens Park in Richmond free for dogs today?
 
-The oval is a dog off-lead area, but dogs must stay off it while organised sport or training is on. This project checks the council's booking table and the rain forecast every day and tells people in three places:
+The oval is a dog off-lead area, but dogs must stay off it while organised sport or training is on. This project checks the council's booking table and the rain forecast every day and tells people in two places:
 
 - **A web page.** Today's booked times hour by hour, the week ahead, rain by the hour in millimetres, and a QR code to share it: <https://citizensbark.com/>
-- **A notification on a phone.** The same alert at the same times, for people who do not use Telegram. The button for it is on the web page.
-- **Custom alerts from the Telegram bot.** The same alert in a private chat, at a time each person picks: one for weekdays and one for weekends. See [The Telegram bot](#the-telegram-bot).
+- **Alerts from the Telegram bot.** A daily alert in a private chat, at a time each person picks: one for weekdays and one for weekends. See [The Telegram bot](#the-telegram-bot). The page's **Get alerts on Telegram** button leads there.
 
-There used to be a Telegram channel as well, posting once a day at about 4 PM on weekdays and 8 AM on weekends. On 21 November 2026 it moved to the bot: it got one last post pointing there and posts nothing more.
+There used to be a Telegram channel as well, posting once a day at about 4 PM on weekdays and 8 AM on weekends. On 21 November 2026 it moved to the bot: it got one last post pointing there and posts nothing more. Until 23 November 2026 the page could also send the alert as a notification in the browser. That was taken away to keep things simple, so the bot is now the one way to get the alert. The next time someone who had turned those notifications on opens the page, it quietly takes them off that browser.
 
 It is unofficial. It is not affiliated with the council or the sports clubs.
 
@@ -72,7 +71,7 @@ You can make all of these on GitHub: open the file, press the pencil icon, edit,
 | The tip button | `tip_url` in `config.toml`. Paste your Ko-fi link. Leave it empty to hide the button. |
 | The feedback button in "How this works" | `feedback_email` under `[site]` in `config.toml`. It opens an email to that address, which anyone can then read on the page. Leave it empty to hide the button. |
 | The usual weekly pattern | `schedule.toml`. It is only used on days the council's page does not cover. |
-| The times of the daily alert | `weekdays` and `weekends` under `[alerts]` in `config.toml`, the run times in `.github/workflows/daily.yml` (the post run is set for 20 minutes before the alert's time), and `ALERT_WEEKDAYS`, `ALERT_WEEKENDS` and `CHECK_TIMES` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
+| The times of the daily alert | `weekdays` and `weekends` under `[alerts]` in `config.toml`, the run times in `.github/workflows/daily.yml` (the post run is set for 20 minutes before the alert's time), and `CHECK_TIMES` in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 | The hours searched for the best window on a rainy day | `advice_from` and `advice_until` under `[telegram]` in `config.toml` |
 | The hours people can pick in the Telegram bot, and the times a new chat starts with | The `[bot]` section of `config.toml`, and the `BOT_` settings in `notifications/wrangler.jsonc`. The tests say so if they no longer agree. |
 | The link button under the times in the Telegram bot (now Sofia's Instagram) | `BOT_LINK` (the address) and `BOT_LINK_TEXT` (the button's words) in `notifications/wrangler.jsonc`. Leave `BOT_LINK` empty to hide the button. |
@@ -113,19 +112,11 @@ GitHub switches off scheduled jobs in a public repository after 60 days with no 
 
 **The bot token is a password.** Never put it in a file here or in a chat. If it leaks, send `/revoke` to @BotFather, then save the new token in the `TELEGRAM_BOT_TOKEN` secret.
 
-## Notifications on a phone
+## The alerts backend
 
-The page can also send the daily alert straight to a phone or a computer, as a notification, for people who do not use Telegram. Someone opens the page, presses **Get alerts on this phone** and allows notifications. On an iPhone or iPad the page has to be added to the Home Screen first, and the page says so when the button is pressed.
+A few things need a small program that is always there, not only when the Daily check runs: the [Telegram bot](#the-telegram-bot), the [second timer](#the-second-timer) that starts the Daily check when GitHub's own timer has not, and the counter behind the [stats page](#stats). That program is in the `notifications/` folder (named after the browser notifications it once sent) and runs on Cloudflare's free plan, at <https://alerts.citizensbark.com>. Opening that address shows a few numbers: `starter` for the second timer and `telegram` for the bot.
 
-This part needs one thing the rest does not: a small program that is always there, to keep the list of devices and to send the alert. It is in the `notifications/` folder and runs on Cloudflare's free plan, at <https://alerts.citizensbark.com>. Opening that address shows a few numbers: how many devices there are, and how the last alert went.
-
-How it works:
-
-- A browser gives each device an address for notifications, and the page hands that address to the backend. Nothing else is kept: no name, no email address, no location.
-- Every five minutes through the day, the backend looks at the clock. From half an hour before the alert's time (4 PM on weekdays, 8 AM on weekends) it reads the page's `data.json`. As soon as that shows a check from inside that half hour or later, the backend sends that day's words to every device. If no such check has run a quarter of an hour after the alert's time, it sends what the page has for the day, and says so if that is from an earlier day.
-- A new device gets one notification straight away, to show that it works.
-- A device that turns alerts off is removed at once. An address that has stopped working is removed the next time an alert goes out.
-- The words travel encrypted, so only the device can read them. The backend makes its own signing keys the first time it starts and never shows them, so there is no password for a person to keep.
+When the browser notifications were taken away (23 November 2026), the backend deleted what it kept for them: each device's address for notifications and the keys for writing to it.
 
 ### Switching it on
 
@@ -135,19 +126,9 @@ The backend is put on Cloudflare by the **Alerts backend** workflow. It needs tw
 2. Open [Account API tokens](https://dash.cloudflare.com/?to=/:account/api-tokens) and press **Create Token**. Under **Permission policies**, open the **Custom** dropdown and choose **Edit Cloudflare Workers**. Two lines of permissions appear, for your account and for its zones. Leave them as they are and give the token a name. Create the token and copy it. Cloudflare shows it only once.
 3. In this repository, open **Settings**, **Secrets and variables**, **Actions**, and save two repository secrets: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
 4. Open **Actions**, choose **Alerts backend**, then press **Run workflow**. The run ends by asking the backend how things are. The first time, Cloudflare needs a few minutes to set up the address.
-5. Put the backend's address in `config.toml`, as `url` under `[notifications]`. The button appears on the page a minute or two later. While `url` is empty, the page has no button.
+5. Put the backend's address in `config.toml`, as `url` under `[backend]`. A minute or two later the page starts counting its visits there. While `url` is empty, the page counts nothing.
 
 **The Cloudflare token is a password.** Never put it in a file here or in a chat. If it leaks, delete it on the Account API tokens page and make a new one.
-
-### When notifications go wrong
-
-- **Nobody got today's alert.** Open <https://alerts.citizensbark.com>. `timer` shows what the backend last did and why, and `last` shows how the last alert went. "waiting for the check before the alert" means the Daily check has not run since half an hour before the alert's time. The alert still goes out a quarter of an hour after its time: at 4:15 PM on weekdays and 8:15 AM on weekends.
-- **One phone gets nothing.** On that phone, open the page, turn the alerts off and on again. A first notification should arrive within a few seconds. On an iPhone, the page must be opened from the Home Screen icon.
-- **The button is missing.** The browser cannot show notifications, or `url` under `[notifications]` is empty.
-- **`unknownServices` is not empty.** A browser uses a notification service that the backend does not know yet. Add its name to the list in `notifications/src/rules.js` if it belongs to a real browser.
-- **`last` counts a device as `refused`, or `refusals` is not empty.** A notification service would not take a message. `refusals` says which service, the number of its answer, how often, on which day last, and the service's own words. It names the service (a server of Apple, Google, Mozilla or Microsoft), never a device. One refused device mends itself: the next time its owner opens the page, it is tried again and, if it is still refused, given a fresh address. If one service refuses every device, the fault is more likely in the backend, and the number and the words say where to look.
-
-Limits: the backend takes up to 5,000 devices, and sends to them forty at a time, which the free plan carries comfortably.
 
 ## The second timer
 
@@ -192,7 +173,7 @@ How it works:
 - Each Daily check writes the alert for every hour people can pick, today and tomorrow, into `telegram.json` next to the page. The bot itself knows nothing about bookings or rain.
 - The same check draws each alert's picture with the page's own script and style, in Google Chrome without a window (GitHub's runners have it), and puts it next to the page in `alerts/`. The words in it are set in Inter, a font that comes with the code (`parkbot/web/card-font.woff2`, free to share under the SIL Open Font License), so a picture looks the same wherever it is drawn. The run's log says how many it drew ("Alert pictures: 27 drawn for 33 of 33 alerts"). If they cannot be drawn, the log has a warning and the alerts go out as words alone, as before.
 - Under the picture go only those two lines (each alert's `caption` in `telegram.json`), as the picture says the rest. Like the post, the line names only what is booked: "booked 4 to 8 PM", "booked until 8 PM", "No bookings at Citizens Park oval today", and "tomorrow" in an alert from 9 PM. If the page has not been updated for 18 hours, a warning goes under the link too. Telegram takes up to 1,024 letters under a picture; if there were more, the words would go alone, without the picture. If Telegram cannot fetch the picture, the alerts of that hour go as words alone, which say all that the picture does.
-- The bot runs on the same backend as the notifications, at <https://alerts.citizensbark.com>. Telegram brings what people write to it there. The backend sets that up by itself, with a password it makes and never shows, so that only Telegram can talk to it.
+- The bot runs on the [alerts backend](#the-alerts-backend), at <https://alerts.citizensbark.com>. Telegram brings what people write to it there. The backend sets that up by itself, with a password it makes and never shows, so that only Telegram can talk to it.
 - In the first minutes of each hour, the backend sends that hour's words to everyone who picked it, about 25 a second.
 - For each chat it keeps the chat's number, the two times, whether the alerts are paused, the last day it sent an alert about, and the numbers of the bot's own messages there, so it can take them away. No name, no user name, nothing anyone wrote. Someone who blocks the bot is removed at once.
 - It takes up to 5,000 chats.
@@ -223,7 +204,7 @@ The bot gives itself its name, unless someone gave it a different one with @BotF
 
 The arrows at the top go to earlier months, and each day in "Each day" opens on its own. Every day is kept for good.
 
-The page counts for itself, through the same backend as the notifications, so it needs no outside service and no cookies. It sends only what happened ("a visit, this device's 3rd, 2 days after its last one", or "the first button was pressed"), never anything about the person. A device knows it has been here before only because its browser remembers the date of its last visit, how many visits it has made, and a random number it picked the first time (16 hexadecimal digits, made on the device and tied to nothing else). That number is what lets the list of visitors put one device's visits together. The backend adds the browser's own description of itself and the rough place and network Cloudflare works out from the internet address; the address itself is never kept. A private window, or a browser whose history was cleared, counts as a new device. Programs that do not run the page's script, such as link previews in chat apps, are not counted at all.
+The page counts for itself, through the [alerts backend](#the-alerts-backend), so it needs no outside service and no cookies. It sends only what happened ("a visit, this device's 3rd, 2 days after its last one", or "the first button was pressed"), never anything about the person. A device knows it has been here before only because its browser remembers the date of its last visit, how many visits it has made, and a random number it picked the first time (16 hexadecimal digits, made on the device and tied to nothing else). That number is what lets the list of visitors put one device's visits together. The backend adds the browser's own description of itself and the rough place and network Cloudflare works out from the internet address; the address itself is never kept. A private window, or a browser whose history was cleared, counts as a new device. Programs that do not run the page's script, such as link previews in chat apps, are not counted at all.
 
 The QR code holds the address with `?qr` after it, so visits through it can be told apart. To leave your own phone or computer out of the numbers, open <https://citizensbark.com/?me> once in each browser you use (`?me=off` undoes it). Both markers are taken out of the address as the page opens.
 
@@ -263,7 +244,7 @@ The QR code holds the page's address. If you rename the repository or move the p
    ```
 
 3. Commit the new files in `assets/`.
-4. Change `SITE_URL` in `notifications/wrangler.jsonc` to the same address, so that the notifications backend goes on listening to the page.
+4. Change `SITE_URL` in `notifications/wrangler.jsonc` to the same address, so that the alerts backend goes on counting the page's visits and reading its data.
 
 The tests fail while the QR code or the backend's settings do not match the address, so neither can be forgotten. A QR code that was already printed keeps the old address.
 
@@ -285,10 +266,8 @@ parkbot/
   web/          the page's template, styles and script, and the page the pictures are drawn from (card.html)
   watchdog.py   opens and closes the [watchdog] issues
   store.py      what is remembered between runs (the data/ folder)
-notifications/  the backend that sends notifications to phones (JavaScript, runs on Cloudflare)
-  src/webpush.js   encrypts and sends one notification, the way the web standards describe
-  src/rules.js     the small decisions: the time at the park, which addresses are taken, the words, the settings
-  src/book.js      the book of devices, and the daily sending
+notifications/  the alerts backend: the Telegram bot, the second timer and the visit counter (JavaScript, runs on Cloudflare)
+  src/rules.js     the small decisions: the time at the park, who may talk to the backend, the settings
   src/starter.js   the second timer, which starts the Daily check when GitHub's own timer has not
   src/stats.js     the counter behind the stats page: visits, devices, returns, sources and presses, kept by the day
   src/statspage.js the stats page itself
@@ -331,7 +310,7 @@ It asks each known server for the forecast and prints how it went. The **Tests**
 
 Python 3.11 or newer is needed. The job itself installs nothing.
 
-The notifications backend has its own tests, which need Node 22.12 or newer:
+The alerts backend has its own tests, which need Node 22.12 or newer:
 
 ```
 cd notifications
@@ -340,7 +319,7 @@ npm test
 npm run runtime
 ```
 
-`npm test` runs the backend with stand-ins for Cloudflare, the notification services, the page and GitHub. A stand-in phone decrypts every notification, to check that the words arrive. `npm run runtime` bundles the code the way a deploy does and runs it in `workerd`, the program that runs it on Cloudflare's servers. Both run in the **Tests** workflow after every change.
+`npm test` runs the backend with stand-ins for Cloudflare, the page, GitHub and Telegram. `npm run runtime` bundles the code the way a deploy does and runs it in `workerd`, the program that runs it on Cloudflare's servers. Both run in the **Tests** workflow after every change.
 
 The tools are pinned to exact versions in `notifications/package.json`. To move to a newer `wrangler`, change its version there, set `miniflare` to the version that `wrangler` asks for, and run `npm install` in that folder. The code in `notifications/src/` uses no package at all.
 

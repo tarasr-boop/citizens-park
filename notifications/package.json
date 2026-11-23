@@ -2,7 +2,7 @@
   "name": "citizens-bark-alerts",
   "version": "1.0.0",
   "private": true,
-  "description": "The alerts backend for the Citizens Bark page: keeps the devices that want the daily alert and sends it to them.",
+  "description": "The alerts backend for the Citizens Bark page: the Telegram bot, the second timer for the daily check, and the visit counter.",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js",

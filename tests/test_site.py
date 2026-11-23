@@ -175,7 +175,9 @@ class BuildTest(unittest.TestCase):
 
     def test_telegram_button_only_with_a_channel(self):
         page = self.build()
-        self.assertIn('<a class="button" href="https://t.me/ExampleParkDogs" rel="noopener">Get alerts on Telegram</a>', page)
+        # The one way to get the alert, so the filled button, with a line under it that says when it comes.
+        self.assertIn('<a class="button primary" href="https://t.me/ExampleParkDogs" rel="noopener">Get alerts on Telegram</a>', page)
+        self.assertIn('<p class="button-note">One alert a day, at about 3 PM on weekdays and 8 AM on weekends.</p>', page)
 
         page = self.build(load_config(channel=""))
         self.assertNotIn("Telegram", page)
@@ -186,13 +188,11 @@ class BuildTest(unittest.TestCase):
     def test_how_this_works_says_when_the_alert_goes_out_and_how_to_get_it(self):
         channel = '<a href="https://t.me/ExampleParkDogs" rel="noopener">ExampleParkDogs</a>'
         when = "A free alert goes out once a day, at about 3 PM on weekdays and 8 AM on weekends, "
-        # Only the ways that are set up are named.
         self.assertIn(f"<p>{when}in the {channel} channel on Telegram.</p>", self.build())
-        both = self.build(load_config(push_url="https://alerts.example"))
-        self.assertIn(f"<p>{when}as a notification from this page and in the {channel} channel on Telegram.</p>", both)
-        only_phones = self.build(load_config(channel="", push_url="https://alerts.example"))
-        self.assertIn(f"<p>{when}as a notification from this page.</p>", only_phones)
+        # A backend for counting visits changes nothing here: it sends no alert.
+        self.assertIn(f"<p>{when}in the {channel} channel on Telegram.</p>", self.build(load_config(backend_url="https://alerts.example")))
         self.assertNotIn("A free alert", self.build(load_config(channel="")))
+        self.assertNotIn("A free alert", self.build(load_config(channel="", backend_url="https://alerts.example")))
         # One time for every day is said once.
         same = self.build(load_config(alert_weekends=15 * 60))
         self.assertIn("A free alert goes out once a day, at about 3 PM, in the ", same)

@@ -6,9 +6,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 
-import { Book } from "../src/book.js";
 import { settingsFrom } from "../src/rules.js";
-import { ASK_AGAIN_AFTER, EARLY_ENOUGH, LEAVE_AFTER, MOST_TRIES, START_AFTER, Starter, TRY_AGAIN_AFTER, dueTime, newEnough } from "../src/starter.js";
+import { ASK_AGAIN_AFTER, EARLY_ENOUGH, LEAVE_AFTER, MOST_TRIES, START_AFTER, Starter, TRY_AGAIN_AFTER, dueTime, newEnough, pageData as readPage } from "../src/starter.js";
 import { CHECK, ENV, GITHUB, GITHUB_WORDS, SITE, at, clock, day, memoryStorage, pageData, world } from "./standins.js";
 
 const TODAY = "2026-11-20";
@@ -30,9 +29,8 @@ function open({ page = made("13:50"), github, start = at(TODAY, "06:00"), storag
   const lines = [];
   const using = env ? settingsFrom(env) : settings;
   const parts = { storage, fetch: net.fetch, now: time.now, settings: using, log: (line) => lines.push(line) };
-  // The page is read the way the book reads it.
-  const book = new Book(parts);
-  const starter = new Starter({ ...parts, page: (now) => book.pageData(now), token });
+  // The page is read the way the backend reads it.
+  const starter = new Starter({ ...parts, page: (now) => readPage(net.fetch, using.siteUrl, now), token });
   return { starter, storage, time, net, lines };
 }
 
@@ -371,7 +369,7 @@ test("a workflow GitHub cannot find is shown as such, and the check is still tri
 });
 
 test("when the page cannot be read, the check is started, because once too often does no harm", async () => {
-  for (const page of ["down", 500, "<html>not the data</html>"]) {
+  for (const page of ["down", 500, "<html>not the data</html>", null]) {
     const it = open({ page });
     assert.equal((await look(it, "14:55")).did, "started", String(page));
     assert.equal(it.net.starts.length, 1);
@@ -464,7 +462,7 @@ test("what the status shows is numbers, times and this file's own words", async 
   assert.equal(JSON.stringify(status).includes("someone/park"), false);
 });
 
-test("the second timer's notes are kept under names of their own, away from the book's", async () => {
+test("the second timer keeps three notes, under names of its own", async () => {
   const it = open();
   await look(it, "14:55");
   assert.deepEqual([...it.storage.kept.keys()].sort(), ["starter", "starterLook", "starterToken"]);

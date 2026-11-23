@@ -1,42 +1,7 @@
 // The small decisions of the alerts backend, kept apart from storage and the
 // network so that each can be tried on its own: what time it is at the park,
-// whether an address really belongs to a browser's notification service,
-// what an alert says, and which check on GitHub the second timer looks after.
-
-import { fromBase64Url, toBase64Url } from "./webpush.js";
-
-const encoder = new TextEncoder();
-
-// The largest request this backend reads. What a browser hands over is well under 1,000 bytes.
-export const MOST_BYTES = 4096;
-
-// The alert may go out from this many minutes before its stated time. The
-// check that sends it is asked for a little before that time, so that the
-// alert arrives on the hour and not after it. The daily check has the same
-// number: ALERT_LEAD in parkbot/config.py.
-export const ALERT_LEAD = 30;
-
-// If no check of the council's page has run by this long after the alert may
-// first go out, it goes out anyway, with the notice the page already has for
-// today. That is a quarter of an hour after its stated time.
-export const GRACE_MINUTES = 45;
-
-// The notification services of the browsers people use: Chrome and most
-// Android browsers, Firefox, Safari on iPhone and Mac, and Edge on Windows.
-// A message is only ever sent to one of these, so the backend cannot be made
-// to write to an address somebody made up.
-const PUSH_HOSTS = new Set(["fcm.googleapis.com", "jmt17.google.com", "updates.push.services.mozilla.com", "web.push.apple.com"]);
-const PUSH_HOST_ENDINGS = [".push.apple.com", ".notify.windows.com", ".push.services.mozilla.com"];
-
-/** A request that is turned down: `status` for the reply, `reason` for the page, and for an unknown service its `host`. */
-export class Refusal extends Error {
-  constructor(status, reason, host = "") {
-    super(reason);
-    this.status = status;
-    this.reason = reason;
-    this.host = host;
-  }
-}
+// which check on GitHub the second timer looks after, and the Telegram bot's
+// settings.
 
 function minutes(text, what) {
   const found = /^(\d{1,2}):(\d\d)$/.exec(String(text).trim());
@@ -59,24 +24,13 @@ export function settingsFrom(env) {
   } catch {
     throw new Error(`TIMEZONE ${zone} is not a known time zone`);
   }
-  const settings = {
+  return {
     siteUrl: site.href.endsWith("/") ? site.href : site.href + "/",
     origin: site.origin,
     zone,
-    // When the alert goes out, as minutes of the day: from Monday to Friday,
-    // on Saturday and Sunday, and the time after which it is left out.
-    weekdays: minutes(env.ALERT_WEEKDAYS, "ALERT_WEEKDAYS"),
-    weekends: minutes(env.ALERT_WEEKENDS, "ALERT_WEEKENDS"),
-    until: minutes(env.ALERT_UNTIL, "ALERT_UNTIL"),
     check: checkFrom(env),
     bot: botFrom(env),
   };
-  for (const name of ["weekdays", "weekends"]) {
-    const told = `ALERT_${name.toUpperCase()}`;
-    if (settings[name] < ALERT_LEAD) throw new Error(`${told} should be ${ALERT_LEAD} minutes after midnight or later`);
-    if (settings[name] >= settings.until) throw new Error(`${told} should be earlier than ALERT_UNTIL`);
-  }
-  return settings;
 }
 
 /**
@@ -184,141 +138,6 @@ export function clockText(minute) {
   return `${hour % 12 || 12}${past ? ":" + String(past).padStart(2, "0") : ""} ${hour < 12 ? "AM" : "PM"}`;
 }
 
-/** Is `date`, written like "2026-11-21", a Saturday or a Sunday? */
-export function isWeekend(date) {
-  const day = new Date(`${date}T00:00:00Z`).getUTCDay();
-  return day === 0 || day === 6;
-}
-
-/** The earliest minute of the day at which the alert may go out on `date`. */
-export function alertFrom(settings, date) {
-  return (isWeekend(date) ? settings.weekends : settings.weekdays) - ALERT_LEAD;
-}
-
-/**
- * When people are told to expect the alert: "4 PM on weekdays and 8 AM on
- * weekends", or "4 PM" if the two times are the same. The page says it the
- * same way.
- */
-export function alertTimes(settings) {
-  if (settings.weekdays === settings.weekends) return clockText(settings.weekdays);
-  return `${clockText(settings.weekdays)} on weekdays and ${clockText(settings.weekends)} on weekends`;
-}
-
-function knownPushService(host) {
-  return PUSH_HOSTS.has(host) || PUSH_HOST_ENDINGS.some((ending) => host.endsWith(ending));
-}
-
-/**
- * Check what a browser handed over: an address at a known notification
- * service, and the two keys for writing to it. Returns them tidied, as
- * `{ endpoint, p256dh, auth }`. Throws a Refusal otherwise.
- */
-export function checkSubscription(given) {
-  if (!given || typeof given !== "object" || typeof given.endpoint !== "string" || given.endpoint.length > 2000) {
-    throw new Refusal(400, "bad");
-  }
-  const keys = given.keys;
-  if (!keys || typeof keys !== "object") throw new Refusal(400, "bad");
-  let address;
-  try {
-    address = new URL(given.endpoint);
-  } catch {
-    throw new Refusal(400, "bad");
-  }
-  if (address.protocol !== "https:" || address.username || address.password || address.port) throw new Refusal(400, "bad");
-  if (!knownPushService(address.hostname)) throw new Refusal(400, "host", address.hostname);
-  let p256dh;
-  let auth;
-  try {
-    p256dh = fromBase64Url(keys.p256dh);
-    auth = fromBase64Url(keys.auth);
-  } catch {
-    throw new Refusal(400, "bad");
-  }
-  // A public key on the P-256 curve, written out in full, and a secret of 16 bytes.
-  if (p256dh.length !== 65 || p256dh[0] !== 4 || auth.length !== 16) throw new Refusal(400, "bad");
-  return { endpoint: address.href, p256dh: toBase64Url(p256dh), auth: toBase64Url(auth) };
-}
-
-/** An address as it is filed, so that the same address always finds the same entry. Throws a Refusal if it is not one. */
-export function tidyEndpoint(endpoint) {
-  if (typeof endpoint !== "string" || endpoint.length > 2000) throw new Refusal(400, "bad");
-  try {
-    return new URL(endpoint).href;
-  } catch {
-    throw new Refusal(400, "bad");
-  }
-}
-
-function cut(text, most) {
-  const letters = Array.from(String(text));
-  return letters.length > most ? letters.slice(0, most - 1).join("") + "…" : letters.join("");
-}
-
-/**
- * Was the page's data made today, at or after the time from which the alert
- * may go out? Then the check that goes with the alert has run, and what it
- * found is as fresh as it gets.
- */
-export function isFresh(data, local, settings) {
-  const made = Date.parse(data && data.generated);
-  if (Number.isNaN(made)) return false;
-  const when = localTime(made, settings.zone);
-  return when.date === local.date && when.minute >= alertFrom(settings, local.date);
-}
-
-/**
- * Today's notice from the page's data, as `{ title, body }`, or null if the
- * data has none for today. If the data was not made today, the notice says so.
- */
-export function noticeFor(data, local, settings) {
-  const days = data && Array.isArray(data.days) ? data.days : [];
-  const today = days.find((day) => day && day.date === local.date && day.notice && typeof day.notice.title === "string" && day.notice.title.trim());
-  if (!today) return null;
-  let body = typeof today.notice.body === "string" ? today.notice.body : "";
-  const made = Date.parse(data.generated);
-  const madeToday = !Number.isNaN(made) && localTime(made, settings.zone).date === local.date;
-  if (!madeToday) {
-    const since = typeof data.generatedText === "string" && data.generatedText ? ` since ${cut(data.generatedText, 40)}` : " today";
-    body += `${body ? "\n" : ""}⚠️ The page has not been updated${since}, so this may be out of date.`;
-  }
-  return { title: cut(today.notice.title.trim(), 120), body: cut(body, 600) };
-}
-
-/**
- * The bytes of one notification. The shape is the one newer iPhones show by
- * themselves ("declarative web push"). Every other browser hands the same
- * words to the page's own script, sw.js, which shows them.
- */
-export function messageFor(notice, settings, tag) {
-  return encoder.encode(
-    JSON.stringify({
-      web_push: 8030,
-      notification: {
-        title: notice.title,
-        body: notice.body,
-        // Where a tap on the notification leads.
-        navigate: settings.siteUrl,
-        // One notification at a time: a new one takes the place of the last, and still makes itself heard.
-        tag,
-        renotify: true,
-        lang: "en-AU",
-        // No picture of the page's own, only the small mark for a phone's status bar.
-        badge: settings.siteUrl + "badge.png",
-      },
-    })
-  );
-}
-
-/** The first notification a device gets, straight after its alerts are turned on. */
-export function welcome(settings) {
-  return {
-    title: "Alerts are on",
-    body: `You'll get one notification a day, at about ${alertTimes(settings)}, saying when the oval is booked.`,
-  };
-}
-
 /** The headers that let the page, and only the page, talk to this backend from a browser. */
 export function corsHeaders(origin, settings) {
   const headers = { Vary: "Origin" };
@@ -329,4 +148,11 @@ export function corsHeaders(origin, settings) {
     headers["Access-Control-Max-Age"] = "86400";
   }
   return headers;
+}
+
+/** Bytes as base64url text without padding, the form web addresses take. */
+export function toBase64Url(bytes) {
+  let binary = "";
+  for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }

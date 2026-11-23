@@ -1,14 +1,14 @@
-// The part that connects the book to Cloudflare: which requests are let in,
-// from where, and what the timer does. Cloudflare itself is stood in for here.
-// The file runtime.js tries the same things in Cloudflare's own runtime.
+// The part that connects the second timer, the counter and the bot to
+// Cloudflare: which requests are let in, from where, and what the timer does.
+// Cloudflare itself is stood in for here. The file runtime.js tries the same
+// things in Cloudflare's own runtime.
 
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { MOST_BYTES } from "../src/rules.js";
 import * as everything from "../src/worker.js";
-import worker, { Chats, Stats, Subscribers } from "../src/worker.js";
-import { BOT, BOT_TOKEN, CHECK, ENV, GITHUB, SITE, TELEGRAM, at, day, memorySql, memoryStorage, newDevice, pageData, world } from "./standins.js";
+import worker, { Chats, Stats, Timer } from "../src/worker.js";
+import { BOT, BOT_TOKEN, CHECK, ENV, GITHUB, TELEGRAM, at, day, memorySql, memoryStorage, pageData, world } from "./standins.js";
 
 const PAGE = "https://citizensbark.example";
 const BACKEND = "https://alerts.example";
@@ -36,9 +36,8 @@ afterEach(() => {
   Date.now = realNow;
 });
 
-/** Cloudflare's side: one object, made the first time it is asked for, with its own storage. */
-function cloudflare(env = ENV) {
-  const storage = memoryStorage();
+/** Cloudflare's side: one object of each kind, made the first time it is asked for, each with its own storage. */
+function cloudflare(env = ENV, storage = memoryStorage()) {
   const state = {
     storage,
     ready: null,
@@ -52,13 +51,13 @@ function cloudflare(env = ENV) {
     asked: [],
     env: {
       ...env,
-      SUBSCRIBERS: {
+      TIMER: {
         idFromName: (name) => ({ name }),
         get(id, options) {
           it.asked.push({ id, options });
           return {
             async fetch(address, init) {
-              if (!it.object) it.object = new Subscribers(state, env);
+              if (!it.object) it.object = new Timer(state, env);
               await state.ready;
               return it.object.fetch(new Request(address, init));
             },
@@ -130,9 +129,9 @@ const status = async (cf) => (await ask(cf, "GET", "/status")).json();
 
 test("the worker's file exports only what Cloudflare can call", () => {
   // Cloudflare refuses a worker whose main file exports anything else, a plain number for example.
-  assert.deepEqual(Object.keys(everything).sort(), ["Chats", "Stats", "Subscribers", "default"]);
+  assert.deepEqual(Object.keys(everything).sort(), ["Chats", "Stats", "Timer", "default"]);
   assert.equal(typeof everything.Chats, "function");
-  assert.equal(typeof everything.Subscribers, "function");
+  assert.equal(typeof everything.Timer, "function");
   assert.equal(typeof everything.Stats, "function");
   assert.deepEqual(Object.keys(everything.default).sort(), ["fetch", "scheduled"]);
 });
@@ -145,151 +144,59 @@ test("anyone may ask how things are, and gets numbers only", async () => {
     assert.equal(answer.headers.get("Content-Type"), "application/json; charset=utf-8");
     assert.equal(answer.headers.get("Cache-Control"), "no-store");
     assert.equal(answer.headers.get("X-Content-Type-Options"), "nosniff");
-    assert.deepEqual(await answer.json(), { ok: true, devices: 0, sending: false, last: null, timer: null, unknownServices: {}, refusals: {}, starter: OFF, telegram: { on: false } });
+    assert.deepEqual(await answer.json(), { ok: true, starter: OFF, telegram: { on: false } });
   }
-  // One book for everyone, kept near the people it serves.
+  // One second timer for everything, kept near the page and the people it serves.
   assert.deepEqual(cf.asked[0], { id: { name: "all" }, options: { locationHint: "oc" } });
 });
 
 test("only the page itself may read the answers from inside a browser", async () => {
   const cf = cloudflare();
-  const mine = await ask(cf, "GET", "/key", { origin: PAGE });
+  const mine = await ask(cf, "GET", "/status", { origin: PAGE });
   assert.equal(mine.headers.get("Access-Control-Allow-Origin"), PAGE);
   assert.equal(mine.headers.get("Vary"), "Origin");
-  const body = await mine.json();
-  assert.equal(body.ok, true);
-  assert.equal(Buffer.from(body.key, "base64url").length, 65);
+  assert.equal((await mine.json()).ok, true);
 
   for (const origin of [null, "https://example.org", "http://citizensbark.example", "null"]) {
-    const other = await ask(cf, "GET", "/key", { origin });
+    const other = await ask(cf, "GET", "/status", { origin });
     assert.equal(other.status, 200);
     assert.equal(other.headers.get("Access-Control-Allow-Origin"), null, String(origin));
     assert.equal(other.headers.get("Vary"), "Origin");
   }
 });
 
-test("a browser's question beforehand is answered without waking the book", async () => {
+test("a browser's question beforehand is answered without waking anything", async () => {
   const cf = cloudflare();
-  const answer = await ask(cf, "OPTIONS", "/subscribe", { headers: { "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" } });
+  const answer = await ask(cf, "OPTIONS", "/hit", { headers: { "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" } });
   assert.equal(answer.status, 204);
   assert.equal(answer.headers.get("Access-Control-Allow-Origin"), PAGE);
   assert.equal(answer.headers.get("Access-Control-Allow-Methods"), "GET, POST, OPTIONS");
   assert.equal(answer.headers.get("Access-Control-Allow-Headers"), "Content-Type");
   assert.equal(await answer.text(), "");
 
-  const other = await ask(cf, "OPTIONS", "/subscribe", { origin: "https://example.org" });
+  const other = await ask(cf, "OPTIONS", "/hit", { origin: "https://example.org" });
   assert.equal(other.status, 204);
   assert.equal(other.headers.get("Access-Control-Allow-Origin"), null);
-  assert.equal(cf.asked.length, 0);
+  assert.equal(cf.asked.length + cf.statsAsked.length + cf.chatsAsked.length, 0);
 });
 
-test("a device turns alerts on and off through the page", async () => {
-  const cf = cloudflare();
-  const phone = newDevice();
-  const on = await ask(cf, "POST", "/subscribe", { body: { subscription: phone.subscription } });
-  assert.equal(on.status, 201);
-  assert.equal(on.headers.get("Access-Control-Allow-Origin"), PAGE);
-  assert.deepEqual(await on.json(), { ok: true, new: true });
-  assert.equal(net.pushesTo(phone).length, 1);
-  assert.equal(phone.words(net.pushesTo(phone)[0].body).notification.title, "Alerts are on");
-  assert.equal((await (await ask(cf, "GET", "/status")).json()).devices, 1);
-
-  const again = await ask(cf, "POST", "/subscribe", { body: { subscription: phone.subscription } });
-  assert.equal(again.status, 200);
-  assert.deepEqual(await again.json(), { ok: true, new: false });
-
-  const off = await ask(cf, "POST", "/unsubscribe", { body: { endpoint: phone.endpoint } });
-  assert.equal(off.status, 200);
-  assert.deepEqual(await off.json(), { ok: true });
-  assert.equal((await (await ask(cf, "GET", "/status")).json()).devices, 0);
-});
-
-test("a request to add or remove a device from anywhere but the page is turned away", async () => {
-  const cf = cloudflare();
-  const phone = newDevice();
-  for (const origin of [null, "https://example.org", "http://citizensbark.example", "https://citizensbark.example.evil.example", "null"]) {
-    for (const [path, body] of [
-      ["/subscribe", { subscription: phone.subscription }],
-      ["/unsubscribe", { endpoint: phone.endpoint }],
-    ]) {
-      const answer = await ask(cf, "POST", path, { origin, body });
-      assert.equal(answer.status, 403, `${origin} ${path}`);
-      assert.deepEqual(await answer.json(), { ok: false, reason: "origin" });
-      assert.equal(answer.headers.get("Access-Control-Allow-Origin"), null);
-    }
-  }
-  assert.equal(cf.asked.length, 0);
-  assert.equal(net.calls.length, 0);
-});
-
-test("a request that is too long is not read to its end", async () => {
-  const cf = cloudflare();
-  const long = JSON.stringify({ subscription: { endpoint: "https://fcm.googleapis.com/send/abc", padding: "x".repeat(MOST_BYTES) } });
-
-  // One that says how long it is.
-  const declared = await ask(cf, "POST", "/subscribe", { body: long, headers: { "Content-Length": String(long.length) } });
-  assert.equal(declared.status, 413);
-  assert.deepEqual(await declared.json(), { ok: false, reason: "bad" });
-  assert.equal(declared.headers.get("Access-Control-Allow-Origin"), PAGE);
-
-  // One that does not say, and arrives in pieces.
-  let pieces = 0;
-  const stream = new ReadableStream({
-    pull(controller) {
-      pieces += 1;
-      controller.enqueue(new Uint8Array(1024).fill(120));
-    },
-  });
-  const request = new Request(`${BACKEND}/subscribe`, { method: "POST", headers: { Origin: PAGE }, body: stream, duplex: "half" });
-  const endless = await worker.fetch(request, cf.env);
-  assert.equal(endless.status, 413);
-  assert.ok(pieces < 10, `${pieces} pieces were read`);
-
-  assert.equal(cf.asked.length, 0);
-  assert.equal(MOST_BYTES, 4096);
-});
-
-test("a request of exactly the largest size is still read", async () => {
-  const cf = cloudflare();
-  const start = '{"subscription":{"endpoint":"https://fcm.googleapis.com/send/abc","padding":"';
-  const body = `${start}${"x".repeat(MOST_BYTES - start.length - 3)}"}}`;
-  assert.equal(body.length, MOST_BYTES);
-  const answer = await ask(cf, "POST", "/subscribe", { body });
-  assert.equal(answer.status, 400);
-  assert.deepEqual(await answer.json(), { ok: false, reason: "bad" });
-  assert.equal(cf.asked.length, 1);
-});
-
-test("what is not JSON is turned down", async () => {
-  const cf = cloudflare();
-  for (const body of ["", "not json", "{", "<xml/>"]) {
-    const answer = await ask(cf, "POST", "/subscribe", { body });
-    assert.equal(answer.status, 400, body);
-    assert.deepEqual(await answer.json(), { ok: false, reason: "bad" });
-  }
-  for (const body of ["null", "5", '"text"', "[]", "{}"]) {
-    const answer = await ask(cf, "POST", "/unsubscribe", { body });
-    assert.equal(answer.status, 400, body);
-  }
-  assert.equal(net.calls.length, 0);
-});
-
-test("nothing else is answered, and nobody outside can start a send", async () => {
+test("nothing else is answered, and nobody outside can start a look", async () => {
   const cf = cloudflare();
   const unknown = [
     ["POST", "/tick"],
     ["GET", "/tick"],
-    ["GET", "/subscribe"],
-    ["GET", "/unsubscribe"],
     ["POST", "/status"],
-    ["POST", "/key"],
     ["POST", "/"],
-    ["PUT", "/subscribe"],
-    ["DELETE", "/subscribe"],
     ["GET", "/favicon.ico"],
     ["GET", "/status/"],
     ["GET", "//status"],
     ["GET", "/alarm"],
+    // What the browser notifications used, until they were taken off the page.
+    ["GET", "/key"],
+    ["POST", "/subscribe"],
+    ["POST", "/unsubscribe"],
+    ["PUT", "/subscribe"],
+    ["DELETE", "/subscribe"],
   ];
   for (const [method, path] of unknown) {
     const answer = await ask(cf, method, path, method === "GET" ? {} : { body: {} });
@@ -297,6 +204,7 @@ test("nothing else is answered, and nobody outside can start a send", async () =
     assert.deepEqual(await answer.json(), { ok: false, reason: "unknown" });
   }
   assert.equal(cf.asked.length, 0);
+  assert.equal(net.calls.length, 0);
 });
 
 test("settings that make no sense are reported plainly", async () => {
@@ -307,37 +215,41 @@ test("settings that make no sense are reported plainly", async () => {
   assert.equal(cf.asked.length, 0);
 });
 
-test("if the book stumbles, the page is asked to try again later", async () => {
+test("if the second timer stumbles, the status page says to try again later", async () => {
   const cf = cloudflare();
-  cf.env.SUBSCRIBERS.get = () => ({
+  cf.env.TIMER.get = () => ({
     fetch: async () => {
       throw new Error("the object was reset");
     },
   });
-  const answer = await ask(cf, "GET", "/key");
+  const answer = await ask(cf, "GET", "/status");
   assert.equal(answer.status, 503);
   assert.deepEqual(await answer.json(), { ok: false, reason: "later" });
   assert.equal(answer.headers.get("Access-Control-Allow-Origin"), PAGE);
 
-  cf.env.SUBSCRIBERS.get = () => ({ fetch: async () => new Response("<html>an error page</html>", { status: 500 }) });
-  const second = await ask(cf, "POST", "/subscribe", { body: { subscription: newDevice().subscription } });
+  cf.env.TIMER.get = () => ({ fetch: async () => new Response("<html>an error page</html>", { status: 500 }) });
+  const second = await ask(cf, "GET", "/status");
   assert.equal(second.status, 503);
   assert.deepEqual(await second.json(), { ok: false, reason: "later" });
 });
 
-test("the timer's look is passed on to the book, and a failure of it is only noted", async () => {
-  const cf = cloudflare();
-  now = at(TODAY, "14:00");
-  await tick(cf);
-  assert.deepEqual((await (await ask(cf, "GET", "/status")).json()).timer, { at: now, did: "nothing", why: "too early" });
-
+test("a failure of the timer's look is only noted", async () => {
   const broken = cloudflare();
-  broken.env.SUBSCRIBERS.get = () => ({
+  broken.env.TIMER.get = () => ({
     fetch: async () => {
       throw new Error("the object was reset");
     },
   });
   await tick(broken); // does not throw
+
+  const stumbling = cloudflare({ ...ENV, ...CHECK, DAILY_CHECK_TOKEN: TOKEN });
+  await status(stumbling); // wakes the object, so that its parts can be reached
+  stumbling.object.starter.look = async () => {
+    throw new Error("the second timer broke");
+  };
+  const answer = await stumbling.object.fetch(new Request("https://timer/tick", { method: "POST" }));
+  assert.equal(answer.status, 500);
+  assert.deepEqual(await answer.json(), { ok: false });
 });
 
 test("without a token the second timer stays off, and the timer's look asks nothing of GitHub", async () => {
@@ -347,9 +259,8 @@ test("without a token the second timer stays off, and the timer's look asks noth
   now = at(TODAY, "14:55");
   await tick(cf);
   assert.equal(net.asks.length, 0);
-  const said = await status(cf);
-  assert.deepEqual(said.starter, OFF);
-  assert.deepEqual(said.timer, { at: now, did: "nothing", why: "no device to tell" });
+  assert.equal(net.reads.length, 0);
+  assert.deepEqual((await status(cf)).starter, OFF);
 });
 
 test("with a token, the timer's look starts the check on GitHub when the page shows none", async () => {
@@ -364,12 +275,16 @@ test("with a token, the timer's look starts the check on GitHub when the page sh
   );
   assert.equal(net.starts[0].headers.Authorization, `Bearer ${TOKEN}`);
   assert.deepEqual(JSON.parse(net.starts[0].body), { ref: "main" });
+  // The page's data is read fresh, past any copy kept on the way.
+  assert.match(net.reads[0].url, /^https:\/\/citizensbark\.example\/data\.json\?t=\d+$/);
 
   const answer = await ask(cf, "GET", "/status", { origin: null });
   const text = await answer.text();
   // Anyone may read the status, so the token must not be in it.
   assert.equal(text.includes(TOKEN), false);
   assert.equal(text.includes("github_pat"), false);
+  // The deploy on GitHub looks for exactly these words to know that the second timer is on.
+  assert.ok(text.includes('"starter":{"on":true'), text);
   assert.deepEqual(JSON.parse(text).starter, {
     on: true,
     look: { at: now, did: "started", why: "the page showed no 2:40 PM check" },
@@ -385,74 +300,57 @@ test("with a token, the timer's look starts the check on GitHub when the page sh
   assert.equal((await status(cf)).starter.check.done, true);
 });
 
-test("the timer's look has two jobs, and trouble with one does not stop the other", async () => {
-  const cf = cloudflare({ ...ENV, ...CHECK, DAILY_CHECK_TOKEN: TOKEN });
-  net.page = pageData({ generated: `${TODAY}T13:50:00+11:00`, days: [day(TODAY)] });
-  now = at(TODAY, "14:55");
-  await status(cf); // wakes the object, so that its parts can be reached
+/** What the browser notifications left in the object that is now the second timer's. */
+function leftOver(storage, devices) {
+  for (let index = 0; index < devices; index += 1) {
+    storage.kept.set(`sub:device-${String(index).padStart(4, "0")}`, { endpoint: `https://fcm.googleapis.com/send/${index}`, p256dh: "key", auth: "secret", added: 1, fails: 0 });
+  }
+  storage.kept.set("vapid", { privateJwk: { kty: "EC" }, publicKey: "public" });
+  storage.kept.set("count", devices);
+  storage.kept.set("last", { date: "2026-11-22", sent: 1 });
+  storage.kept.set("tick", { at: 1, did: "nothing", why: "too early" });
+  storage.kept.set("hosts", {});
+  storage.kept.set("refusals", { "web.push.apple.com 400": { times: 1, on: "2026-11-22", said: "reason BadWebPushTopic" } });
+  storage.kept.set("day", { date: "2026-11-22", at: 1 });
+  storage.kept.set("job", { date: "2026-11-23" });
+  storage.alarm = 1;
+}
 
-  // The alert's look stumbles: the second timer still starts the check.
-  const alertsLook = cf.object.book.tick;
-  cf.object.book.tick = async () => {
-    throw new Error("the alert's look broke");
-  };
-  await tick(cf);
-  assert.equal(net.starts.length, 1);
-  assert.equal((await status(cf)).timer, null);
+test("what the browser notifications kept is deleted when the object first wakes, and the second timer's notes stay", async () => {
+  const storage = memoryStorage();
+  // More devices than one round of deleting takes.
+  leftOver(storage, 300);
+  storage.kept.set("starter", { date: TODAY, time: 880, tries: 1, fails: 0, at: 1, answer: 204, done: true });
+  storage.kept.set("starterLook", { at: 1, did: "nothing", why: "the 2:40 PM check has run" });
+  storage.kept.set("starterToken", { date: TODAY, at: 1, answer: 200, ok: true, mark: "abcdef01" });
+  const cf = cloudflare({ ...ENV, ...CHECK, DAILY_CHECK_TOKEN: TOKEN }, storage);
+  const said = await status(cf);
+  assert.deepEqual([...storage.kept.keys()].sort(), ["starter", "starterLook", "starterToken"]);
+  // The wake-up call of a round of sending that was under way is gone too.
+  assert.equal(storage.alarm, null);
+  // The status page no longer speaks of devices.
+  assert.deepEqual(Object.keys(said), ["ok", "starter", "telegram"]);
+  assert.equal(said.starter.check.done, true);
 
-  // The second timer stumbles: the alert's look still happens.
-  cf.object.book.tick = alertsLook;
-  cf.object.starter.look = async () => {
-    throw new Error("the second timer broke");
-  };
-  now = at(TODAY, "15:00");
-  await tick(cf);
-  assert.deepEqual((await status(cf)).timer, { at: now, did: "nothing", why: "no device to tell" });
+  // Once it is done, a new wake only looks: nothing is written or deleted.
+  const writes = storage.writes;
+  const again = cloudflare({ ...ENV, ...CHECK, DAILY_CHECK_TOKEN: TOKEN }, storage);
+  await status(again);
+  assert.equal(storage.writes, writes);
 });
 
-test("from the tap on the page to the afternoon's notification", async () => {
-  const cf = cloudflare();
-  const phones = [newDevice(), newDevice("web.push.apple.com"), newDevice("updates.push.services.mozilla.com")];
-  for (const phone of phones) {
-    assert.equal((await ask(cf, "POST", "/subscribe", { body: { subscription: phone.subscription } })).status, 201);
-  }
-
-  // The afternoon's check has not run yet: the timer waits.
-  net.page = pageData({ generated: `${TODAY}T11:47:00+11:00`, days: [day(TODAY)] });
-  now = at(TODAY, "14:35");
+test("a tidy-up that stumbles does not stop the second timer", async () => {
+  const storage = memoryStorage();
+  leftOver(storage, 3);
+  storage.delete = async () => {
+    throw new Error("storage is busy");
+  };
+  const cf = cloudflare({ ...ENV, ...CHECK, DAILY_CHECK_TOKEN: TOKEN }, storage);
+  net.page = pageData({ generated: `${TODAY}T13:50:00+11:00`, days: [day(TODAY)] });
+  now = at(TODAY, "14:55");
   await tick(cf);
-  assert.equal((await (await ask(cf, "GET", "/status")).json()).timer.why, "waiting for the check before the alert");
-
-  // It has run: the alert starts, and Cloudflare's wake-up call sends it.
-  net.page = pageData({ generated: `${TODAY}T14:42:00+11:00`, days: [day(TODAY, "Booked 5 PM to 7:30 PM", "Cricket training.")] });
-  now = at(TODAY, "14:45");
-  await tick(cf);
-  assert.equal(cf.storage.alarm, now);
-  cf.storage.alarm = null;
-  await cf.object.alarm();
-
-  for (const phone of phones) {
-    const pushes = net.pushesTo(phone);
-    assert.equal(pushes.length, 2);
-    assert.deepEqual(phone.words(pushes[1].body).notification, {
-      title: "Booked 5 PM to 7:30 PM",
-      body: "Cricket training.",
-      navigate: SITE,
-      tag: "daily",
-      renotify: true,
-      lang: "en-AU",
-      badge: `${SITE}badge.png`,
-    });
-  }
-  const status = await (await ask(cf, "GET", "/status")).json();
-  assert.equal(status.sending, false);
-  assert.equal(status.last.sent, 3);
-  assert.equal(status.devices, 3);
-
-  // Five minutes later the timer looks again, and nothing more goes out.
-  now = at(TODAY, "14:50");
-  await tick(cf);
-  assert.equal(net.pushes.length, 6);
+  assert.equal(net.starts.length, 1);
+  assert.equal((await status(cf)).starter.look.did, "started");
 });
 
 const PHONE_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1";
@@ -471,7 +369,7 @@ test("the page counts a visit and a press, the way a browser sends them as it le
   assert.deepEqual([today.visits, today.devices, today.fresh, today.robots, today.counted], [1, 1, 1, 0, 2]);
   assert.deepEqual(today.presses, { "buttons:t.me": 1 });
   assert.deepEqual(today.systems, { iPhone: 1 });
-  // One counter for everyone, near the people it serves, and the book of devices is not woken for it.
+  // One counter for everyone, near the people it serves, and the second timer is not woken for it.
   assert.deepEqual(cf.statsAsked[0], { id: { name: "all" }, options: { locationHint: "oc" } });
   assert.equal(cf.asked.length, 0);
 });
@@ -593,7 +491,7 @@ test("behind the password, the page offers every day and every visitor as Excel 
   assert.deepEqual([...bytes.slice(0, 4)], [0x50, 0x4b, 0x03, 0x04]);
   const inside = new TextDecoder().decode(bytes);
   for (const sheet of ["About", "Months", "Days", "Visitors", "Visits", "Breakdowns"]) assert.match(inside, new RegExp(`<sheet name="${sheet}"`));
-  assert.match(inside, /Telegram button \(custom alerts\)/);
+  assert.match(inside, /Telegram button/);
   assert.equal(inside.includes(id), false);
   assert.equal((await ask(cf, "GET", jsonLink, { origin: null })).headers.get("Content-Type"), "application/json; charset=utf-8");
 
@@ -639,7 +537,7 @@ test("behind the password, the page offers every day and every visitor as Excel 
     [day.date, day.visits, day.differentDevices, day.firstTimeDevices, day.returningDevices, day.automatedVisits, day.ownVisits],
     [TODAY, 2, 1, 1, 0, 0, 1]
   );
-  assert.deepEqual(day.presses, { "Telegram button (custom alerts)": 1 });
+  assert.deepEqual(day.presses, { "Telegram button": 1 });
   assert.deepEqual(day.foundBy, { "QR code": 1, "no link (typed, a bookmark or an app)": 1 });
   assert.deepEqual(day.timeOnPage, { "30 seconds to 2 minutes": 1 });
   assert.deepEqual(day.systems, { iPhone: 1 });
@@ -670,7 +568,7 @@ test("behind the password, the page offers every day and every visitor as Excel 
     visitTimes: [`${TODAY} 10:00`, `${TODAY} 13:00`],
     secondsOnPage: 42,
     looks: 1,
-    presses: { "Telegram button (custom alerts)": 1 },
+    presses: { "Telegram button": 1 },
     kind: person.kind,
     system: "iPhone",
     browser: person.browser,
@@ -724,7 +622,7 @@ test("the bot sets itself up when the status page is first asked, and shows numb
   assert.equal(hook.body.url, "https://alerts.example/telegram");
   assert.equal(JSON.stringify(said).includes(hook.body.secret_token), false);
   assert.equal(JSON.stringify(said).includes(BOT_TOKEN), false);
-  // The bot's chats are kept apart from the book, near the people they serve.
+  // The bot's chats are kept apart from the second timer, near the people they serve.
   assert.deepEqual(cf.chatsAsked[0], { id: { name: "all" }, options: { locationHint: "oc" } });
 });
 
@@ -753,8 +651,8 @@ test("Telegram, and only Telegram with the password, reaches the bot", async () 
   assert.equal((await update(cf, "not json", secret)).status, 400);
 });
 
-test("the timer's look also reaches the bot, and the bot's trouble does not stop the book", async () => {
-  const cf = cloudflare(WITH_BOT);
+test("the timer's look also reaches the bot, and the bot's trouble does not stop the second timer", async () => {
+  const cf = cloudflare({ ...WITH_BOT, ...CHECK, DAILY_CHECK_TOKEN: TOKEN });
   now = at("2026-11-23", "16:00");
   net.words = { generated: "2026-11-23T15:45+11:00", generatedText: "Mon 23 Nov, 3:45 PM", alerts: [{ date: "2026-11-23", hour: 16, about: "2026-11-23", weekend: false, text: "The words for 4 PM" }] };
   await status(cf);
@@ -772,5 +670,5 @@ test("the timer's look also reaches the bot, and the bot's trouble does not stop
   };
   now = at("2026-11-23", "16:05");
   await tick(cf);
-  assert.equal((await status(cf)).timer.at, now);
+  assert.equal((await status(cf)).starter.look.at, now);
 });

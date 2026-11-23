@@ -1,16 +1,11 @@
-// Stand-ins for the tests: a place to keep things, a clock, a phone with its
-// keys, and the outside world (the notification services, the page and GitHub).
-//
-// The phone here reads a notification with Node's own cryptography, written
-// separately from the code under test, so that the two check each other.
+// Stand-ins for the tests: a place to keep things, a clock, and the outside
+// world (the page, GitHub and Telegram).
 
-import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { settingsFrom } from "../src/rules.js";
 
 export const SITE = "https://citizensbark.example/";
-// The alert at 3 PM from Monday to Friday and at 8 AM at the weekend. It may go out half an hour before.
-export const ENV = { SITE_URL: SITE, TIMEZONE: "Australia/Melbourne", ALERT_WEEKDAYS: "15:00", ALERT_WEEKENDS: "08:00", ALERT_UNTIL: "19:00" };
+export const ENV = { SITE_URL: SITE, TIMEZONE: "Australia/Melbourne" };
 export const settings = settingsFrom(ENV);
 
 // The second timer's four settings, with the times of day the real check has.
@@ -162,101 +157,34 @@ export function memoryStorage() {
     async deleteAlarm() {
       storage.alarm = null;
     },
-    /** The devices in the book, as pairs of name and entry. */
-    devices() {
-      return [...kept.entries()].filter(([name]) => name.startsWith("sub:")).sort(([a], [b]) => (a < b ? -1 : 1));
-    },
   };
   return storage;
 }
 
-const b64 = (bytes) => Buffer.from(bytes).toString("base64url");
-
-/** A phone: an address at a notification service, and the keys only it holds. */
-export function newDevice(host = "fcm.googleapis.com") {
-  const pair = crypto.createECDH("prime256v1");
-  pair.generateKeys();
-  const auth = crypto.randomBytes(16);
-  const endpoint = `https://${host}/send/${crypto.randomBytes(12).toString("hex")}`;
-  return {
-    endpoint,
-    host,
-    /** What the browser hands to the page: the address and the public halves of the keys. */
-    subscription: { endpoint, expirationTime: null, keys: { p256dh: b64(pair.getPublicKey()), auth: b64(auth) } },
-    /** Read a notification as the phone would (RFC 8291 and RFC 8188). Throws if it was not written for this phone. */
-    read(body) {
-      const bytes = Buffer.from(body);
-      const salt = bytes.subarray(0, 16);
-      const recordSize = bytes.readUInt32BE(16);
-      const keyLength = bytes[20];
-      const theirs = bytes.subarray(21, 21 + keyLength);
-      const sealed = bytes.subarray(21 + keyLength);
-      if (sealed.length > recordSize) throw new Error("more than one record");
-      const shared = pair.computeSecret(theirs);
-      const info = Buffer.concat([Buffer.from("WebPush: info\0"), pair.getPublicKey(), theirs]);
-      const mixed = Buffer.from(crypto.hkdfSync("sha256", shared, auth, info, 32));
-      const key = Buffer.from(crypto.hkdfSync("sha256", mixed, salt, Buffer.from("Content-Encoding: aes128gcm\0"), 16));
-      const nonce = Buffer.from(crypto.hkdfSync("sha256", mixed, salt, Buffer.from("Content-Encoding: nonce\0"), 12));
-      const opener = crypto.createDecipheriv("aes-128-gcm", key, nonce);
-      opener.setAuthTag(sealed.subarray(sealed.length - 16));
-      const padded = Buffer.concat([opener.update(sealed.subarray(0, sealed.length - 16)), opener.final()]);
-      let last = padded.length - 1;
-      while (last >= 0 && padded[last] === 0) last -= 1;
-      if (padded[last] !== 2) throw new Error("the last record is not marked as the last");
-      return padded.subarray(0, last);
-    },
-    /** The same, as the words of the notification. */
-    words(body) {
-      return JSON.parse(this.read(body).toString("utf8"));
-    },
-  };
-}
-
-/** Take apart the proof of who is sending (RFC 8292) and check its signature. */
-export function readProof(header) {
-  const found = /^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/.exec(header);
-  if (!found) throw new Error(`not a proof: ${header}`);
-  const [, head, claims, signature, key] = found;
-  const point = Buffer.from(key, "base64url");
-  const publicKey = crypto.createPublicKey({
-    key: { kty: "EC", crv: "P-256", x: b64(point.subarray(1, 33)), y: b64(point.subarray(33)) },
-    format: "jwk",
-  });
-  return {
-    valid: crypto.verify("sha256", Buffer.from(`${head}.${claims}`), { key: publicKey, dsaEncoding: "ieee-p1363" }, Buffer.from(signature, "base64url")),
-    head: JSON.parse(Buffer.from(head, "base64url").toString("utf8")),
-    claims: JSON.parse(Buffer.from(claims, "base64url").toString("utf8")),
-    key,
-    point,
-  };
-}
-
 /** The page's data, as the daily check publishes it: only the parts the backend reads. */
 export function pageData({ generated, generatedText = "3:01 PM", days }) {
-  return { zone: "Australia/Melbourne", generated, generatedText, alert: { weekdays: 900, weekends: 480, until: 1140 }, days };
+  return { zone: "Australia/Melbourne", generated, generatedText, days };
 }
 
-export function day(date, title = "Booked 5 PM to 7:30 PM", body = "Cricket training.") {
-  return { date, notice: { title, body } };
+export function day(date, label = "Cricket training") {
+  return { date, slots: [[1020, 1170]], label };
 }
 
 /**
  * The outside world. `page` is what the page's data.json holds: an object, a
- * status number, "down" for no connection, or text that is not JSON. `answer`
- * decides what a notification service says to a message: a status number,
- * `{ status, words }`, or "down". `github` decides the same for GitHub: by default it takes every
- * request. Every request is written down in `calls`.
+ * status number, "down" for no connection, or text that is not JSON. `words`
+ * is the same for telegram.json. `github` decides what GitHub answers: by
+ * default it takes every request. `telegram` does the same for Telegram.
+ * Every request is written down in `calls`. Any other address is refused,
+ * as nothing else should be asked.
  */
-export function world({ page = null, words = null, answer = () => 201, pause = 0, github = (call) => (call.method === "GET" ? 200 : 204), telegram = () => null } = {}) {
+export function world({ page = null, words = null, github = (call) => (call.method === "GET" ? 200 : 204), telegram = () => null } = {}) {
   const it = {
     page,
     words,
-    answer,
     github,
     telegram,
     calls: [],
-    flying: 0,
-    mostFlying: 0,
     /** What was asked of GitHub, in order. */
     get asks() {
       return it.calls.filter((call) => call.kind === "github");
@@ -264,10 +192,6 @@ export function world({ page = null, words = null, answer = () => 201, pause = 0
     /** The requests to GitHub to run the check. */
     get starts() {
       return it.asks.filter((call) => call.method === "POST");
-    },
-    /** The messages sent to notification services, in the order they went out. */
-    get pushes() {
-      return it.calls.filter((call) => call.kind === "push");
     },
     get reads() {
       return it.calls.filter((call) => call.kind === "page");
@@ -283,9 +207,6 @@ export function world({ page = null, words = null, answer = () => 201, pause = 0
     /** The pictures the bot sent, as `{ chat_id, photo, caption, ... }`. */
     get pictures() {
       return it.bot.filter((call) => call.method === "sendPhoto").map((call) => call.body);
-    },
-    pushesTo(device) {
-      return it.pushes.filter((call) => call.url === device.endpoint);
     },
     async fetch(address, options = {}) {
       const url = String(address);
@@ -336,21 +257,8 @@ export function world({ page = null, words = null, answer = () => 201, pause = 0
         if (said === "down") throw new TypeError("fetch failed");
         return new Response(said === 204 ? null : JSON.stringify({ message: GITHUB_WORDS }), { status: said });
       }
-      const call = { kind: "push", url, options, headers: options.headers || {}, body: options.body };
-      it.calls.push(call);
-      it.flying += 1;
-      it.mostFlying = Math.max(it.mostFlying, it.flying);
-      try {
-        // Let the others take off, as they would on a real network.
-        await new Promise((resolve) => setTimeout(resolve, pause));
-        const said = await it.answer(url, call);
-        if (said === "down") throw new TypeError("fetch failed");
-        // A number, or `{ status, words }` when the service also says why.
-        const status = typeof said === "object" ? said.status : said;
-        return new Response(status === 204 ? null : (said && said.words) || "", { status });
-      } finally {
-        it.flying -= 1;
-      }
+      it.calls.push({ kind: "elsewhere", url, options });
+      throw new TypeError(`nothing should be asked of ${url}`);
     },
   };
   return it;
@@ -361,14 +269,14 @@ export function world({ page = null, words = null, answer = () => 201, pause = 0
  * wake-up time is cleared and `alarm` is called, which may set a new one.
  * Returns the moments at which rounds ran.
  */
-export async function runAlarms(book, storage, time, most = 1000) {
+export async function runAlarms(object, storage, time, most = 1000) {
   const rounds = [];
   while (storage.alarm !== null) {
     if (rounds.length >= most) throw new Error("the wake-up calls never stop");
     if (storage.alarm > time.now()) time.set(storage.alarm);
     storage.alarm = null;
     rounds.push(time.now());
-    await book.alarm();
+    await object.alarm();
   }
   return rounds;
 }

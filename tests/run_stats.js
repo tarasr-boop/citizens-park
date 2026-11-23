@@ -1,5 +1,6 @@
 // Runs the page's script without a browser, presses some of its buttons and
-// links, and prints what it sent to the counter behind the stats page.
+// links, and prints what it sent to the counter behind the stats page, and
+// what became of the notification scripts a browser kept from earlier.
 //
 // Usage: node run_stats.js PAGE_JS DATA_JSON SCENARIO_JSON
 //
@@ -9,8 +10,11 @@
 // what is pressed ("presses", see ELEMENTS), whether the page is looked at
 // again after a while away ("awayMinutes"), the address it is opened at
 // ("search"), the page it was reached from ("referrer"), whether the screen
-// is a touch screen ("touch"), and how long it stays in sight before it is
-// left ("leaveAfterSeconds").
+// is a touch screen ("touch"), how long it stays in sight before it is
+// left ("leaveAfterSeconds"), and the scripts for notifications this browser
+// kept from earlier ("oldWorkers": for each, whether it has an address for
+// notifications, true, false or "broken"), or that it has no place for such
+// scripts at all ("noWorkers").
 "use strict";
 
 const fs = require("fs");
@@ -55,7 +59,6 @@ function chain(nodes) {
 }
 const ELEMENTS = {
   telegram: () => chain([element("a", { attrs: { href: "https://t.me/CitizensBark" }, hostname: "t.me" }), element("nav", { matches: ["nav.actions"] })]),
-  notify: () => chain([element("button", { id: "notify" }), element("nav", { matches: ["nav.actions"] })]),
   label: () => chain([element("span"), element("a", { attrs: { href: "#how" } }), element("div", { id: "app" })]),
   instagram: () => chain([element("a", { attrs: { href: "https://www.instagram.com/gentle_woof" }, hostname: "www.instagram.com" }), element("section", { matches: [".about"] })]),
   shareOpen: () => chain([element("summary"), element("details", { id: "share" })]),
@@ -109,6 +112,20 @@ const navigator = {
   webdriver: Boolean(scenario.webdriver),
   maxTouchPoints: scenario.touch ? 5 : 0,
 };
+// The scripts for notifications that this browser kept, and what was done to them.
+const forgotten = { unsubscribed: 0, unregistered: 0 };
+if (!scenario.noWorkers) {
+  const registrations = (scenario.oldWorkers || []).map((address) => ({
+    pushManager: {
+      getSubscription() {
+        if (address === "broken") return Promise.reject(new Error("the push service is not there"));
+        return Promise.resolve(address ? { unsubscribe: () => Promise.resolve((forgotten.unsubscribed += 1)) } : null);
+      },
+    },
+    unregister: () => Promise.resolve((forgotten.unregistered += 1)),
+  }));
+  navigator.serviceWorker = { getRegistrations: () => Promise.resolve(registrations) };
+}
 if (!scenario.noBeacon) {
   navigator.sendBeacon = (address, text) => {
     sent.push({ how: "beacon", address, body: JSON.parse(text) });
@@ -187,6 +204,7 @@ if (scenario.leaveAfterSeconds !== undefined) {
   for (const { handler } of listeners.pagehide) handler();
 }
 
-process.stdout.write(
-  JSON.stringify({ sent, stored, replaced, clickCaught: listeners.click.filter((one) => one.capture).length })
+// Written once the page's promises have settled.
+setImmediate(() =>
+  process.stdout.write(JSON.stringify({ sent, stored, replaced, forgotten, clickCaught: listeners.click.filter((one) => one.capture).length }))
 );
