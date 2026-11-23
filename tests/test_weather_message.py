@@ -365,6 +365,35 @@ class DailyMessageTest(unittest.TestCase):
         self.assertNotIn("✅", text)
         self.assertNotIn("⚠️", text)
 
+    def test_the_line_under_the_bots_picture_names_the_park_and_only_what_is_booked(self):
+        def line(day, store, hour, minute=0, ahead=False, pattern=None):
+            plan = plan_day(day, store, seasons() if pattern is None else pattern, day)
+            text = message.caption(plan, at(day, hour, minute), self.config, ahead=ahead)
+            head, link = text.split("\n")
+            self.assertEqual(link, '<a href="https://example.org/park/">Press here for the week ahead and rain by the hour</a>')
+            self.assertTrue(head.startswith("<b>") and head.endswith("</b>"), head)
+            return head[3:-4]
+
+        tuesday = date(2026, 10, 27)  # booked 4:15 to 7:30 PM
+        self.assertEqual(line(tuesday, october_store(tuesday), 10), "🔴 Citizens Park oval booked 4:15 to 7:30 PM")
+        self.assertEqual(line(tuesday, october_store(tuesday), 17, 5), "🔴 Citizens Park oval booked until 7:30 PM")
+        self.assertEqual(line(tuesday, october_store(tuesday), 21, ahead=True), "🔴 Citizens Park oval booked 4:15 to 7:30 PM tomorrow")
+        self.assertEqual(line(tuesday, october_store(tuesday), 19, 45), "🟢 Today's bookings at Citizens Park oval have finished")
+        self.assertEqual(line(FRIDAY, october_store(FRIDAY), 10), "🟠 Citizens Park oval usually booked 4 to 8 PM")
+        self.assertEqual(line(FRIDAY, october_store(FRIDAY), 20, 30), "🟢 The usual booking time at Citizens Park oval has passed")
+
+        free = october_store(tuesday)
+        free.days[tuesday] = DayEntry()
+        self.assertEqual(line(tuesday, free, 10), "🟢 No bookings at Citizens Park oval today")
+        self.assertEqual(line(tuesday, free, 21, ahead=True), "🟢 No bookings at Citizens Park oval tomorrow")
+        closed = date(2026, 9, 20)
+        self.assertEqual(line(closed, october_store(closed), 10), "⛔ Citizens Park oval closed today")
+        self.assertEqual(line(FRIDAY, CouncilStore(), 10, pattern=[]), "❔ No booking information for Citizens Park oval today")
+        listed = CouncilStore()
+        listed.days[FRIDAY] = DayEntry((), "<b>Maintenance</b> & mowing")
+        listed.last_read = FRIDAY
+        self.assertEqual(line(FRIDAY, listed, 10), "⚠️ Citizens Park oval may be closed today (&lt;b&gt;Maintenance&lt;/b&gt; &amp; mowing)")
+
     def test_heavy_rain_hint(self):
         plan = plan_day(FRIDAY, october_store(FRIDAY), seasons(), FRIDAY)
         forecast = weather.parse(forecast_json(FRIDAY, 1, chance=lambda day, hour: 90, mm=lambda day, hour: 2.0))

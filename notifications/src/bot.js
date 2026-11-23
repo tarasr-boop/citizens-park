@@ -18,9 +18,9 @@
 // The alert itself is written by the daily check, which publishes the words
 // for every hour in telegram.json next to the page, each with a picture of the
 // day's timeline and rain. At each hour this sends the picture to everyone who
-// chose it, with only a link to the page under it (the "caption" in
-// telegram.json), as the picture says the rest. Without a picture, or if
-// Telegram cannot take it, the words written for that hour go alone.
+// chose it, with its "caption" under it: one line on the bookings and a link
+// to the page, as the picture says the rest. Without a picture, or if Telegram
+// cannot take it, the words written for that hour go alone.
 //
 // Telegram brings what people write to the bot to this backend ("webhook").
 // The bot sets that up by itself once it has its token, with a password it
@@ -524,9 +524,9 @@ export class Bot {
     }
     const text = entry.text + warning;
     if (Array.from(text).length > 4000) return nothing(`the words for ${name} are too long for Telegram`);
-    // The picture, with only the link to the page under it. A telegram.json made
-    // before there was a caption has the words go under the picture instead.
-    const caption = (typeof data.caption === "string" && data.caption ? data.caption : entry.text) + warning;
+    // The picture, with its caption under it. A telegram.json made before there
+    // were captions has the words go under the picture instead.
+    const caption = (typeof entry.caption === "string" && entry.caption ? entry.caption : entry.text) + warning;
     const photo = shownLength(caption) <= CAPTION_MOST ? pictureOf(entry, this.settings.siteUrl) : null;
 
     const kind = entry.weekend === true ? "weekend" : "weekday";
@@ -593,9 +593,9 @@ export class Bot {
   }
 
   /**
-   * Send the alert as its picture, with the link to the page under it. The
-   * first chat gets the picture from the page. Telegram then has it, and gives
-   * it a number of its own, so the other chats get it by that number, without
+   * Send the alert as its picture, with its caption under it. The first chat
+   * gets the picture from the page. Telegram then has it, and gives it a
+   * number of its own, so the other chats get it by that number, without
    * Telegram fetching it again.
    */
   async sendPicture(id, job) {
